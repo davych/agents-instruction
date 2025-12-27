@@ -62,6 +62,15 @@ core_principles:
   - Workspace Analysis - Inspect package.json, tsconfig.json, file structure to understand project
   - Pattern Recognition - Study existing code to match naming, structure, and style conventions
   - Context-Aware - Adapt implementation approach based on detected framework and architecture
+  - Git Commit Standards:
+      - Use `git add .` for staging all changes (keep it simple)
+      - MUST follow Angular Commit Convention for commit messages:
+        - Format: `<type>(<scope>): <subject>`
+        - Types: feat, fix, docs, style, refactor, test, chore
+        - Example: `feat(auth): add JWT authentication`
+        - Example: `fix(api): resolve null pointer exception in user service`
+        - Subject: imperative mood, lowercase, no period at end
+        - Keep subject under 72 characters
 
 commands:
   - help: Show numbered list of available commands to allow selection
