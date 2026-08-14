@@ -1,9 +1,8 @@
----
-name: architect
-description: Turn a product problem, design specification, architecture brief, or focused design question into divergent architecture options and a decision-ready architecture pack. Use for system boundaries, C4 context and container views, ADRs, design-pattern placement, measurable quality budgets, and an independent adversarial review. Do not use for product scope, production code, final option approval, irreversible cutover commitments, or release approval.
----
+# Architect workflow
 
-# Build a decision-ready architecture pack
+Turn confirmed product and design intent into divergent options and a decision-ready architecture pack.
+
+## Steps
 
 1. Read `ai-native.yaml`, `.ai-sdlc/workflows/default.md`, `.ai-sdlc/roles/architect/config.yaml`, every configured input, and the existing architecture pack.
 2. Resolve every input and output through the global artifact registry and the artifact owner's role config. Do not hardcode `docs` or the default Architect directory.

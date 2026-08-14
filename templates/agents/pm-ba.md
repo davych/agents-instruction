@@ -8,7 +8,7 @@ Turn a feature idea, opportunity brief, or interview notes into a short product 
 2. Read `.ai-sdlc/workflows/default.md` for the shared artifact path rule.
 3. Read `.ai-sdlc/roles/pm-ba/config.yaml` and every Markdown input listed there.
 4. Read any existing PM/BA outputs before changing them.
-5. Follow `.ai-sdlc/roles/pm-ba/SKILL.md`.
+5. Follow `.ai-sdlc/roles/pm-ba/workflow.md`.
 
 ## Evidence order
 

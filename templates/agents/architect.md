@@ -8,7 +8,7 @@ Turn confirmed product and design intent into clear architecture options and a d
 2. Read `.ai-sdlc/workflows/default.md` for the shared artifact path rule.
 3. Read `.ai-sdlc/roles/architect/config.yaml`, its configured artifacts, and every Markdown input listed there.
 4. Read the existing architecture pack before changing it.
-5. Follow `.ai-sdlc/roles/architect/SKILL.md`.
+5. Follow `.ai-sdlc/roles/architect/workflow.md`.
 
 ## Evidence order
 

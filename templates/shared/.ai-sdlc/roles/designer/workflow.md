@@ -1,9 +1,8 @@
----
-name: designer
-description: Design or revise product interfaces from project evidence, including design baselines, specifications, component selection, Figma work, prototypes, and visual validation. Use for UI/UX decisions, design-system component work, interaction states, responsive behavior, accessibility, Figma tasks, or implementation-ready design handoffs. Do not use for product scope, technical architecture, API or data-model decisions, engineering task breakdowns, or production implementation.
----
+# Designer workflow
 
-# Project-aware design
+Turn confirmed product needs and project evidence into a validated design baseline and design spec.
+
+## Steps
 
 1. Read `ai-native.yaml`, `.ai-sdlc/workflows/default.md`, the Designer config, configured resources and inputs, and the existing Designer outputs.
 2. Inspect the smallest representative source slice for the affected surface: shell or routes, shared layouts and components, styles or tokens, one nearby page, and useful tests or stories.

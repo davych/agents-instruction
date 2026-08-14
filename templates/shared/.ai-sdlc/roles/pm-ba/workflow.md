@@ -1,9 +1,8 @@
----
-name: pm-ba
-description: Turn a feature idea, opportunity brief, business notes, or user interviews into a short PRD and a categorized set of user stories with observable Gherkin acceptance criteria. Use for product discovery and business analysis. Do not use for scope or priority decisions, design work, engineering work, or release approval.
----
+# PM / BA workflow
 
-# Write a small-team product specification
+Turn product and business evidence into a short PRD and categorized user stories with observable acceptance criteria.
+
+## Steps
 
 1. Read `ai-native.yaml`, `.ai-sdlc/workflows/default.md`, `.ai-sdlc/roles/pm-ba/config.yaml`, the configured Markdown inputs, and any existing PRD or stories.
 2. Identify the user, problem, desired outcome, confirmed scope, business rules, evidence, assumptions, and open decisions. Do not fill gaps with invented facts.

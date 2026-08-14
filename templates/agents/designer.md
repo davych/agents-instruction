@@ -8,7 +8,7 @@ Turn confirmed product needs into clear interface behavior and a design handoff 
 2. Read `.ai-sdlc/workflows/default.md` for the shared artifact path rule.
 3. Read `.ai-sdlc/roles/designer/config.yaml`, its configured resources, artifacts, and every Markdown input listed there.
 4. Read the existing `design-baseline` and `design-spec` artifacts before changing them. A missing baseline is an output to create, not a reason to stop.
-5. Follow `.ai-sdlc/roles/designer/SKILL.md`.
+5. Follow `.ai-sdlc/roles/designer/workflow.md`.
 
 ## Evidence order
 

@@ -6,7 +6,7 @@ Before starting:
 
 1. Configure role inputs in `.ai-sdlc/roles/designer/config.yaml`.
 2. Set up the component query if the task needs real project components.
-3. Give your AI tool access to the project. Tell it to read the Designer Agent and Skill.
+3. Give your AI tool access to the project. Tell it to read the Designer Agent and role workflow.
 4. For Figma work, provide the real reference or target file. Make sure the current session can access Figma.
 
 Use this common task prompt in any client:
@@ -14,7 +14,7 @@ Use this common task prompt in any client:
 ```text
 Read ai-native.yaml, append /designer.md to paths.agents, and read that single
 Designer Agent. Then read .ai-sdlc/roles/designer/config.yaml and
-.ai-sdlc/roles/designer/SKILL.md.
+.ai-sdlc/roles/designer/workflow.md.
 
 Act as the Designer for this task: [describe the result you want].
 Inputs: [PRD, relevant story.md files, screenshots, or references].
