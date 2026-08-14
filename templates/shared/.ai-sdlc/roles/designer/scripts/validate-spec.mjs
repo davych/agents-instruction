@@ -45,10 +45,12 @@ if (!block) {
 }
 
 if (spec) {
+  const markdownBody = source.slice(block.index + block[0].length);
   validateSchema(spec);
   await validateComponents(spec);
   validateStates(spec);
-  validateAcceptanceCriteria(spec, source.slice(block.index + block[0].length));
+  validateAcceptanceCriteria(spec, markdownBody);
+  validateHandoff(spec, markdownBody);
 }
 
 function validateSchema(value) {
@@ -59,6 +61,9 @@ function validateSchema(value) {
     if (value[key] === undefined || value[key] === "") fail("SCHEMA", `Missing ${key}.`, key);
   }
   if (!["new", "change"].includes(value.mode)) fail("SCHEMA", "mode must be new or change.", "mode");
+  if (!["draft", "blocked", "ready-for-engineering"].includes(value.status)) {
+    fail("SCHEMA", "status must be draft, blocked, or ready-for-engineering.", "status");
+  }
   if (value.mode === "change" && !value.extends) fail("SCHEMA", "A change SPEC must declare extends.", "mode");
   if (!Array.isArray(value.source)) fail("SCHEMA", "source must be an array.", "source");
   if (value.framework !== undefined && typeof value.framework !== "string") {
@@ -70,6 +75,13 @@ function validateSchema(value) {
   if (!Array.isArray(value.components)) fail("SCHEMA", "components must be an array.", "components");
   if (!Array.isArray(value.acceptance_criteria)) {
     fail("SCHEMA", "acceptance_criteria must be an array.", "acceptance_criteria");
+  }
+  if (!Array.isArray(value.blockers)) {
+    fail("SCHEMA", "blockers must be an array.", "blockers");
+  } else if (value.status === "ready-for-engineering" && value.blockers.length) {
+    fail("SCHEMA", "ready-for-engineering requires an empty blockers array.", "blockers");
+  } else if (value.status === "blocked" && !value.blockers.length) {
+    fail("SCHEMA", "blocked requires at least one blocker.", "blockers");
   }
   if (!failures.some((item) => item.id === "SCHEMA")) pass("SCHEMA", "SPEC structure is valid.");
 }
@@ -210,6 +222,59 @@ function validateAcceptanceCriteria(value, body) {
   if (!failures.some((item) => item.id === "TRACEABILITY")) {
     pass("TRACEABILITY", "Acceptance criteria are mapped to the design body.");
   }
+}
+
+function validateHandoff(value, body) {
+  if (value.status === "draft") {
+    pass("HANDOFF", "Draft SPEC is not eligible for engineering handoff.");
+    return;
+  }
+
+  const handoffHeading = "## Handoff to Software Engineer";
+  if (!body.includes(handoffHeading)) {
+    fail("HANDOFF", `A ${value.status} SPEC needs ${handoffHeading}.`, "status");
+  }
+  if (!body.includes("**Next owner:** Software Engineer")) {
+    fail("HANDOFF", "The handoff must name Software Engineer as the next owner.", handoffHeading);
+  }
+
+  const requiredSections = value.status === "ready-for-engineering"
+    ? ["Build scope", "Behavior to preserve", "Do not infer", "Allowed design flexibility", "Validation evidence", "Open decisions and blockers"]
+    : ["Open decisions and blockers"];
+  for (const section of requiredSections) {
+    if (!body.includes(`### ${section}`)) {
+      fail("HANDOFF", `The handoff is missing ${section}.`, handoffHeading);
+    }
+  }
+
+  if (value.status === "ready-for-engineering") {
+    const criteria = Array.isArray(value.acceptance_criteria) ? value.acceptance_criteria : [];
+    if (!criteria.length) {
+      fail("HANDOFF", "ready-for-engineering requires at least one acceptance criterion.", "acceptance_criteria");
+    }
+    for (const section of ["Build scope", "Behavior to preserve", "Validation evidence"]) {
+      if (!hasMeaningfulSectionContent(body, section)) {
+        fail("HANDOFF", `${section} needs real, non-placeholder content before engineering handoff.`, `### ${section}`);
+      }
+    }
+  }
+
+  if (!failures.some((item) => item.id === "HANDOFF")) {
+    pass("HANDOFF", `${value.status} handoff structure is valid.`);
+  }
+}
+
+function hasMeaningfulSectionContent(body, heading) {
+  const marker = `### ${heading}`;
+  const start = body.indexOf(marker);
+  if (start < 0) return false;
+  const afterHeading = body.slice(start + marker.length);
+  const nextHeading = afterHeading.search(/^#{1,3}\s+/mu);
+  const content = (nextHeading < 0 ? afterHeading : afterHeading.slice(0, nextHeading))
+    .replace(/^[-*]\s*/gmu, "")
+    .trim();
+  const withoutPlaceholders = content.replace(/<[^>]+>/gu, "").trim();
+  return Boolean(withoutPlaceholders) && !/^none[.!]?$/iu.test(withoutPlaceholders);
 }
 
 const ordered = [...results, ...failures].sort((left, right) =>

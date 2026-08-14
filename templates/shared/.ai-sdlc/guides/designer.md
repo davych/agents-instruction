@@ -18,13 +18,15 @@ Designer Agent. Then read .ai-sdlc/roles/designer/config.yaml and
 
 Act as the Designer for this task: [describe the result you want].
 Inputs: [PRD, relevant story.md files, screenshots, or references].
-Expected output: [design baseline, design SPEC, Figma work, or build guidance].
+Expected output: [design baseline, design SPEC handoff, Figma work, or a non-production interaction prototype].
 
 Use the output root and file name from ai-native.yaml. The role config may only add its
-output.subdirectory. Check project components before naming APIs. For Figma work, read
+output.subdirectory. Check project components before naming component props, events, slots, or tokens. For Figma work, read
 .ai-sdlc/roles/designer/references/figma-workflow.md first. Report evidence,
 assumptions, checks, risks, and the next step.
 ```
+
+For a Software Engineer handoff, require the design SPEC to use status `ready-for-engineering` with an empty `blockers` list. The handoff must name the covered stories and acceptance criteria, required behavior, verified components and assets, responsive and accessibility constraints, validation evidence, and any design detail the developer must not infer.
 
 ## GitHub Copilot
 

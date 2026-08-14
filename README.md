@@ -82,6 +82,7 @@ Designer 的配置位于 `.ai-sdlc/roles/designer/config.yaml`：
 - `output.subdirectory` 只能决定 Designer 子目录。
 - 输出根始终来自 `ai-native.yaml`，artifact 文件名也登记在全局 YAML。
 - `component-query.mjs` 可以接入初始化时填写的项目组件清单模块，也可以初始化后直接补充。
+- `design-spec.md` 是交给 Software Engineer 的唯一功能级设计交接；只有状态为 `ready-for-engineering` 且 `blockers` 为空时才可以开始实现。
 
 默认 Designer 输出目录为 `docs/ai-native/design/`。组件查询和 SPEC 校验不绑定任何具体 UI 库或前端框架。
 

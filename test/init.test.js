@@ -41,7 +41,7 @@ test("interactive init writes one generic agent set to the default directory", a
   assert.match(config, /owner: designer\n      inputs: \[prd, user-stories\]/u);
   assert.match(config, /owner: architect\n      inputs: \[prd, user-stories, design-spec\]/u);
   assert.match(config, /outputs: \[architecture, architecture-discovery-context, architecture-options, architecture-c4-context, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs, architecture-adversarial\]/u);
-  assert.match(config, /owner: software-engineer\n      inputs: \[prd, user-stories, design-spec, architecture, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs\]/u);
+  assert.match(config, /owner: software-engineer\n      inputs: \[prd, user-stories, design-baseline, design-spec, architecture, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs\]/u);
   assert.match(config, /owner: tester\n      inputs: \[prd, user-stories, architecture, architecture-nfrs, implementation-notes\]/u);
   assert.match(config, /owner: devops\n      inputs: \[architecture, architecture-adrs, architecture-nfrs, architecture-adversarial, test-report\]/u);
   assert.match(config, /id: design-baseline, owner: designer, path: DESIGN_BASELINE\.md/u);
@@ -105,6 +105,7 @@ test("interactive init writes one generic agent set to the default directory", a
   assert.match(architectureIndex, /Acceptance evidence:[\s\S]*## Pack Index[\s\S]*## ADR Register[\s\S]*## Open Human Decisions/u);
   const designerGuidance = await readFile(path.join(target, ".ai-sdlc/guides/designer.md"), "utf8");
   assert.match(designerGuidance, /## GitHub Copilot[\s\S]*## Claude Code[\s\S]*## Codex/u);
+  assert.match(designerGuidance, /ready-for-engineering[\s\S]*empty `blockers` list/u);
   await readFile(
     path.join(target, ".ai-sdlc/roles/designer/references/figma-workflow.md"),
     "utf8"
@@ -113,6 +114,13 @@ test("interactive init writes one generic agent set to the default directory", a
   assert.match(designerConfig, /role: "\.ai-sdlc\/agents\/designer\.md"/u);
   assert.match(designerConfig, /- "docs\/context\.md"/u);
   assert.match(designerConfig, /output:\n  subdirectory: ai-native\/design\n\ncomponents:/u);
+  const designerAgent = await readFile(path.join(target, ".ai-sdlc/agents/designer.md"), "utf8");
+  assert.match(designerAgent, /## Start here[\s\S]*## Evidence order[\s\S]*## Working rules[\s\S]*## Output contract[\s\S]*## Boundaries[\s\S]*## Handoff/u);
+  assert.match(designerAgent, /Software Engineer[\s\S]*ready-for-engineering/u);
+  const designerSkill = await readFile(path.join(target, ".ai-sdlc/roles/designer/SKILL.md"), "utf8");
+  assert.match(designerSkill, /Handoff to Software Engineer[\s\S]*ready-for-engineering/u);
+  const designSpecTemplate = await readFile(path.join(target, ".ai-sdlc/templates/design-spec.md"), "utf8");
+  assert.match(designSpecTemplate, /"blockers": \[\][\s\S]*## Handoff to Software Engineer/u);
   const componentQuery = await readFile(
     path.join(target, ".ai-sdlc/roles/designer/scripts/component-query.mjs"),
     "utf8"
@@ -162,6 +170,34 @@ export async function loadComponentCatalog() {
   ], { cwd: target, encoding: "utf8" });
   assert.equal(invalidValidation.status, 1, invalidValidation.stderr);
   assert.ok(JSON.parse(invalidValidation.stdout).failures > 0);
+
+  const blockedHandoffPath = path.join(target, "blocked-handoff-design-spec.md");
+  await writeFile(
+    blockedHandoffPath,
+    validSpec().replace('"blockers": []', '"blockers": ["Needs a human decision"]'),
+    "utf8"
+  );
+  const blockedHandoffValidation = spawnSync(process.execPath, [
+    path.join(target, ".ai-sdlc/roles/designer/scripts/validate-spec.mjs"),
+    "--json",
+    blockedHandoffPath
+  ], { cwd: target, encoding: "utf8" });
+  assert.equal(blockedHandoffValidation.status, 1, blockedHandoffValidation.stderr);
+  assert.match(blockedHandoffValidation.stdout, /ready-for-engineering requires an empty blockers array/u);
+
+  const emptyHandoffPath = path.join(target, "empty-handoff-design-spec.md");
+  await writeFile(
+    emptyHandoffPath,
+    validSpec().replace(/## Handoff to Software Engineer[\s\S]*$/u, ""),
+    "utf8"
+  );
+  const emptyHandoffValidation = spawnSync(process.execPath, [
+    path.join(target, ".ai-sdlc/roles/designer/scripts/validate-spec.mjs"),
+    "--json",
+    emptyHandoffPath
+  ], { cwd: target, encoding: "utf8" });
+  assert.equal(emptyHandoffValidation.status, 1, emptyHandoffValidation.stderr);
+  assert.match(emptyHandoffValidation.stdout, /A ready-for-engineering SPEC needs ## Handoff to Software Engineer/u);
 });
 
 test("interactive init writes the same agents only to a chosen directory", async () => {
@@ -257,7 +293,7 @@ function validSpec() {
   "spec_version": "1.0",
   "title": "Generic design",
   "mode": "new",
-  "status": "draft",
+  "status": "ready-for-engineering",
   "framework": "web",
   "source": ["artifact:prd", "artifact:user-stories"],
   "screens": [{ "id": "main", "layout": "project pattern", "states": ["default"] }],
@@ -266,13 +302,44 @@ function validSpec() {
     "id": "US-001-AC-01",
     "requirement": "A clear action",
     "design_response": "The main action is identifiable"
-  }]
+  }],
+  "blockers": []
 }
 \`\`\`
 
 # Generic design
 
 US-001-AC-01 is addressed by the verified project component.
+
+## Handoff to Software Engineer
+
+The design is ready for the Software Engineer. The required behavior is covered by US-001-AC-01 and there are no blockers.
+
+**Next owner:** Software Engineer
+
+### Build scope
+
+- US-001 and US-001-AC-01.
+
+### Behavior to preserve
+
+- Keep the main action identifiable.
+
+### Do not infer
+
+- None.
+
+### Allowed design flexibility
+
+- None.
+
+### Validation evidence
+
+- The configured project component matched and the SPEC validator passed.
+
+### Open decisions and blockers
+
+- None.
 `;
 }
 

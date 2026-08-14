@@ -17,8 +17,8 @@ roles:
     responsibilities: [user problems, business rules, product scope, acceptance criteria]
   - id: designer
     name: Designer
-    mission: 把需求转成可用、可实现的体验方案。
-    responsibilities: [用户旅程, 交互状态, 视觉与无障碍]
+    mission: Turn confirmed product needs into clear interface behavior and a developer-ready design handoff.
+    responsibilities: [user journeys, interaction states, responsive behavior, accessibility, design validation]
   - id: architect
     name: Architect
     mission: Turn confirmed product and design intent into an evidence-based architecture decision pack.
@@ -47,7 +47,7 @@ workflow:
       owner: designer
       inputs: [prd, user-stories]
       outputs: [design-baseline, design-spec]
-      gate: 关键用户流程和状态已明确。
+      gate: The design spec traces the confirmed stories and acceptance criteria, is ready-for-engineering with validation evidence, and has no blockers.
     - id: architecture
       owner: architect
       inputs: [prd, user-stories, design-spec]
@@ -55,7 +55,7 @@ workflow:
       gate: Human acceptance evidence is recorded after the selected direction, C4 views, decisions, quality budgets, risks, and open human decisions are complete.
     - id: implementation
       owner: software-engineer
-      inputs: [prd, user-stories, design-spec, architecture, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs]
+      inputs: [prd, user-stories, design-baseline, design-spec, architecture, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs]
       outputs: [implementation-notes]
       gate: 实现和必要测试完成。
     - id: verification

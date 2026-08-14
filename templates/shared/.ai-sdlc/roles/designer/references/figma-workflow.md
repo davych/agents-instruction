@@ -54,7 +54,7 @@ Task: [inspect/create/revise/compare]
 Target Figma file or reference: [URL or attached frame]
 PRD, story, or SPEC: [path]
 Screens, states, and viewports: [scope]
-Expected output: [SPEC, Figma update, build guidance, or comparison]
+Expected output: [SPEC handoff, Figma update, or visual comparison]
 
 Use only components and tokens verified in this project or target file. Report missing
 access, unknown components, checks you ran, and real node IDs.

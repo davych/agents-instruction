@@ -3,9 +3,9 @@
 Use `ai-native.yaml` as the source of truth and work in this order:
 
 1. PM / BA creates a short PRD and categorized user stories.
-2. Designer reads the PRD and stories, updates the design baseline, and creates the design spec.
+2. Designer reads the PRD and stories, updates the design baseline, and prepares the validated design spec for the Software Engineer.
 3. Architect reads the product and design outputs, compares divergent options, waits for human selection, and then completes the indexed architecture pack.
-4. Software Engineer implements the confirmed work and records implementation notes.
+4. After the architecture gate passes, Software Engineer reads the design baseline and the `ready-for-engineering` design spec, implements the confirmed work, and records implementation notes.
 5. Tester checks the acceptance criteria and creates the test report.
 6. DevOps prepares release, monitoring, and rollback guidance.
 
