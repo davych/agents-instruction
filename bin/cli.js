@@ -1,232 +1,266 @@
 #!/usr/bin/env node
 
-import { existsSync, realpathSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { createInterface } from "node:readline/promises";
+import { stdin, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
-
-import YAML from "yaml";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const templateRoot = path.join(packageRoot, "templates");
+const defaultAgentsDirectory = ".ai-sdlc/agents";
 
-export async function run(args = process.argv.slice(2), cwd = process.cwd(), output = (message) => process.stdout.write(message)) {
+export async function run(args = process.argv.slice(2), context = {}) {
   const options = parseArgs(args);
+  const output = context.output ?? ((message) => stdout.write(message));
   if (options.help) {
     output(help());
     return 0;
   }
 
+  const cwd = context.cwd ?? process.cwd();
   const target = path.resolve(cwd, options.target);
-  await mkdir(target, { recursive: true });
-
-  const targetConfigPath = path.join(target, "ai-native.yaml");
-  const targetHasConfig = existsSync(targetConfigPath);
-  let configSource;
-
-  if (targetHasConfig && !options.config && (options.name || options.summary) && !options.force) {
-    throw new Error("目标项目已有 ai-native.yaml；请直接修改配置，或明确使用 --force");
+  if (lstatIfPresent(path.join(target, "ai-native.yaml"))) {
+    throw new Error("目标项目已经存在 ai-native.yaml，初始化已取消");
   }
 
-  if (options.config) {
-    if (targetHasConfig && !options.force) {
-      throw new Error("目标项目已有 ai-native.yaml；请直接修改它后重新运行 init，或使用 --force");
+  let terminal;
+  let prompt = context.prompt;
+  if (!prompt) {
+    terminal = createInterface({ input: stdin, output: stdout });
+    prompt = (question) => terminal.question(question);
+  }
+
+  try {
+    const defaultName = path.basename(target);
+    const projectName = (await ask(prompt, `项目名称（默认 ${defaultName}）：`)) || defaultName;
+    const projectSummary = await askRequired(prompt, output, "项目简介：");
+    const agentsDirectory = await askForAgentsDirectory(prompt, output);
+    const designerInputs = await askForDesignerInputs(prompt, output);
+    const componentCatalogModule = await askForComponentCatalog(prompt, output);
+    const entries = await buildEntries(
+      projectName,
+      projectSummary,
+      agentsDirectory,
+      designerInputs,
+      componentCatalogModule
+    );
+
+    const conflicts = findConflicts(target, entries);
+    if (conflicts.length) {
+      throw new Error(`目标路径存在冲突，未写入任何文件：\n${conflicts.map((item) => `- ${item}`).join("\n")}`);
     }
-    configSource = await readFile(path.resolve(cwd, options.config), "utf8");
-  } else if (targetHasConfig) {
-    configSource = await readFile(targetConfigPath, "utf8");
-  } else {
-    configSource = await readFile(path.join(templateRoot, "ai-native.yaml"), "utf8");
-  }
 
-  const config = YAML.parse(configSource);
-  if (options.name) config.project.name = options.name;
-  if (options.summary) config.project.summary = options.summary;
-  validateConfig(config);
-
-  const entries = await buildEntries(config);
-  if (!targetHasConfig || options.config || options.name || options.summary) {
-    entries.unshift({ path: "ai-native.yaml", content: YAML.stringify(config, { lineWidth: 0 }) });
-  }
-
-  let created = 0;
-  let skipped = 0;
-  for (const entry of entries) {
-    const outputPath = safeOutputPath(target, entry.path);
-    const existed = existsSync(outputPath);
-    if (existed && !options.force) {
-      skipped += 1;
-      output(`skip    ${entry.path}\n`);
-      continue;
+    for (const entry of entries) {
+      const destination = path.join(target, entry.path);
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(destination, ensureNewline(entry.content), "utf8");
     }
-    await mkdir(path.dirname(outputPath), { recursive: true });
-    await writeFile(outputPath, ensureNewline(entry.content), "utf8");
-    created += 1;
-    output(`${existed ? "write" : "create"}  ${entry.path}\n`);
-  }
 
-  output(`\n完成：写入 ${created} 个文件，跳过 ${skipped} 个已有文件。\n`);
-  return 0;
+    output(`\n初始化完成：${projectName}\n`);
+    output(`Agent 目录：${agentsDirectory}\n`);
+    output(`写入 ${entries.length} 个文件。\n`);
+    if (!componentCatalogModule) {
+      output("Designer 组件查询尚未配置，可编辑 .ai-sdlc/roles/designer/scripts/component-query.mjs。\n");
+    }
+    return 0;
+  } finally {
+    terminal?.close();
+  }
 }
 
-async function buildEntries(config) {
-  const roleMap = new Map(config.roles.map((role) => [role.id, role]));
-  const common = {
-    PROJECT_NAME: config.project.name,
-    PROJECT_SUMMARY: config.project.summary,
-    LOCALE: config.project.locale,
-    ROLE_LIST: config.roles.map((role) => `- **${role.name}** (\`${role.id}\`): ${role.mission}`).join("\n"),
-    WORKFLOW_LIST: config.workflow.phases.map((phase, index) => {
-      const outputs = phase.outputs.map((id) => `\`${id}\``).join(", ");
-      return `${index + 1}. **${phase.name}** — ${roleMap.get(phase.owner).name} → ${outputs}; gate: ${phase.gate}`;
-    }).join("\n")
-  };
-  const entries = [];
-  const addTemplate = async (outputPath, templatePath, values = {}) => {
-    const source = await readFile(path.join(templateRoot, templatePath), "utf8");
-    entries.push({ path: outputPath, content: render(source, { ...common, ...values }) });
-  };
-
-  await addTemplate("AGENTS.md", "project/AGENTS.md");
-
-  for (const baseline of config.baselines) {
-    await addTemplate(baseline.path, `baselines/${baseline.template}.md`);
+function findConflicts(target, entries) {
+  const conflicts = new Set(findPlannedConflicts(entries));
+  const targetStats = lstatIfPresent(target);
+  if (targetStats && (!targetStats.isDirectory() || targetStats.isSymbolicLink())) {
+    conflicts.add(target);
+    return [...conflicts];
   }
 
-  for (const role of config.roles) {
-    const ownedArtifacts = config.artifacts.filter((artifact) => artifact.owner === role.id);
-    const values = roleValues(role, ownedArtifacts);
-    await addTemplate(`${config.output.roles}/${role.id}.md`, "role.md", values);
+  for (const entry of entries) {
+    const destination = path.join(target, entry.path);
+    if (lstatIfPresent(destination)) conflicts.add(entry.path);
 
-    if (config.providers.githubCopilot) {
-      await addTemplate(`.github/agents/${role.id}.agent.md`, "providers/copilot-agent.md", values);
+    let parent = target;
+    for (const segment of entry.path.split("/").slice(0, -1)) {
+      parent = path.join(parent, segment);
+      const stats = lstatIfPresent(parent);
+      if (!stats) continue;
+      if (!stats.isDirectory() || stats.isSymbolicLink()) {
+        conflicts.add(`${path.relative(target, parent)}/`);
+        break;
+      }
     }
-    if (config.providers.claudeCode) {
-      await addTemplate(`.claude/agents/${role.id}.md`, "providers/claude-agent.md", values);
+  }
+  return [...conflicts];
+}
+
+function findPlannedConflicts(entries) {
+  const files = new Map();
+  const conflicts = new Set();
+
+  for (const entry of entries) {
+    const key = comparablePath(entry.path);
+    if (files.has(key)) {
+      conflicts.add(files.get(key));
+      conflicts.add(entry.path);
+    } else {
+      files.set(key, entry.path);
     }
-    if (config.providers.codex) {
-      await addTemplate(`.codex/agents/${role.id}.toml`, "providers/codex-agent.toml", {
-        ...values,
-        ROLE_ID_JSON: JSON.stringify(role.id),
-        ROLE_MISSION_JSON: JSON.stringify(role.mission),
-        CODEX_INSTRUCTIONS_JSON: JSON.stringify(`Act as ${role.name} for ${config.project.name}. Read ai-native.yaml, AGENTS.md, and ${config.output.roles}/${role.id}.md before working.`)
+  }
+
+  for (const [key, originalPath] of files) {
+    let slash = key.lastIndexOf("/");
+    while (slash >= 0) {
+      const parentKey = key.slice(0, slash);
+      if (files.has(parentKey)) {
+        conflicts.add(files.get(parentKey));
+        conflicts.add(originalPath);
+      }
+      slash = parentKey.lastIndexOf("/");
+    }
+  }
+
+  return conflicts;
+}
+
+function comparablePath(value) {
+  return value.normalize("NFC").toLowerCase();
+}
+
+function lstatIfPresent(value) {
+  try {
+    return lstatSync(value);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null;
+    throw error;
+  }
+}
+
+async function ask(prompt, question) {
+  return String((await prompt(question)) ?? "").trim();
+}
+
+async function askRequired(prompt, output, question) {
+  while (true) {
+    const answer = await ask(prompt, question);
+    if (answer) return answer;
+    output("此项不能为空。\n");
+  }
+}
+
+async function askForAgentsDirectory(prompt, output) {
+  while (true) {
+    const answer = await ask(prompt, `原始 Agent 初始化目录（默认 ${defaultAgentsDirectory}）：`);
+    const value = answer || defaultAgentsDirectory;
+    if (isSafeProjectDirectory(value)) return value;
+    output("请输入目标项目内的相对目录，不能包含 .. 或反斜杠。\n");
+  }
+}
+
+async function askForDesignerInputs(prompt, output) {
+  while (true) {
+    const answer = await ask(
+      prompt,
+      "Designer 额外输入 Markdown（项目相对路径，多个用逗号分隔，可留空）："
+    );
+    if (!answer) return [];
+    const values = answer.split(/[,，]/u).map((value) => value.trim()).filter(Boolean);
+    if (values.length && values.every((value) => isSafeProjectFile(value, ".md"))) return values;
+    output("请输入项目内的 .md 相对路径，不能包含 .. 或反斜杠。\n");
+  }
+}
+
+async function askForComponentCatalog(prompt, output) {
+  while (true) {
+    const answer = await ask(
+      prompt,
+      "Designer 组件清单模块（项目相对 .mjs 路径，可留空）："
+    );
+    if (!answer || isSafeProjectFile(answer, ".mjs")) return answer || null;
+    output("请输入项目内的 .mjs 相对路径，不能包含 .. 或反斜杠。\n");
+  }
+}
+
+async function buildEntries(
+  projectName,
+  projectSummary,
+  agentsDirectory,
+  designerInputs,
+  componentCatalogModule
+) {
+  const configTemplate = await readFile(path.join(templateRoot, "ai-native.yaml"), "utf8");
+  const config = configTemplate
+    .replaceAll("{{PROJECT_NAME}}", JSON.stringify(projectName))
+    .replaceAll("{{PROJECT_SUMMARY}}", JSON.stringify(projectSummary))
+    .replaceAll("{{AGENTS_DIRECTORY}}", JSON.stringify(agentsDirectory));
+
+  const designerInputConfig = designerInputs.length
+    ? `  markdown:\n${designerInputs.map((input) => `    - ${JSON.stringify(input)}`).join("\n")}`
+    : "  markdown: []";
+  const sharedEntries = await readTemplateDirectory(path.join(templateRoot, "shared"));
+  for (const entry of sharedEntries) {
+    entry.content = entry.content
+      .replaceAll("{{DESIGNER_INPUTS}}", designerInputConfig)
+      .replaceAll("{{DESIGNER_ROLE_PATH}}", JSON.stringify(`${agentsDirectory}/designer.md`))
+      .replaceAll(
+        JSON.stringify("__AI_SDLC_COMPONENT_CATALOG_MODULE__"),
+        JSON.stringify(componentCatalogModule)
+      );
+  }
+
+  const agentEntries = await readTemplateDirectory(path.join(templateRoot, "agents"));
+  for (const entry of agentEntries) {
+    entry.path = `${agentsDirectory}/${entry.path}`;
+  }
+
+  return [{ path: "ai-native.yaml", content: config }, ...sharedEntries, ...agentEntries];
+}
+
+function isSafeProjectDirectory(value) {
+  if (path.isAbsolute(value) || value.includes("\\")) return false;
+  return !value.split("/").some((segment) => !segment || segment === "." || segment === "..");
+}
+
+function isSafeProjectFile(value, extension) {
+  if (!value.toLowerCase().endsWith(extension) || path.isAbsolute(value) || value.includes("\\")) {
+    return false;
+  }
+  return !value.split("/").some((segment) => !segment || segment === "." || segment === "..");
+}
+
+async function readTemplateDirectory(directory, current = directory) {
+  const entries = [];
+  const directoryEntries = await readdir(current, { withFileTypes: true });
+  directoryEntries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+
+  for (const entry of directoryEntries) {
+    const source = path.join(current, entry.name);
+    if (entry.isDirectory()) {
+      entries.push(...await readTemplateDirectory(directory, source));
+    } else if (entry.isFile()) {
+      entries.push({
+        path: path.relative(directory, source).split(path.sep).join("/"),
+        content: await readFile(source, "utf8")
       });
     }
   }
-
-  for (const artifact of config.artifacts) {
-    const owner = roleMap.get(artifact.owner);
-    await addTemplate(artifact.path, "artifact.md", {
-      ARTIFACT_ID: artifact.id,
-      ARTIFACT_TITLE: artifact.title,
-      ROLE_ID: owner.id,
-      ROLE_NAME: owner.name
-    });
-  }
-
-  if (config.providers.githubCopilot) {
-    await addTemplate(".github/copilot-instructions.md", "project/copilot-instructions.md");
-  }
-  if (config.providers.claudeCode) {
-    await addTemplate("CLAUDE.md", "project/CLAUDE.md");
-  }
-
   return entries;
 }
 
-function roleValues(role, artifacts) {
-  return {
-    ROLE_ID: role.id,
-    ROLE_NAME: role.name,
-    ROLE_MISSION: role.mission,
-    ROLE_MISSION_JSON: JSON.stringify(role.mission),
-    RESPONSIBILITIES: role.responsibilities.map((item) => `- ${item}`).join("\n"),
-    DELIVERABLES: artifacts.length
-      ? artifacts.map((artifact) => `- \`${artifact.id}\`: \`${artifact.path}\``).join("\n")
-      : "- 暂无"
-  };
-}
-
-function validateConfig(config) {
-  if (config?.version !== 1) throw new Error("ai-native.yaml 仅支持 version: 1");
-  if (!config?.project?.name || !config?.project?.summary) throw new Error("project.name 和 project.summary 必填");
-  if (!config?.providers || !config?.output?.roles) throw new Error("providers 和 output.roles 必填");
-  for (const key of ["roles", "artifacts", "baselines"]) {
-    if (!Array.isArray(config[key])) throw new Error(`${key} 必须是数组`);
-  }
-  if (!Array.isArray(config?.workflow?.phases)) throw new Error("workflow.phases 必须是数组");
-
-  const requiredRoles = ["pm-ba", "designer", "architect", "software-engineer", "tester", "devops"];
-  const roleIds = new Set(config.roles.map((role) => role.id));
-  const artifactIds = new Set(config.artifacts.map((artifact) => artifact.id));
-  for (const roleId of requiredRoles) {
-    if (!roleIds.has(roleId)) throw new Error(`缺少角色: ${roleId}`);
-  }
-  for (const role of config.roles) {
-    if (!/^[a-z]+(?:-[a-z]+)*$/u.test(role.id)) throw new Error(`角色 ID 不合法: ${role.id}`);
-    if (!role.name || !role.mission || !Array.isArray(role.responsibilities)) throw new Error(`角色配置不完整: ${role.id}`);
-  }
-  for (const artifact of config.artifacts) {
-    if (!roleIds.has(artifact.owner)) throw new Error(`产物 ${artifact.id} 的 owner 不存在`);
-    assertRelativePath(artifact.path);
-  }
-  for (const baseline of config.baselines) {
-    if (!['project-charter', 'workflow', 'roles'].includes(baseline.template)) throw new Error(`未知 baseline 模板: ${baseline.template}`);
-    assertRelativePath(baseline.path);
-  }
-  for (const phase of config.workflow.phases) {
-    if (!roleIds.has(phase.owner)) throw new Error(`阶段 ${phase.id} 的 owner 不存在`);
-    for (const output of phase.outputs) {
-      if (!artifactIds.has(output)) throw new Error(`阶段 ${phase.id} 引用了未知产物: ${output}`);
-    }
-  }
-  assertRelativePath(config.output.roles);
-}
-
 function parseArgs(args) {
-  const options = { target: ".", config: null, name: null, summary: null, force: false, help: false };
-  const rest = [...args];
-  const command = rest[0] && !rest[0].startsWith("-") ? rest.shift() : "init";
-  if (["help", "--help", "-h"].includes(command)) return { ...options, help: true };
-  if (command !== "init") throw new Error(`仅支持 init，收到: ${command}`);
-
-  let targetSet = false;
-  while (rest.length) {
-    const value = rest.shift();
-    if (value === "--help" || value === "-h") options.help = true;
-    else if (value === "--force") options.force = true;
-    else if (["--config", "--name", "--summary"].includes(value)) {
-      const next = rest.shift();
-      if (!next) throw new Error(`${value} 需要一个值`);
-      options[value.slice(2)] = next;
-    } else if (value.startsWith("-")) throw new Error(`未知选项: ${value}`);
-    else if (!targetSet) {
-      options.target = value;
-      targetSet = true;
-    } else throw new Error(`只允许一个目标目录: ${value}`);
+  if (!args.length) return { target: ".", help: false };
+  if (args.length === 1 && ["help", "--help", "-h"].includes(args[0])) {
+    return { target: ".", help: true };
   }
-  return options;
-}
-
-function render(source, values) {
-  return source.replace(/\{\{([A-Z0-9_]+)\}\}/gu, (match, key) => {
-    if (!(key in values)) throw new Error(`模板变量缺失: ${key}`);
-    return String(values[key]);
-  });
-}
-
-function safeOutputPath(root, relativePath) {
-  assertRelativePath(relativePath);
-  return path.join(root, relativePath);
-}
-
-function assertRelativePath(value) {
-  if (typeof value !== "string" || !value || path.isAbsolute(value) || value.includes("\\")) {
-    throw new Error(`输出必须是 POSIX 相对路径: ${value}`);
+  if (args[0] !== "init") throw new Error(`仅支持 init，收到：${args[0]}`);
+  if (args.length === 2 && ["--help", "-h"].includes(args[1])) {
+    return { target: ".", help: true };
   }
-  if (value.split("/").some((part) => !part || part === "." || part === "..")) {
-    throw new Error(`输出路径不安全: ${value}`);
-  }
+  if (args.length > 2) throw new Error("用法：create-ai-native-sdlc init [target]");
+  if (args[1]?.startsWith("-")) throw new Error(`未知选项：${args[1]}`);
+  return { target: args[1] ?? ".", help: false };
 }
 
 function ensureNewline(value) {
@@ -234,10 +268,11 @@ function ensureNewline(value) {
 }
 
 function help() {
-  return `create-ai-native-sdlc\n\n用法:\n  create-ai-native-sdlc init [target] [options]\n\n选项:\n  --config <yaml>   从指定 YAML 初始化\n  --name <name>     覆盖项目名\n  --summary <text>  覆盖项目简介\n  --force           覆盖目标中的同名文件\n  -h, --help        显示帮助\n`;
+  return `create-ai-native-sdlc\n\n用法：\n  create-ai-native-sdlc init [target]\n\nCLI 会询问项目名称、项目简介、原始 Agent 初始化目录，以及可选的 Designer 输入和组件清单模块。\n`;
 }
 
-const isDirect = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+const entryPath = process.argv[1];
+const isDirect = entryPath && existsSync(entryPath) && realpathSync(entryPath) === fileURLToPath(import.meta.url);
 if (isDirect) {
   run().then((code) => {
     process.exitCode = code;

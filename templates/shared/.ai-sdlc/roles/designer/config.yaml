@@ -1,0 +1,18 @@
+version: 1
+
+# Role-owned Markdown inputs. These paths may be changed per project.
+resources:
+  role: {{DESIGNER_ROLE_PATH}}
+  personal: .ai-sdlc/roles/designer/personal.md
+
+inputs:
+  artifacts: [product-brief, requirements]
+{{DESIGNER_INPUTS}}
+
+# The output root is ai-native.yaml paths.outputs. This role may only name its child directory.
+output:
+  subdirectory: ai-native/design
+
+components:
+  query: .ai-sdlc/roles/designer/scripts/component-query.mjs
+  validate: .ai-sdlc/roles/designer/scripts/validate-spec.mjs
