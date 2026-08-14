@@ -1,21 +1,25 @@
-name: CI
+name: Publish to npm
 
 on:
   push:
-  pull_request:
+    tags:
+      - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: 20
-          cache: npm
+          registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm test
-      - run: npm pack --dry-run
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

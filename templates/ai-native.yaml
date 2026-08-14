@@ -1,0 +1,97 @@
+# AI-native 工作流唯一配置入口。
+version: 1
+
+project:
+  name: My Product
+  summary: 一句话说明产品解决的问题
+  locale: zh-CN
+
+providers:
+  githubCopilot: true
+  claudeCode: true
+  codex: true
+
+output:
+  roles: .ai-native/roles
+
+roles:
+  - id: pm-ba
+    name: PM / BA
+    mission: 把业务目标转成清晰、可验证的需求。
+    responsibilities: [产品目标, 业务分析, 需求, 验收标准]
+  - id: designer
+    name: Designer
+    mission: 把需求转成可用、可实现的体验方案。
+    responsibilities: [用户旅程, 交互状态, 视觉与无障碍]
+  - id: architect
+    name: Architect
+    mission: 定义系统边界、接口和关键技术决策。
+    responsibilities: [架构方案, 数据与接口, 安全与质量属性]
+  - id: software-engineer
+    name: Software Engineer
+    mission: 实现功能并提供可验证的工程结果。
+    responsibilities: [实现, 自动化测试, 代码质量]
+  - id: tester
+    name: Tester
+    mission: 验证需求、风险和回归范围。
+    responsibilities: [测试设计, 缺陷证据, 发布质量结论]
+  - id: devops
+    name: DevOps
+    mission: 建立可重复、可观察、可回滚的交付路径。
+    responsibilities: [CI/CD, 部署, 监控, 回滚]
+
+workflow:
+  phases:
+    - id: discovery
+      name: Discovery
+      owner: pm-ba
+      inputs: []
+      outputs: [product-brief, requirements]
+      gate: 产品问题、范围和验收标准已明确。
+    - id: design
+      name: Design
+      owner: designer
+      inputs: [requirements]
+      outputs: [design-spec]
+      gate: 关键用户流程和状态已明确。
+    - id: architecture
+      name: Architecture
+      owner: architect
+      inputs: [requirements, design-spec]
+      outputs: [architecture]
+      gate: 技术边界、风险和关键决策已明确。
+    - id: implementation
+      name: Implementation
+      owner: software-engineer
+      inputs: [requirements, design-spec, architecture]
+      outputs: [implementation-notes]
+      gate: 实现和必要测试完成。
+    - id: verification
+      name: Verification
+      owner: tester
+      inputs: [requirements, implementation-notes]
+      outputs: [test-report]
+      gate: 验收标准和主要风险已有验证证据。
+    - id: release
+      name: Release
+      owner: devops
+      inputs: [architecture, test-report]
+      outputs: [release-runbook]
+      gate: 发布、监控和回滚步骤已准备。
+
+baselines:
+  - template: project-charter
+    path: .ai-native/baseline/project-charter.md
+  - template: workflow
+    path: .ai-native/baseline/workflow.md
+  - template: roles
+    path: .ai-native/baseline/roles.md
+
+artifacts:
+  - { id: product-brief, title: Product Brief, owner: pm-ba, path: docs/ai-native/product/product-brief.md }
+  - { id: requirements, title: Requirements, owner: pm-ba, path: docs/ai-native/product/requirements.md }
+  - { id: design-spec, title: Design Specification, owner: designer, path: docs/ai-native/design/design-spec.md }
+  - { id: architecture, title: Architecture, owner: architect, path: docs/ai-native/architecture/architecture.md }
+  - { id: implementation-notes, title: Implementation Notes, owner: software-engineer, path: docs/ai-native/engineering/implementation-notes.md }
+  - { id: test-report, title: Test Report, owner: tester, path: docs/ai-native/testing/test-report.md }
+  - { id: release-runbook, title: Release Runbook, owner: devops, path: docs/ai-native/operations/release-runbook.md }

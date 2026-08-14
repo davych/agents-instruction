@@ -1,24 +1,19 @@
 {
   "name": "create-ai-native-sdlc",
   "version": "0.1.0",
-  "description": "YAML-driven AI-native SDLC scaffold for Codex, Claude Code, and GitHub Copilot.",
+  "description": "Copy a YAML-driven AI-native workflow into any project.",
   "type": "module",
   "bin": {
-    "create-ai-native-sdlc": "bin/cli.js",
-    "ai-native-sdlc": "bin/cli.js"
+    "create-ai-native-sdlc": "bin/cli.js"
   },
   "files": [
     "bin",
-    "src",
-    "schemas",
     "templates",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test",
-    "test:pack": "node scripts/pack-smoke.mjs",
-    "check": "node --check bin/cli.js && node --check src/cli.js && node --check src/engine.js && node --check src/blueprint.js"
+    "test": "node --test"
   },
   "keywords": [
     "ai-native",
@@ -45,7 +40,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "ajv": "^8.20.0",
     "yaml": "^2.9.0"
   }
 }
