@@ -2,7 +2,7 @@
 
 A lightweight interactive initializer for an AI-native software delivery workflow.
 
-It copies one canonical Markdown Agent for each role, one YAML workflow, and reusable Markdown templates into a target project. It is designed for solo builders and small teams that want clear role boundaries and handoffs without adding an orchestration platform.
+It keeps one canonical Markdown source for each role, then installs one client-native Agent set in a target project. It is designed for solo builders and small teams that want clear role boundaries and handoffs without adding an orchestration platform.
 
 ## Project goal
 
@@ -15,7 +15,7 @@ The project helps one person work through a complete product delivery cycle with
 - Tester verifies acceptance criteria and important risks.
 - DevOps prepares a repeatable, observable, and reversible release path.
 
-The workflow is controlled by `ai-native.yaml`. Markdown files remain the working format. The initializer copies the files; it does not run the Agents or approve workflow gates for you.
+The workflow is controlled by `ai-native.yaml`. Markdown remains the source format for role content and working documents. The initializer installs the selected client's native Agent files; it does not run the Agents or approve workflow gates for you.
 
 ## Core model
 
@@ -49,7 +49,7 @@ After the first npm release, the command will be:
 npx create-ai-native-sdlc@latest init .
 ```
 
-The CLI asks for the project name, project summary, one Agent directory, optional Designer Markdown inputs, and an optional component catalog module. It does not take the project name or summary as command flags.
+The CLI asks for the project name, project summary, target AI client, optional Designer Markdown inputs, and an optional component catalog module. The client choice decides the Agent directory and file format. It does not take the project name or summary as command flags.
 
 See [Getting Started](guidelines/getting-started/README.md) for the full setup and first-run guide.
 
@@ -58,17 +58,23 @@ See [Getting Started](guidelines/getting-started/README.md) for the full setup a
 ```text
 ai-native.yaml
 .ai-sdlc/
-  agents/       # one canonical Markdown file per role
   roles/        # optional role workflows, configs, rules, and scripts
   workflows/    # the shared execution order and artifact rules
   templates/    # templates for AI-produced artifacts
   guides/       # initialized usage guidance
   tasks/        # task workspace
+
+# Exactly one native Agent set is installed:
+.github/agents/*.agent.md   # GitHub Copilot
+.claude/agents/*.md         # Claude Code
+.codex/agents/*.toml        # Codex
 ```
+
+The repository keeps only six canonical Markdown Agent sources. Initialization asks for GitHub Copilot, Claude Code, or Codex and installs only that client's files. Codex TOML files are generated from the same Markdown sources during initialization; they are not a second source to maintain.
 
 AI-produced artifacts are written under `docs/` by default. Change `paths.outputs` in `ai-native.yaml` to use another output root.
 
-Each Agent defines one role's identity, rules, boundaries, and handoff. PM / BA, Designer, and Architect also reference an ordinary `workflow.md` file for their longer step-by-step procedure. These files are not client-specific or native Skill adapters.
+Each Agent defines one role's identity, rules, boundaries, and handoff. PM / BA, Designer, and Architect also reference an ordinary `workflow.md` file for their longer step-by-step procedure. Role workflows under `.ai-sdlc/roles/` are shared supporting documents, not client-native Skills or duplicate Agent definitions.
 
 ## Documentation
 

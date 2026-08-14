@@ -15,13 +15,13 @@ test.after(async () => {
   await Promise.all(temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-test("interactive init writes one generic agent set to the default directory", async () => {
+test("interactive init installs one native GitHub Copilot agent set", async () => {
   const target = await temporaryDirectory();
   const questions = [];
   const prompt = answers([
     "Solo Product",
     "A small product",
-    "",
+    "1",
     "docs/context.md, docs/brand.md",
     "tools/component-catalog.mjs"
   ], questions);
@@ -32,7 +32,8 @@ test("interactive init writes one generic agent set to the default directory", a
   const config = await readFile(path.join(target, "ai-native.yaml"), "utf8");
   assert.match(config, /name: "Solo Product"/u);
   assert.match(config, /summary: "A small product"/u);
-  assert.match(config, /agents: "\.ai-sdlc\/agents"/u);
+  assert.match(config, /agent:\n  client: "github-copilot"/u);
+  assert.match(config, /agents: "\.github\/agents"/u);
   assert.doesNotMatch(config, /clients:/u);
   assert.match(config, /outputs: docs/u);
   assert.match(config, /id: prd, owner: pm-ba, path: prd\.md/u);
@@ -50,12 +51,22 @@ test("interactive init writes one generic agent set to the default directory", a
   assert.match(config, /id: architecture-adrs, owner: architect, path: 04-adrs/u);
 
   for (const roleId of roleIds) {
-    await readFile(path.join(target, `.ai-sdlc/agents/${roleId}.md`), "utf8");
+    const agent = await readFile(path.join(target, `.github/agents/${roleId}.agent.md`), "utf8");
+    assert.match(agent, new RegExp(`^---\\nname: "${roleId}"\\ndescription: `, "u"));
+    assert.match(agent, new RegExp(`\\n---\\n\\n# `, "u"));
+    const canonicalAgent = await readFile(
+      path.join(process.cwd(), `templates/agents/${roleId}.md`),
+      "utf8"
+    );
+    assert.ok(agent.endsWith(`${canonicalAgent.trim()}\n`));
   }
   assert.deepEqual(
-    (await readdir(path.join(target, ".ai-sdlc/agents"))).sort(),
-    roleIds.map((roleId) => `${roleId}.md`).sort()
+    (await readdir(path.join(target, ".github/agents"))).sort(),
+    roleIds.map((roleId) => `${roleId}.agent.md`).sort()
   );
+  assert.equal(existsSync(path.join(target, ".ai-sdlc/agents")), false);
+  assert.equal(existsSync(path.join(target, ".claude/agents")), false);
+  assert.equal(existsSync(path.join(target, ".codex/agents")), false);
   const workflow = await readFile(path.join(target, ".ai-sdlc/workflows/default.md"), "utf8");
   assert.match(workflow, /artifact owner/u);
   assert.match(workflow, /\.ai-sdlc\/roles\/<owner>\/config\.yaml/u);
@@ -86,7 +97,7 @@ test("interactive init writes one generic agent set to the default directory", a
     ]
   );
   const pmBaConfig = await readFile(path.join(target, ".ai-sdlc/roles/pm-ba/config.yaml"), "utf8");
-  assert.match(pmBaConfig, /role: "\.ai-sdlc\/agents\/pm-ba\.md"/u);
+  assert.match(pmBaConfig, /role: "\.github\/agents\/pm-ba\.agent\.md"/u);
   assert.match(pmBaConfig, /inputs:\n  markdown: \[\]/u);
   assert.match(pmBaConfig, /output:\n  subdirectory: ai-native\/product/u);
   const pmBaWorkflow = await readFile(path.join(target, ".ai-sdlc/roles/pm-ba/workflow.md"), "utf8");
@@ -94,7 +105,7 @@ test("interactive init writes one generic agent set to the default directory", a
   assert.doesNotMatch(pmBaWorkflow, /^---/u);
   assert.equal(existsSync(path.join(target, ".ai-sdlc/roles/pm-ba/SKILL.md")), false);
   const architectConfig = await readFile(path.join(target, ".ai-sdlc/roles/architect/config.yaml"), "utf8");
-  assert.match(architectConfig, /role: "\.ai-sdlc\/agents\/architect\.md"/u);
+  assert.match(architectConfig, /role: "\.github\/agents\/architect\.agent\.md"/u);
   assert.match(architectConfig, /artifacts: \[prd, user-stories, design-spec\]/u);
   assert.match(architectConfig, /domain: null[\s\S]*regulations: \[\][\s\S]*confirmed_peak_load: null/u);
   assert.match(architectConfig, /output:\n  subdirectory: ai-native\/architecture/u);
@@ -115,10 +126,10 @@ test("interactive init writes one generic agent set to the default directory", a
     "utf8"
   );
   const designerConfig = await readFile(path.join(target, ".ai-sdlc/roles/designer/config.yaml"), "utf8");
-  assert.match(designerConfig, /role: "\.ai-sdlc\/agents\/designer\.md"/u);
+  assert.match(designerConfig, /role: "\.github\/agents\/designer\.agent\.md"/u);
   assert.match(designerConfig, /- "docs\/context\.md"/u);
   assert.match(designerConfig, /output:\n  subdirectory: ai-native\/design\n\ncomponents:/u);
-  const designerAgent = await readFile(path.join(target, ".ai-sdlc/agents/designer.md"), "utf8");
+  const designerAgent = await readFile(path.join(target, ".github/agents/designer.agent.md"), "utf8");
   assert.match(designerAgent, /## Start here[\s\S]*## Evidence order[\s\S]*## Working rules[\s\S]*## Output contract[\s\S]*## Boundaries[\s\S]*## Handoff/u);
   assert.match(designerAgent, /Software Engineer[\s\S]*ready-for-engineering/u);
   const designerWorkflow = await readFile(path.join(target, ".ai-sdlc/roles/designer/workflow.md"), "utf8");
@@ -206,44 +217,90 @@ export async function loadComponentCatalog() {
   assert.match(emptyHandoffValidation.stdout, /A ready-for-engineering SPEC needs ## Handoff to Software Engineer/u);
 });
 
-test("interactive init writes the same agents only to a chosen directory", async () => {
-  const target = await temporaryDirectory();
-  const prompt = answers(["Custom Product", "Custom agent directory", "tooling/agents", "", ""]);
+test("interactive init installs only the selected Claude Code or Codex agents", async () => {
+  const cases = [
+    {
+      answer: "2",
+      directory: ".claude/agents",
+      fileName: (roleId) => `${roleId}.md`,
+      absent: [".github/agents", ".codex/agents"],
+      client: "claude-code",
+      rolePattern: /role: "\.claude\/agents\/designer\.md"/u
+    },
+    {
+      answer: "3",
+      directory: ".codex/agents",
+      fileName: (roleId) => `${roleId}.toml`,
+      absent: [".github/agents", ".claude/agents"],
+      client: "codex",
+      rolePattern: /role: "\.codex\/agents\/designer\.toml"/u
+    }
+  ];
 
-  assert.equal(await run(["init", target], { prompt, output: () => {} }), 0);
+  for (const clientCase of cases) {
+    const target = await temporaryDirectory();
+    const prompt = answers([
+      "Client Product",
+      "Selected native client",
+      ...(clientCase.answer === "2" ? ["unknown-client"] : []),
+      clientCase.answer,
+      "",
+      ""
+    ]);
+    assert.equal(await run(["init", target], { prompt, output: () => {} }), 0);
 
-  for (const roleId of roleIds) {
-    await readFile(path.join(target, `tooling/agents/${roleId}.md`), "utf8");
+    assert.deepEqual(
+      (await readdir(path.join(target, clientCase.directory))).sort(),
+      roleIds.map(clientCase.fileName).sort()
+    );
+    for (const absentDirectory of clientCase.absent) {
+      assert.equal(existsSync(path.join(target, absentDirectory)), false);
+    }
+    assert.equal(existsSync(path.join(target, ".ai-sdlc/agents")), false);
+    assert.equal(existsSync(path.join(target, ".ai-sdlc/roles/designer/config.yaml")), true);
+    assert.equal(existsSync(path.join(target, ".ai-sdlc/workflows/default.md")), true);
+    const config = await readFile(path.join(target, "ai-native.yaml"), "utf8");
+    assert.match(config, new RegExp(`client: "${clientCase.client}"`, "u"));
+    assert.match(
+      config,
+      new RegExp(`agents: "${clientCase.directory.replace(".", "\\.").replaceAll("/", "\\/")}"`, "u")
+    );
+    assert.match(
+      await readFile(path.join(target, ".ai-sdlc/roles/designer/config.yaml"), "utf8"),
+      clientCase.rolePattern
+    );
+    if (clientCase.answer === "2") {
+      const claudeAgent = await readFile(path.join(target, ".claude/agents/pm-ba.md"), "utf8");
+      assert.ok(claudeAgent.endsWith(
+        (await readFile(path.join(process.cwd(), "templates/agents/pm-ba.md"), "utf8")).trim() + "\n"
+      ));
+    }
   }
-  assert.equal(existsSync(path.join(target, ".ai-sdlc/agents")), false);
-  assert.equal(existsSync(path.join(target, ".ai-sdlc/roles/designer/config.yaml")), true);
-  assert.equal(existsSync(path.join(target, ".ai-sdlc/workflows/default.md")), true);
-  assert.match(await readFile(path.join(target, "ai-native.yaml"), "utf8"), /agents: "tooling\/agents"/u);
-  assert.match(
-    await readFile(path.join(target, ".ai-sdlc/roles/designer/config.yaml"), "utf8"),
-    /role: "tooling\/agents\/designer\.md"/u
-  );
-  assert.match(
-    await readFile(path.join(target, ".ai-sdlc/roles/pm-ba/config.yaml"), "utf8"),
-    /role: "tooling\/agents\/pm-ba\.md"/u
-  );
-  assert.match(
-    await readFile(path.join(target, ".ai-sdlc/roles/architect/config.yaml"), "utf8"),
-    /role: "tooling\/agents\/architect\.md"/u
-  );
+
+  const codexTarget = temporaryDirectories.at(-1);
+  for (const roleId of roleIds) {
+    const codexAgent = await readFile(path.join(codexTarget, `.codex/agents/${roleId}.toml`), "utf8");
+    assert.match(codexAgent, new RegExp(`^name = "${roleId}"\\ndescription = `, "u"));
+    const instructions = codexAgent.match(/^developer_instructions = (.+)$/mu);
+    assert.ok(instructions);
+    assert.equal(
+      JSON.parse(instructions[1]),
+      (await readFile(path.join(process.cwd(), `templates/agents/${roleId}.md`), "utf8")).trim()
+    );
+  }
 });
 
 test("init rejects unsafe output paths before writing anything", async () => {
   const target = await temporaryDirectory();
   const outside = await temporaryDirectory();
-  await symlink(outside, path.join(target, ".external-link"));
+  await symlink(outside, path.join(target, ".github"));
 
   await assert.rejects(
     run(["init", target], {
-      prompt: answers(["Safe Product", "Do not escape the project", ".external-link/agents", "", ""]),
+      prompt: answers(["Safe Product", "Do not escape the project", "1", "", ""]),
       output: () => {}
     }),
-    /\.external-link\//u
+    /\.github\//u
   );
 
   assert.equal(existsSync(path.join(target, "ai-native.yaml")), false);
@@ -252,34 +309,29 @@ test("init rejects unsafe output paths before writing anything", async () => {
 
   const danglingTarget = await temporaryDirectory();
   const danglingOutside = await temporaryDirectory();
-  const danglingAgents = path.join(danglingTarget, "custom-agents");
+  const danglingAgents = path.join(danglingTarget, ".claude/agents");
   const danglingOutsideFile = path.join(danglingOutside, "pm-ba.md");
-  await mkdir(danglingAgents);
+  await mkdir(danglingAgents, { recursive: true });
   await symlink(danglingOutsideFile, path.join(danglingAgents, "pm-ba.md"));
 
   await assert.rejects(
     run(["init", danglingTarget], {
-      prompt: answers(["Safe Product", "Reject dangling links", "custom-agents", "", ""]),
+      prompt: answers(["Safe Product", "Reject dangling links", "2", "", ""]),
       output: () => {}
     }),
-    /custom-agents\/pm-ba\.md/u
+    /\.claude\/agents\/pm-ba\.md/u
   );
   assert.equal(existsSync(danglingOutsideFile), false);
   assert.equal(existsSync(path.join(danglingTarget, "ai-native.yaml")), false);
 
   const collisionTarget = await temporaryDirectory();
+  await writeFile(path.join(collisionTarget, ".codex"), "not a directory", "utf8");
   await assert.rejects(
     run(["init", collisionTarget], {
-      prompt: answers([
-        "Safe Product",
-        "Reject planned collisions",
-        ".ai-sdlc/roles/designer/config.yaml",
-        "",
-        ""
-      ]),
+      prompt: answers(["Safe Product", "Reject path collisions", "3", "", ""]),
       output: () => {}
     }),
-    /\.ai-sdlc\/roles\/designer\/config\.yaml/u
+    /\.codex\//u
   );
   assert.equal(existsSync(path.join(collisionTarget, "ai-native.yaml")), false);
   assert.equal(existsSync(path.join(collisionTarget, ".ai-sdlc")), false);

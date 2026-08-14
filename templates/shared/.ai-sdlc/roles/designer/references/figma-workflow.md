@@ -46,8 +46,8 @@ Never make up a Figma URL. Never say you changed a file unless you checked the c
 ## Request template
 
 ```text
-Act as the project Designer. Read ai-native.yaml, append /designer.md to paths.agents,
-and read that Agent. Then follow .ai-sdlc/roles/designer/workflow.md and
+Use the project Designer Agent. Read ai-native.yaml, then follow
+.ai-sdlc/roles/designer/workflow.md and
 .ai-sdlc/roles/designer/references/figma-workflow.md.
 
 Task: [inspect/create/revise/compare]

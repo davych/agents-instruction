@@ -4,12 +4,13 @@
 
 ## Global YAML
 
-The root `ai-native.yaml` has five main sections:
+The root `ai-native.yaml` has six main sections:
 
 | Section | Purpose |
 |---|---|
 | `project` | Project name, short summary, and content locale |
-| `paths` | One canonical Agent directory and one global AI-output root |
+| `agent` | The AI client selected during initialization |
+| `paths` | The selected client's native Agent directory and the global AI-output root |
 | `roles` | Role IDs, missions, and responsibilities |
 | `workflow.phases` | Phase owners, declared inputs, outputs, and completion gates |
 | `artifacts` | Stable artifact IDs, owners, and paths |
@@ -17,14 +18,17 @@ The root `ai-native.yaml` has five main sections:
 Example:
 
 ```yaml
+agent:
+  client: "codex"
+
 paths:
-  agents: ".ai-sdlc/agents"
+  agents: ".codex/agents"
   outputs: docs
 ```
 
-`paths.agents` tells an AI tool where the one canonical Agent set was initialized. `paths.outputs` controls the root for later AI-produced artifacts.
+`agent.client` records `github-copilot`, `claude-code`, or `codex`. `paths.agents` records the native Agent directory selected by the initializer. `paths.outputs` controls the root for later AI-produced artifacts.
 
-Changing `paths.agents` after initialization does not move files. Move the Agent directory yourself or run the initializer with the desired directory in a new target project.
+Do not move the installed Agent files or edit `agent.client` or `paths.agents` by hand. Native discovery depends on the selected client's project directory. Run the initializer in a new target project to choose another client.
 
 ## Artifact path resolution
 

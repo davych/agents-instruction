@@ -6,6 +6,9 @@ project:
   summary: {{PROJECT_SUMMARY}}
   locale: zh-CN
 
+agent:
+  client: {{AI_CLIENT}}
+
 paths:
   agents: {{AGENTS_DIRECTORY}}
   outputs: docs

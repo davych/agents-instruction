@@ -9,7 +9,30 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const templateRoot = path.join(packageRoot, "templates");
-const defaultAgentsDirectory = ".ai-sdlc/agents";
+
+const clients = {
+  copilot: {
+    id: "github-copilot",
+    label: "GitHub Copilot",
+    directory: ".github/agents",
+    fileName: (roleId) => `${roleId}.agent.md`,
+    render: renderMarkdownAgent
+  },
+  claude: {
+    id: "claude-code",
+    label: "Claude Code",
+    directory: ".claude/agents",
+    fileName: (roleId) => `${roleId}.md`,
+    render: renderMarkdownAgent
+  },
+  codex: {
+    id: "codex",
+    label: "Codex",
+    directory: ".codex/agents",
+    fileName: (roleId) => `${roleId}.toml`,
+    render: renderCodexAgent
+  }
+};
 
 export async function run(args = process.argv.slice(2), context = {}) {
   const options = parseArgs(args);
@@ -36,13 +59,14 @@ export async function run(args = process.argv.slice(2), context = {}) {
     const defaultName = path.basename(target);
     const projectName = (await ask(prompt, `项目名称（默认 ${defaultName}）：`)) || defaultName;
     const projectSummary = await askRequired(prompt, output, "项目简介：");
-    const agentsDirectory = await askForAgentsDirectory(prompt, output);
+    const clientId = await askForClient(prompt, output);
+    const client = clients[clientId];
     const designerInputs = await askForDesignerInputs(prompt, output);
     const componentCatalogModule = await askForComponentCatalog(prompt, output);
     const entries = await buildEntries(
       projectName,
       projectSummary,
-      agentsDirectory,
+      client,
       designerInputs,
       componentCatalogModule
     );
@@ -59,7 +83,8 @@ export async function run(args = process.argv.slice(2), context = {}) {
     }
 
     output(`\n初始化完成：${projectName}\n`);
-    output(`Agent 目录：${agentsDirectory}\n`);
+    output(`AI 客户端：${client.label}\n`);
+    output(`Agent 目录：${client.directory}\n`);
     output(`写入 ${entries.length} 个文件。\n`);
     if (!componentCatalogModule) {
       output("Designer 组件查询尚未配置，可编辑 .ai-sdlc/roles/designer/scripts/component-query.mjs。\n");
@@ -150,12 +175,31 @@ async function askRequired(prompt, output, question) {
   }
 }
 
-async function askForAgentsDirectory(prompt, output) {
+async function askForClient(prompt, output) {
+  const question = [
+    "选择 AI 客户端：",
+    "  1. GitHub Copilot",
+    "  2. Claude Code",
+    "  3. Codex",
+    "请输入 1、2 或 3："
+  ].join("\n");
+
   while (true) {
-    const answer = await ask(prompt, `原始 Agent 初始化目录（默认 ${defaultAgentsDirectory}）：`);
-    const value = answer || defaultAgentsDirectory;
-    if (isSafeProjectDirectory(value)) return value;
-    output("请输入目标项目内的相对目录，不能包含 .. 或反斜杠。\n");
+    const answer = (await ask(prompt, question)).toLowerCase();
+    const aliases = {
+      "1": "copilot",
+      copilot: "copilot",
+      "github copilot": "copilot",
+      "github-copilot": "copilot",
+      "2": "claude",
+      claude: "claude",
+      "claude code": "claude",
+      "claude-code": "claude",
+      "3": "codex",
+      codex: "codex"
+    };
+    if (aliases[answer]) return aliases[answer];
+    output("请选择 1、2 或 3。\n");
   }
 }
 
@@ -186,15 +230,20 @@ async function askForComponentCatalog(prompt, output) {
 async function buildEntries(
   projectName,
   projectSummary,
-  agentsDirectory,
+  client,
   designerInputs,
   componentCatalogModule
 ) {
+  const rolePaths = Object.fromEntries(
+    ["pm-ba", "designer", "architect", "software-engineer", "tester", "devops"]
+      .map((roleId) => [roleId, `${client.directory}/${client.fileName(roleId)}`])
+  );
   const configTemplate = await readFile(path.join(templateRoot, "ai-native.yaml"), "utf8");
   const config = configTemplate
     .replaceAll("{{PROJECT_NAME}}", JSON.stringify(projectName))
     .replaceAll("{{PROJECT_SUMMARY}}", JSON.stringify(projectSummary))
-    .replaceAll("{{AGENTS_DIRECTORY}}", JSON.stringify(agentsDirectory));
+    .replaceAll("{{AI_CLIENT}}", JSON.stringify(client.id))
+    .replaceAll("{{AGENTS_DIRECTORY}}", JSON.stringify(client.directory));
 
   const designerInputConfig = designerInputs.length
     ? `  markdown:\n${designerInputs.map((input) => `    - ${JSON.stringify(input)}`).join("\n")}`
@@ -202,10 +251,10 @@ async function buildEntries(
   const sharedEntries = await readTemplateDirectory(path.join(templateRoot, "shared"));
   for (const entry of sharedEntries) {
     entry.content = entry.content
-      .replaceAll("{{PM_BA_ROLE_PATH}}", JSON.stringify(`${agentsDirectory}/pm-ba.md`))
-      .replaceAll("{{ARCHITECT_ROLE_PATH}}", JSON.stringify(`${agentsDirectory}/architect.md`))
+      .replaceAll("{{PM_BA_ROLE_PATH}}", JSON.stringify(rolePaths["pm-ba"]))
+      .replaceAll("{{ARCHITECT_ROLE_PATH}}", JSON.stringify(rolePaths.architect))
       .replaceAll("{{DESIGNER_INPUTS}}", designerInputConfig)
-      .replaceAll("{{DESIGNER_ROLE_PATH}}", JSON.stringify(`${agentsDirectory}/designer.md`))
+      .replaceAll("{{DESIGNER_ROLE_PATH}}", JSON.stringify(rolePaths.designer))
       .replaceAll(
         JSON.stringify("__AI_SDLC_COMPONENT_CATALOG_MODULE__"),
         JSON.stringify(componentCatalogModule)
@@ -214,15 +263,12 @@ async function buildEntries(
 
   const agentEntries = await readTemplateDirectory(path.join(templateRoot, "agents"));
   for (const entry of agentEntries) {
-    entry.path = `${agentsDirectory}/${entry.path}`;
+    const roleId = path.basename(entry.path, ".md");
+    entry.path = rolePaths[roleId];
+    entry.content = client.render(roleId, entry.content);
   }
 
   return [{ path: "ai-native.yaml", content: config }, ...sharedEntries, ...agentEntries];
-}
-
-function isSafeProjectDirectory(value) {
-  if (path.isAbsolute(value) || value.includes("\\")) return false;
-  return !value.split("/").some((segment) => !segment || segment === "." || segment === "..");
 }
 
 function isSafeProjectFile(value, extension) {
@@ -230,6 +276,33 @@ function isSafeProjectFile(value, extension) {
     return false;
   }
   return !value.split("/").some((segment) => !segment || segment === "." || segment === "..");
+}
+
+function renderMarkdownAgent(roleId, source) {
+  const description = readAgentDescription(source);
+  return [
+    "---",
+    `name: ${JSON.stringify(roleId)}`,
+    `description: ${JSON.stringify(description)}`,
+    "---",
+    "",
+    source.trim()
+  ].join("\n");
+}
+
+function renderCodexAgent(roleId, source) {
+  return [
+    `name = ${JSON.stringify(roleId)}`,
+    `description = ${JSON.stringify(readAgentDescription(source))}`,
+    `developer_instructions = ${JSON.stringify(source.trim())}`
+  ].join("\n");
+}
+
+function readAgentDescription(source) {
+  const withoutHeading = source.replace(/^#\s+[^\n]+\n+/u, "");
+  const description = withoutHeading.split(/\n\s*\n/u, 1)[0]?.trim();
+  if (!description) throw new Error("Agent 模板缺少标题后的角色描述");
+  return description;
 }
 
 async function readTemplateDirectory(directory, current = directory) {
@@ -270,7 +343,7 @@ function ensureNewline(value) {
 }
 
 function help() {
-  return `create-ai-native-sdlc\n\n用法：\n  create-ai-native-sdlc init [target]\n\nCLI 会询问项目名称、项目简介、原始 Agent 初始化目录，以及可选的 Designer 输入和组件清单模块。\n`;
+  return `create-ai-native-sdlc\n\n用法：\n  create-ai-native-sdlc init [target]\n\nCLI 会询问项目名称、项目简介、AI 客户端，以及可选的 Designer 输入和组件清单模块。\n`;
 }
 
 const entryPath = process.argv[1];

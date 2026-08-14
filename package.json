@@ -1,7 +1,7 @@
 {
   "name": "create-ai-native-sdlc",
   "version": "0.1.0",
-  "description": "A lightweight, client-neutral initializer for an AI-native SDLC with one canonical Agent per role, YAML-driven workflows, and Markdown artifacts.",
+  "description": "An AI-native SDLC initializer with one canonical role source and native Agents for GitHub Copilot, Claude Code, and Codex.",
   "type": "module",
   "bin": {
     "create-ai-native-sdlc": "bin/cli.js"

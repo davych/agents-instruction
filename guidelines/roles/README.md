@@ -1,6 +1,6 @@
 # Role Relationships
 
-The workflow uses six roles with one canonical Markdown Agent per role. Roles collaborate through registered artifacts, not through duplicated client-specific Agent files.
+The workflow has one canonical Markdown source for each of six roles. The initializer derives one native Agent set for the selected client, so the target project never receives three duplicated sets. Roles collaborate through registered artifacts.
 
 ## Relationship map
 
@@ -40,25 +40,21 @@ The diagram has three kinds of handoff:
 
 ## One role, one Agent
 
-The initializer writes exactly one Agent file for each role into the selected Agent directory:
+The repository keeps six canonical Markdown role sources. Initialization installs exactly one native set:
 
-```text
-<paths.agents>/
-  pm-ba.md
-  designer.md
-  architect.md
-  software-engineer.md
-  tester.md
-  devops.md
-```
+| Selected client | Native Agent files |
+|---|---|
+| GitHub Copilot | `.github/agents/<role>.agent.md` |
+| Claude Code | `.claude/agents/<role>.md` |
+| Codex | `.codex/agents/<role>.toml` |
 
-It does not generate separate copies for different AI clients. An AI tool reads `paths.agents` from `ai-native.yaml`, then reads the role file it needs.
+The initializer never installs all three sets together. For Codex, it generates TOML from the same canonical Markdown source in memory. `ai-native.yaml` records the selected client and its native directory.
 
 ## Agent and role workflow
 
 The two files have different jobs:
 
-- `<paths.agents>/<role>.md` defines the role identity, working rules, boundaries, output contract, and handoff.
+- The selected client's native Agent file under `paths.agents` defines the role identity, working rules, boundaries, output contract, and handoff.
 - `.ai-sdlc/roles/<role>/workflow.md` contains a longer step-by-step procedure when that role needs one.
 
 The role workflow is ordinary Markdown loaded explicitly by the Agent. It is not a second Agent, a duplicate role definition, or a client-native Skill. PM / BA, Designer, and Architect currently have one. The other three roles keep their shorter procedure in the Agent file.
@@ -99,7 +95,7 @@ Use these files for different questions:
 
 1. `ai-native.yaml` — global roles, phases, gates, and artifact registry.
 2. `.ai-sdlc/workflows/default.md` — shared path resolution and execution order.
-3. `<paths.agents>/<role>.md` — role mission, rules, boundaries, and handoff.
+3. The selected client's native Agent file under `paths.agents` — role mission, rules, boundaries, and handoff.
 4. `.ai-sdlc/roles/<role>/config.yaml` — role-specific inputs and child directory when present.
 5. `.ai-sdlc/roles/<role>/workflow.md` — detailed role procedure when present.
 6. Registered output artifacts — current project evidence and decisions.

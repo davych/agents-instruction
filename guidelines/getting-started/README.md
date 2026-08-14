@@ -11,7 +11,7 @@ You need:
 - permission to create files in that directory;
 - an AI coding tool that can read project files.
 
-The initializer is client-neutral. It does not ask whether you use Copilot, Claude, Codex, or another tool. Every tool reads the same canonical Markdown Agent files.
+The repository keeps one canonical Markdown source for each role. During initialization, you choose GitHub Copilot, Claude Code, or Codex. The CLI then installs exactly one native Agent set for that client.
 
 ## Run the initializer
 
@@ -47,13 +47,13 @@ The CLI collects five values:
 |---|---:|---|
 | Project name | No | Defaults to the target directory name. |
 | Project summary | Yes | One short sentence that explains the problem the product solves. |
-| Canonical Agent directory | No | Defaults to `.ai-sdlc/agents`. All six Agent files are copied here once. |
+| Target AI client | Yes | Choose GitHub Copilot, Claude Code, or Codex. This decides the native Agent directory and format. |
 | Designer Markdown inputs | No | Comma-separated project-relative Markdown paths that the Designer should read. |
 | Designer component catalog module | No | A project-relative `.mjs` module used to query real project components. |
 
 The project name and summary are collected interactively. There are no `--name` or `--summary` flags.
 
-Press Enter for the default Agent directory unless your AI tool reads Agents from another project-relative directory. The initializer still creates only one copy of each Agent.
+You do not enter an Agent directory. The initializer uses the selected client's native project directory and installs only that client's Agent set.
 
 ## Write safety
 
@@ -71,18 +71,11 @@ It does not merge, overwrite, or partly initialize a conflicting project. Resolv
 
 ## Generated project structure
 
-With the default Agent directory, the target project receives:
+Every target project receives the shared workflow files:
 
 ```text
 ai-native.yaml
 .ai-sdlc/
-  agents/
-    pm-ba.md
-    designer.md
-    architect.md
-    software-engineer.md
-    tester.md
-    devops.md
   roles/
     pm-ba/
       config.yaml
@@ -100,6 +93,16 @@ ai-native.yaml
   tasks/
 ```
 
+It also receives exactly one native Agent set:
+
+| Selected client | Installed Agent files |
+|---|---|
+| GitHub Copilot | `.github/agents/<role>.agent.md` |
+| Claude Code | `.claude/agents/<role>.md` |
+| Codex | `.codex/agents/<role>.toml` |
+
+Codex TOML is generated from the same six canonical Markdown sources during initialization. The repository does not maintain a second Codex role source.
+
 The PM / BA, Designer, and Architect have extra role packs because they need longer procedures, role-specific inputs, references, or validation rules. Their `workflow.md` files are ordinary Markdown read explicitly by the canonical Agent; they are not client-native Skills. Software Engineer, Tester, and DevOps keep their shorter procedures in the Agent file.
 
 The initializer does not create product deliverables under `docs/`. The Agents create those artifacts later, following `ai-native.yaml`.
@@ -108,15 +111,18 @@ The initializer does not create product deliverables under `docs/`. The Agents c
 
 1. Open `ai-native.yaml` and confirm the project summary, output root, role list, phase order, and artifact registry.
 2. Add product source documents to `.ai-sdlc/roles/pm-ba/config.yaml` under `inputs.markdown` when they exist.
-3. Find the canonical PM / BA Agent by reading `paths.agents` from `ai-native.yaml` and appending `/pm-ba.md`.
-4. Ask your AI tool to read the Agent, the shared workflow, the PM / BA role workflow, and the supplied source files.
+3. Confirm that the PM / BA Agent exists under `paths.agents` in `ai-native.yaml`.
+4. Select or invoke the PM / BA Agent in your AI client, then give it the task and supplied source files.
 5. Run the discovery phase. Review the PRD and stories before allowing the design phase to start.
 
 A simple first prompt is:
 
 ```text
-Read ai-native.yaml and .ai-sdlc/workflows/default.md. Resolve paths.agents,
-then read the single pm-ba.md Agent and .ai-sdlc/roles/pm-ba/workflow.md.
+Use the PM / BA Agent for this task.
+
+Read ai-native.yaml, .ai-sdlc/workflows/default.md,
+.ai-sdlc/roles/pm-ba/config.yaml, and
+.ai-sdlc/roles/pm-ba/workflow.md.
 
 Act as PM / BA for this task: [describe the opportunity or feature].
 Use these business sources: [paths or "none provided"].
