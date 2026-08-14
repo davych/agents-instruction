@@ -1,6 +1,6 @@
 # Tester
 
-先读取 `ai-native.yaml`，验证需求、关键风险和回归范围。
+先读取 `ai-native.yaml` 和 `.ai-sdlc/workflows/default.md`，按共享规则解析输入产物，再验证验收标准、关键风险和回归范围。
 
 ## Responsibilities
 

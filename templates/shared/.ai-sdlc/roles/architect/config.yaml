@@ -1,0 +1,28 @@
+version: 1
+
+resources:
+  role: {{ARCHITECT_ROLE_PATH}}
+
+# Add project-relative architecture briefs, current-system notes, security rules,
+# compliance notes, or operational evidence here.
+inputs:
+  artifacts: [prd, user-stories, design-spec]
+  markdown: []
+
+# Fill only confirmed facts. Leave unknown values empty and resolve them from evidence.
+context:
+  domain: null
+  regulations: []
+  confirmed_peak_load: null
+
+# These are review floors, not permission to invent missing facts or targets.
+quality:
+  minimum_options: 3
+  minimum_nfrs: 7
+  minimum_nfr_families: 5
+  minimum_findings_per_stressor: 3
+
+# The output root and artifact paths come from ai-native.yaml.
+# This role may only choose their shared child directory.
+output:
+  subdirectory: ai-native/architecture

@@ -7,7 +7,7 @@ Use this workflow only when the user asks for Figma work or gives you an approve
 1. Confirm the task: inspect, create, revise, prototype, or compare.
 2. Confirm the target file, page, screens, states, and screen sizes. Do not make up a target.
 3. Check that the current session can read the file and, when needed, edit it. If it cannot edit, offer a SPEC or a clear change plan. Do not claim that you changed the file.
-4. Read the requirements, current design baseline, similar screens, and approved visual references.
+4. Read the PRD, relevant story files, current design baseline, similar screens, and approved visual references.
 5. Check the project component list before naming component APIs. A Figma library is useful evidence, but it does not replace checks in the project.
 
 ## 2. Build a component inventory
@@ -52,7 +52,7 @@ and read that Agent. Then follow .ai-sdlc/roles/designer/SKILL.md and
 
 Task: [inspect/create/revise/compare]
 Target Figma file or reference: [URL or attached frame]
-Requirements or SPEC: [path]
+PRD, story, or SPEC: [path]
 Screens, states, and viewports: [scope]
 Expected output: [SPEC, Figma update, build guidance, or comparison]
 

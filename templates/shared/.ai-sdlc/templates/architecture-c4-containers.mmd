@@ -1,0 +1,23 @@
+C4Container
+title Container View for {system name}
+
+%% Add people and external systems only when supported by evidence.
+%% Person(user, "{User}", "{Reason this person uses the system}")
+%% System_Ext(external, "{External system}", "{External responsibility}")
+
+System_Boundary(boundary, "{Focal system}") {
+  %% Add only the containers in the selected option.
+  Container(container, "{Container}", "{Technology}", "{Responsibility}")
+  %% Container(client, "{Client}", "{Technology}", "{Responsibility}")
+  %% Add ContainerDb only when the selected option actually uses a data store.
+  %% ContainerDb(store, "{Data store}", "{Technology}", "{Data responsibility}")
+  %% Add ContainerQueue only when the selected option actually uses a queue.
+}
+
+%% Add only relationships supported by evidence.
+%% Rel(user, client, "{Business action}", "{Protocol}")
+%% Rel(client, container, "{Purpose}", "{Protocol}")
+%% Rel(container, store, "{Reads or writes}", "{Protocol}")
+%% Rel(container, external, "{Purpose}", "{Protocol}")
+
+%% Keep this view at C4 L2. Do not add replicas, load balancers, or deployment nodes.

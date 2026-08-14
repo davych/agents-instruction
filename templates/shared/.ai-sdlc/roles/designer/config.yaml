@@ -6,7 +6,7 @@ resources:
   personal: .ai-sdlc/roles/designer/personal.md
 
 inputs:
-  artifacts: [product-brief, requirements]
+  artifacts: [prd, user-stories]
 {{DESIGNER_INPUTS}}
 
 # The output root is ai-native.yaml paths.outputs. This role may only name its child directory.

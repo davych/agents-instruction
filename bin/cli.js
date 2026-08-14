@@ -202,6 +202,8 @@ async function buildEntries(
   const sharedEntries = await readTemplateDirectory(path.join(templateRoot, "shared"));
   for (const entry of sharedEntries) {
     entry.content = entry.content
+      .replaceAll("{{PM_BA_ROLE_PATH}}", JSON.stringify(`${agentsDirectory}/pm-ba.md`))
+      .replaceAll("{{ARCHITECT_ROLE_PATH}}", JSON.stringify(`${agentsDirectory}/architect.md`))
       .replaceAll("{{DESIGNER_INPUTS}}", designerInputConfig)
       .replaceAll("{{DESIGNER_ROLE_PATH}}", JSON.stringify(`${agentsDirectory}/designer.md`))
       .replaceAll(

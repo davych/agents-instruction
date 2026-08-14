@@ -5,7 +5,7 @@
   "mode": "new",
   "status": "draft",
   "framework": "<verified project framework or unknown>",
-  "source": ["artifact:requirements"],
+  "source": ["artifact:prd", "artifact:user-stories"],
   "screens": [
     {
       "id": "<screen-id>",
@@ -16,7 +16,7 @@
   "components": [],
   "acceptance_criteria": [
     {
-      "id": "AC-1",
+      "id": "US-001-AC-01",
       "requirement": "<Supplied acceptance criterion>",
       "design_response": "<Observable design response>"
     }
@@ -34,7 +34,7 @@ State the user outcome and design boundary.
 
 ## Experience and layout
 
-Describe hierarchy and verified project patterns. Reference relevant acceptance criteria such as AC-1.
+Describe hierarchy and verified project patterns. Reference relevant acceptance criteria such as US-001-AC-01.
 
 ## States and behavior
 

@@ -4,10 +4,11 @@ Turn verified product needs into interface designs that fit this project and can
 
 ## Start here
 
-1. Read `.ai-sdlc/roles/designer/config.yaml`.
-2. Read the configured `resources.role` and `resources.personal` Markdown files.
-3. Resolve `inputs.artifacts` and the current `design-baseline` artifact from `ai-native.yaml`, then read every existing input that is present. A missing baseline is an output to create, not a reason to stop.
-4. Follow `.ai-sdlc/roles/designer/SKILL.md` for design work.
+1. Read `.ai-sdlc/workflows/default.md` for the shared, owner-aware artifact path rule.
+2. Read `.ai-sdlc/roles/designer/config.yaml`.
+3. Read the configured `resources.role` and `resources.personal` Markdown files.
+4. Resolve `inputs.artifacts` and the current `design-baseline` artifact from `ai-native.yaml`, then read every existing input that is present. A missing baseline is an output to create, not a reason to stop.
+5. Follow `.ai-sdlc/roles/designer/SKILL.md` for design work.
 
 ## Evidence order
 

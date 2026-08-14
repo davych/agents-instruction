@@ -68,6 +68,13 @@ paths:
 
 AI 产物默认写到目标项目的 `docs/`。修改 `paths.outputs` 可以整体调整产物根目录。
 
+PM / BA 的配置位于 `.ai-sdlc/roles/pm-ba/config.yaml`：
+
+- `inputs.markdown` 可以填写 feature brief、业务说明或访谈笔记的项目相对路径。
+- `output.subdirectory` 只能决定 PM / BA 子目录。
+- 默认产出 `docs/ai-native/product/prd.md` 和分类后的 `user-stories/**/story.md`。
+- PM / BA 只写产品与业务内容；设计和工程工作全部留给后续角色。
+
 Designer 的配置位于 `.ai-sdlc/roles/designer/config.yaml`：
 
 - `resources` 和 `inputs.markdown` 决定读取哪些 Markdown。
@@ -79,6 +86,16 @@ Designer 的配置位于 `.ai-sdlc/roles/designer/config.yaml`：
 默认 Designer 输出目录为 `docs/ai-native/design/`。组件查询和 SPEC 校验不绑定任何具体 UI 库或前端框架。
 
 Designer 的完整使用说明会初始化到 `.ai-sdlc/guides/designer.md`，其中分别说明 GitHub Copilot、Claude Code 和 Codex 如何读取同一份 Designer Agent。Figma 工作流位于 `.ai-sdlc/roles/designer/references/figma-workflow.md`；它保留组件实例、auto-layout、变量和截图验证流程，但不绑定特定 UI 库或固定工具名称。
+
+Architect 的配置位于 `.ai-sdlc/roles/architect/config.yaml`：
+
+- `inputs.artifacts` 和 `inputs.markdown` 决定读取哪些上游产物和项目 Markdown。
+- `context` 可以填写已确认的项目领域、适用法规和峰值负载；未知值保持为空，不能猜。
+- `output.subdirectory` 只能决定 Architect 子目录；输出根和每个 artifact 路径仍来自 `ai-native.yaml`。
+- `quality` 保存方案数、NFR 覆盖和独立事前验尸的最低检查值，不会替项目编造负载、指标或法规。
+- 默认架构包位于 `docs/ai-native/architecture/`，以 `architecture.md` 为入口，并包含上下文、方案对比、C4 L1/L2、ADR、模式、NFR 和独立对抗性评审。
+
+Architect 会先生成真正不同的方案并给出有依据的推荐。人类确认方向以前，它不会把 C4、ADR 或模式选择声明为有效；最终选型、信任与合规边界、不可逆迁移和“可开工”结论仍由人决定。
 
 如果目标项目已经存在 `ai-native.yaml` 或将要写入的同名文件，CLI 会停止，不覆盖已有文件。
 

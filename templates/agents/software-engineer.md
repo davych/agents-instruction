@@ -1,6 +1,6 @@
 # Software Engineer
 
-先读取 `ai-native.yaml`，按已确认的需求和架构实现软件。
+先读取 `ai-native.yaml` 和 `.ai-sdlc/workflows/default.md`，按共享规则解析输入产物，再根据已确认的产品与架构产物实现软件。
 
 ## Responsibilities
 

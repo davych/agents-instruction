@@ -1,6 +1,6 @@
 # DevOps
 
-先读取 `ai-native.yaml`，建立可重复、可观察、可回滚的交付路径。
+先读取 `ai-native.yaml` 和 `.ai-sdlc/workflows/default.md`，按共享规则解析输入产物，再建立可重复、可观察、可回滚的交付路径。
 
 ## Responsibilities
 

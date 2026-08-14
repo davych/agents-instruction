@@ -13,16 +13,16 @@ paths:
 roles:
   - id: pm-ba
     name: PM / BA
-    mission: 把业务目标转成清晰、可验证的需求。
-    responsibilities: [产品目标, 业务分析, 需求, 验收标准]
+    mission: Turn a product opportunity into a short PRD and testable user stories.
+    responsibilities: [user problems, business rules, product scope, acceptance criteria]
   - id: designer
     name: Designer
     mission: 把需求转成可用、可实现的体验方案。
     responsibilities: [用户旅程, 交互状态, 视觉与无障碍]
   - id: architect
     name: Architect
-    mission: 定义系统边界、接口和关键技术决策。
-    responsibilities: [架构方案, 数据与接口, 安全与质量属性]
+    mission: Turn confirmed product and design intent into an evidence-based architecture decision pack.
+    responsibilities: [architecture options, system boundaries, decision records, measurable quality budgets]
   - id: software-engineer
     name: Software Engineer
     mission: 实现功能并提供可验证的工程结果。
@@ -41,42 +41,53 @@ workflow:
     - id: discovery
       owner: pm-ba
       inputs: []
-      outputs: [product-brief, requirements]
-      gate: 产品问题、范围和验收标准已明确。
+      outputs: [prd, user-stories]
+      gate: The user problem, confirmed scope, business rules, and acceptance criteria are clear.
     - id: design
       owner: designer
-      inputs: [requirements]
+      inputs: [prd, user-stories]
       outputs: [design-baseline, design-spec]
       gate: 关键用户流程和状态已明确。
     - id: architecture
       owner: architect
-      inputs: [requirements, design-spec]
-      outputs: [architecture]
-      gate: 技术边界、风险和关键决策已明确。
+      inputs: [prd, user-stories, design-spec]
+      outputs: [architecture, architecture-discovery-context, architecture-options, architecture-c4-context, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs, architecture-adversarial]
+      gate: Human acceptance evidence is recorded after the selected direction, C4 views, decisions, quality budgets, risks, and open human decisions are complete.
     - id: implementation
       owner: software-engineer
-      inputs: [requirements, design-spec, architecture]
+      inputs: [prd, user-stories, design-spec, architecture, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs]
       outputs: [implementation-notes]
       gate: 实现和必要测试完成。
     - id: verification
       owner: tester
-      inputs: [requirements, implementation-notes]
+      inputs: [prd, user-stories, architecture, architecture-nfrs, implementation-notes]
       outputs: [test-report]
       gate: 验收标准和主要风险已有验证证据。
     - id: release
       owner: devops
-      inputs: [architecture, test-report]
+      inputs: [architecture, architecture-adrs, architecture-nfrs, architecture-adversarial, test-report]
       outputs: [release-runbook]
       gate: 发布、监控和回滚步骤已准备。
 
 artifacts:
   # path 相对于 paths.outputs；修改 outputs 即可整体迁移 AI 产物目录。
-  - { id: product-brief, owner: pm-ba, path: ai-native/product/product-brief.md }
-  - { id: requirements, owner: pm-ba, path: ai-native/product/requirements.md }
+  # PM/BA 的 path 会拼接角色 config.output.subdirectory。
+  - { id: prd, owner: pm-ba, path: prd.md }
+  - { id: user-stories, owner: pm-ba, path: user-stories }
   # Designer 的 path 是文件名，最终目录还会拼接角色 config.output.subdirectory。
   - { id: design-baseline, owner: designer, path: DESIGN_BASELINE.md }
   - { id: design-spec, owner: designer, path: design-spec.md }
-  - { id: architecture, owner: architect, path: ai-native/architecture/architecture.md }
+  # Architect paths are resolved under the role config output.subdirectory.
+  # architecture.md is the pack index; 04-adrs is a directory of ADR files.
+  - { id: architecture, owner: architect, path: architecture.md }
+  - { id: architecture-discovery-context, owner: architect, path: 00-discovery-context.md }
+  - { id: architecture-options, owner: architect, path: 00-options.md }
+  - { id: architecture-c4-context, owner: architect, path: 01-context.mmd }
+  - { id: architecture-c4-containers, owner: architect, path: 02-containers.mmd }
+  - { id: architecture-adrs, owner: architect, path: 04-adrs }
+  - { id: architecture-patterns, owner: architect, path: 05-patterns.md }
+  - { id: architecture-nfrs, owner: architect, path: 06-nfrs.md }
+  - { id: architecture-adversarial, owner: architect, path: 07-adversarial.md }
   - { id: implementation-notes, owner: software-engineer, path: ai-native/engineering/implementation-notes.md }
   - { id: test-report, owner: tester, path: ai-native/testing/test-report.md }
   - { id: release-runbook, owner: devops, path: ai-native/operations/release-runbook.md }

@@ -17,7 +17,7 @@ Designer Agent. Then read .ai-sdlc/roles/designer/config.yaml and
 .ai-sdlc/roles/designer/SKILL.md.
 
 Act as the Designer for this task: [describe the result you want].
-Inputs: [requirements, Markdown paths, screenshots, or references].
+Inputs: [PRD, relevant story.md files, screenshots, or references].
 Expected output: [design baseline, design SPEC, Figma work, or build guidance].
 
 Use the output root and file name from ai-native.yaml. The role config may only add its
