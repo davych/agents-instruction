@@ -9,6 +9,8 @@ Before starting:
 3. Give your AI tool access to the project. Tell it to read the Designer Agent and role workflow.
 4. For Figma work, provide the real reference or target file. Make sure the current session can access Figma.
 
+When the platform opens the design execution dialog, `design-baseline` and `design-spec` remain required for downstream phases. Select `design-prototype` when a self-contained HTML interaction prototype will help validation, and select `figma-handoff` only when the Figma integration is configured and authorized. The execution contract's selected output list controls what the Designer may create or update.
+
 Use this common task prompt in any client:
 
 ```text
@@ -18,10 +20,12 @@ Use the project Designer Agent. Read ai-native.yaml,
 
 Act as the Designer for this task: [describe the result you want].
 Inputs: [PRD, relevant story.md files, screenshots, or references].
-Expected output: [design baseline, design SPEC handoff, Figma work, or a non-production interaction prototype].
+Expected output: [the selected registered outputs: design-baseline, design-spec, design-prototype, and/or figma-handoff].
 
-Use the output root and file name from ai-native.yaml. The role config may only add its
-output.subdirectory. Check project components before naming component props, events, slots, or tokens. For Figma work, read
+Use the exact resolved output path from the active execution contract. For a task-scoped
+design-spec this includes the current task name and run ID; do not replace it with the
+default basename from ai-native.yaml. The role config may only add its output.subdirectory.
+Check project components before naming component props, events, slots, or tokens. For Figma work, read
 .ai-sdlc/roles/designer/references/figma-workflow.md first. Report evidence,
 assumptions, checks, risks, and the next step.
 ```

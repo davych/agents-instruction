@@ -60,12 +60,15 @@ The diagram means:
 
 Always use the artifact owner's config, not the active role's config.
 
-For the default Designer spec:
+For the default Designer spec, `design-spec.md` is a configured basename. A platform-managed task resolves it to a stable task-specific filename:
 
 ```text
 docs + ai-native/design + design-spec.md
-= docs/ai-native/design/design-spec.md
++ current task "登录改版" + run 550e8400-e29b-41d4-a716-446655440000
+= docs/ai-native/design/登录改版--550e8400-e29b-41d4-a716-446655440000-design-spec.md
 ```
+
+The logical artifact ID remains `design-spec`, so downstream dependencies do not depend on a filename. Every re-run of that task resolves the same path; another task, including one with the same title, resolves a different path because its run ID differs. The active execution contract is authoritative for this resolved path.
 
 For the default Software Engineer notes, there is no role config:
 

@@ -49,8 +49,8 @@ workflow:
     - id: design
       owner: designer
       inputs: [prd, user-stories]
-      outputs: [design-baseline, design-spec]
-      gate: The design spec traces the confirmed stories and acceptance criteria, is ready-for-engineering with validation evidence, and has no blockers.
+      outputs: [design-baseline, design-spec, design-prototype, figma-handoff]
+      gate: The selected design outputs are complete and evidence-backed; a selected design spec traces the confirmed stories and acceptance criteria, is ready-for-engineering with validation evidence, and has no blockers.
     - id: architecture
       owner: architect
       inputs: [prd, user-stories, design-spec]
@@ -79,7 +79,10 @@ artifacts:
   - { id: user-stories, owner: pm-ba, path: user-stories }
   # Designer 的 path 是文件名，最终目录还会拼接角色 config.output.subdirectory。
   - { id: design-baseline, owner: designer, path: DESIGN_BASELINE.md }
+  # design-spec.md 是配置基名；平台执行时会解析为“任务名--run-id-design-spec.md”。
   - { id: design-spec, owner: designer, path: design-spec.md }
+  - { id: design-prototype, owner: designer, path: prototype.html }
+  - { id: figma-handoff, owner: designer, path: figma-handoff.md }
   # Architect paths are resolved under the role config output.subdirectory.
   # architecture.md is the pack index; 04-adrs is a directory of ADR files.
   - { id: architecture, owner: architect, path: architecture.md }

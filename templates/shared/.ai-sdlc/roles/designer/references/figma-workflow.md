@@ -1,14 +1,15 @@
 # Figma workflow
 
-Use this workflow only when the user asks for Figma work or gives you an approved Figma reference. Never assume a Figma tool, file access, or component library is available. Never save passwords, tokens, or private file IDs in role files.
+Use this workflow only when `figma-handoff` is selected or the user gives you an approved Figma reference. Never assume a Figma tool, file access, or component library is available. Never save passwords, tokens, or private file IDs in role files.
 
 ## 1. Preflight
 
-1. Confirm the task: inspect, create, revise, prototype, or compare.
-2. Confirm the target file, page, screens, states, and screen sizes. Do not make up a target.
-3. Check that the current session can read the file and, when needed, edit it. If it cannot edit, offer a SPEC or a clear change plan. Do not claim that you changed the file.
-4. Read the PRD, relevant story files, current design baseline, similar screens, and approved visual references.
-5. Check the project component list before naming component APIs. A Figma library is useful evidence, but it does not replace checks in the project.
+1. Confirm that a Figma capability is available and authorized in the current session. If it is missing or unauthorized, stop before Figma work, state that authorization is required, and let the platform send the user to its authorization flow. Do not substitute a fabricated link or a local mock and call it Figma.
+2. Confirm the task: inspect, create, revise, prototype, or compare.
+3. Confirm the target file, page, screens, states, and screen sizes. Do not make up a target.
+4. Check that the current session can read the file and, when needed, edit it. Read-only access is not sufficient for a requested create or revise operation. Do not claim that you changed the file.
+5. Read the PRD, relevant story files, current design baseline, similar screens, and approved visual references.
+6. Check the project component list before naming component APIs. A Figma library is useful evidence, but it does not replace checks in the project.
 
 ## 2. Build a component inventory
 
@@ -37,11 +38,12 @@ When a library is available, keep a clear `Components used` list in the working 
 
 1. Capture or inspect each finished frame. Check hierarchy, spacing, overflow, clipping, contrast, and states.
 2. When matching an approved reference, compare both at the same screen size and fix visible differences.
-3. Record real file and node IDs only after access or creation works.
+3. Record a real canonical file URL and file or node IDs only after access or creation works. Re-open or inspect the target after a write before treating it as complete.
 4. State which elements reuse verified components and which are custom or unresolved. Include verified component keys or IDs when the active tool provides them.
-5. Update the design SPEC under the output path derived from `ai-native.yaml`. Add a `figma` field only when real file and node information exists.
+5. When `design-spec` is selected, update it under the output path derived from `ai-native.yaml`. Add a `figma` field only when real file and node information exists.
+6. Create the registered `figma-handoff.md` with status and verification time, the actual operation, canonical URL, file ID, relevant page or frame node IDs, covered states and viewports, verified components, checks performed, and unresolved follow-up. Do not copy credentials or access tokens into the handoff.
 
-Never make up a Figma URL. Never say you changed a file unless you checked the change. Never call a result pixel-perfect without an approved reference and a rendered comparison.
+The handoff is evidence for a remote result, not the result itself. Never make up a Figma URL or identifier. Never say you changed a file unless you checked the change. Never call a result pixel-perfect without an approved reference and a rendered comparison.
 
 ## Request template
 

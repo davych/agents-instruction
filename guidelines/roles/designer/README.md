@@ -24,7 +24,7 @@ Designer does not write production code or make product and architecture decisio
 | Next phase | Architect | Reads the design spec with the product artifacts. |
 | Handoff destination | Software Engineer | Builds from the baseline and ready design spec after the architecture gate passes. |
 
-`design-spec.md` names Software Engineer as its next owner because it is the implementation-facing design contract. The default phase order still runs Architect before implementation. Software Engineer starts only when both the design gate and architecture gate pass.
+The `design-spec` artifact names Software Engineer as its next owner because it is the implementation-facing design contract. Its platform-managed filename is scoped to the current task rather than fixed to `design-spec.md`. The default phase order still runs Architect before implementation. Software Engineer starts only when both the design gate and architecture gate pass.
 
 ## Inputs
 
@@ -56,8 +56,10 @@ docs/
   ai-native/
     design/
       DESIGN_BASELINE.md
-      design-spec.md
+      登录改版--550e8400-e29b-41d4-a716-446655440000-design-spec.md
 ```
+
+The configured `design-spec.md` value is only the basename used by non-platform clients. The platform prepends the safe current-task namespace and full run ID. Always use the resolved path in the active execution contract.
 
 ### Design baseline
 
@@ -99,7 +101,7 @@ flowchart TD
 3. **Define behavior first** — Establish the user outcome, hierarchy, primary action, data conditions, viewports, states, and transitions before choosing components.
 4. **Verify components** — Run the component query before declaring props, events, slots, or tokens. Also inspect real local usage.
 5. **Use the fallback policy** — Prefer an existing product pattern, then a verified catalog component, verified primitives, feature-local custom work, and finally shared custom work only when repeated need is proven.
-6. **Maintain the baseline** — Add only verified project-wide rules. Keep feature behavior in `design-spec.md`.
+6. **Maintain the baseline** — Add only verified project-wide rules. Keep feature behavior in the current task's resolved `design-spec` artifact.
 7. **Write traceable design** — Give every supplied acceptance-criteria ID an observable design response.
 8. **Use Figma only when relevant** — Confirm the task, target, access, components, and viewports. Record real file or node evidence and never invent a Figma change.
 9. **Validate the handoff** — Set the final status and blockers, then run the included spec validator.

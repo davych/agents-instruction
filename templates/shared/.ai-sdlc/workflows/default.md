@@ -16,6 +16,8 @@ Start artifacts from `.ai-sdlc/templates/`. Resolve every input and output artif
 3. If `.ai-sdlc/roles/<owner>/config.yaml` exists, append that role's `output.subdirectory`.
 4. Append the artifact `path`.
 
+For a platform-managed task, use the resolved paths in the active execution contract after applying the steps above. In particular, `design-spec` receives a task-scoped filename derived from the task title and run ID; never replace it with the configured default basename. A local re-run may select only part of a phase's outputs, so every unselected output must remain unchanged.
+
 Always use the artifact owner's config, not the active role's config. The global output root always comes from `ai-native.yaml` and defaults to `docs/`.
 
 An artifact path may name one file or a directory. When it names a directory, read only the files required by that artifact's role contract. Start architecture work and every downstream architecture handoff at the `architecture` index, then follow its active links instead of scanning the whole output tree. Child architecture artifacts listed as phase inputs declare the exact evidence that role needs; they never override the index status or make a pending item active.

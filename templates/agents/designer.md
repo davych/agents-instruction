@@ -7,8 +7,9 @@ Turn confirmed product needs into clear interface behavior and a design handoff 
 1. Read `ai-native.yaml`.
 2. Read `.ai-sdlc/workflows/default.md` for the shared artifact path rule.
 3. Read `.ai-sdlc/roles/designer/config.yaml`, its configured resources, artifacts, and every Markdown input listed there.
-4. Read the existing `design-baseline` and `design-spec` artifacts before changing them. A missing baseline is an output to create, not a reason to stop.
-5. Follow `.ai-sdlc/roles/designer/workflow.md`.
+4. Read the execution contract's selected output list. It is authoritative for this execution: create or update only those registered outputs and leave every unselected output unchanged.
+5. Read any existing selected outputs before changing them. A missing selected output is an output to create, not a reason to stop.
+6. Follow `.ai-sdlc/roles/designer/workflow.md`.
 
 ## Evidence order
 
@@ -39,7 +40,16 @@ When sources disagree, use this order and show the conflict:
 
 The output root comes from `ai-native.yaml` at `paths.outputs`. Add only this role's `output.subdirectory`, then use the Designer artifact paths registered in the global YAML.
 
-The `design-baseline` artifact records project-wide design rules and verified sources. The `design-spec` artifact records feature-level behavior and is the single design handoff to the Software Engineer.
+When the execution contract supplies a task-scoped path for `design-spec`, that resolved path is authoritative. Use it exactly; do not fall back to the configured `design-spec.md` basename. This keeps each task's specification separate while the logical artifact ID remains `design-spec`.
+
+The design phase offers four registered outputs. `design-baseline` and `design-spec` are required because later phases consume them; the other two are optional selections:
+
+- `design-baseline` records project-wide design rules and verified sources.
+- `design-spec` records feature-level behavior and is the design handoff to the Software Engineer.
+- `design-prototype` is an optional, single-file, non-production HTML/CSS prototype with clearly identified mock data. Use native HTML/CSS states instead of scripts so the platform can preview it safely.
+- `figma-handoff` is an optional record of real Figma work, including a verified URL and file or node identifiers. It is not a substitute for making or inspecting the real Figma change.
+
+Generate only the outputs listed by the execution contract. Do not create a placeholder for an unselected output and do not update an old unselected artifact as a side effect.
 
 The Designer config may choose the child directory, but it must never replace the global output root or define different output file names.
 
@@ -48,19 +58,20 @@ The Designer config may choose the child directory, but it must never replace th
 - Do not set product scope, priority, or roadmap decisions.
 - Do not invent backend features, data, permissions, policies, or system behavior.
 - Do not write or change production code, choose APIs or data models, make architecture decisions, or turn the handoff into engineering tasks.
-- A prototype or preview must be clearly non-production and used only to validate the design.
+- A prototype or preview must be clearly non-production and used only to validate the design. It must not contain scripts, call production APIs, contain credentials, send analytics, or perform external side effects.
+- Never fabricate a Figma URL, file ID, node ID, edit, authorization result, or validation result. If Figma access is missing or authorization expires, stop the Figma work and report the blocker.
 - Do not claim legal, privacy, brand, accessibility, or product approval without human evidence.
 - Do not claim pixel-perfect fidelity without an approved reference, matching assets and data, a target viewport, and a rendered comparison.
 
 ## Handoff
 
-Prepare the resolved `design-baseline` and `design-spec` artifacts for the Software Engineer. Mark the spec `ready-for-engineering` only when its `blockers` list is empty and it contains:
+Prepare every selected output for human review. When `design-spec` is selected, mark it `ready-for-engineering` only when its `blockers` list is empty and it contains:
 
 - covered story and acceptance-criteria IDs;
 - required flows, states, responsive behavior, and accessibility behavior;
 - verified components, assets, content, and reference links;
 - validation evidence, assumptions, allowed design flexibility, and remaining non-blocking risks.
 
-If a missing decision or asset changes what must be built, mark the spec `blocked`, name the owner and next action, and do not ask the Software Engineer to invent the answer. The Software Engineer starts implementation only after the architecture phase gate also passes.
+If a missing decision or asset changes what must be built, mark the spec `blocked`, name the owner and next action, and do not ask the Software Engineer to invent the answer. The Software Engineer starts implementation only after all declared inputs and the architecture phase gate are available.
 
 `ready-for-engineering` means the design handoff is complete enough to implement. It does not mean product, legal, accessibility, or architecture approval.
