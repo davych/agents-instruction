@@ -1,0 +1,102 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import YAML from "yaml";
+
+import { loadDefinition } from "../src/services/definition-loader.ts";
+
+const roots: string[] = [];
+test.after(async () => Promise.all(roots.map((root) => rm(root, { recursive: true, force: true }))));
+
+test("adds selectable design outputs to an older project without rewriting its YAML", async () => {
+  const root = await oldProject();
+  const definition = await loadDefinition(root);
+  const design = definition.phases.find((phase) => phase.id === "design");
+  assert.deepEqual(design?.outputs, [
+    "design-baseline", "design-spec", "design-prototype", "figma-handoff"
+  ]);
+  assert.equal(
+    definition.artifacts.find((artifact) => artifact.id === "design-prototype")?.relativePath,
+    "docs/prototype.html"
+  );
+});
+
+test("reloads an older project after its injected prototype output is created without rewriting files", async () => {
+  const root = await oldProject();
+  const yamlPath = path.join(root, "ai-native.yaml");
+  const yamlBefore = await readFile(yamlPath, "utf8");
+  const firstDefinition = await loadDefinition(root);
+  const prototype = firstDefinition.artifacts.find((artifact) => artifact.id === "design-prototype");
+  assert.equal(prototype?.relativePath, "docs/prototype.html");
+
+  await mkdir(path.join(root, "docs"), { recursive: true });
+  const existingContent = "<!doctype html><p>existing</p>";
+  await writeFile(path.join(root, "docs", "prototype.html"), existingContent, "utf8");
+
+  const reloadedDefinition = await loadDefinition(root);
+  assert.equal(
+    reloadedDefinition.artifacts.find((artifact) => artifact.id === "design-prototype")?.relativePath,
+    "docs/prototype.html"
+  );
+  assert.equal(await readFile(yamlPath, "utf8"), yamlBefore);
+  assert.equal(await readFile(path.join(root, "docs", "prototype.html"), "utf8"), existingContent);
+});
+
+test("rejects two registered artifacts that resolve to the same path", async () => {
+  const root = await oldProject();
+  const config = oldConfig();
+  config.artifacts.push({ id: "duplicate-prd", owner: "pm-ba", path: "prd.md" });
+  await writeFile(path.join(root, "ai-native.yaml"), YAML.stringify(config), "utf8");
+  await assert.rejects(() => loadDefinition(root), /指向同一路径/u);
+});
+
+test("rejects nested artifact paths that cannot be edited or rerun independently", async () => {
+  const root = await oldProject();
+  const config = oldConfig();
+  config.artifacts.push({ id: "nested-story", owner: "pm-ba", path: "user-stories/US-001.md" });
+  await writeFile(path.join(root, "ai-native.yaml"), YAML.stringify(config), "utf8");
+  await assert.rejects(() => loadDefinition(root), /路径不能互相嵌套/u);
+});
+
+async function oldProject(): Promise<string> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ai-sdlc-definition-"));
+  roots.push(root);
+  await writeFile(path.join(root, "ai-native.yaml"), YAML.stringify(oldConfig()), "utf8");
+  return root;
+}
+
+function oldConfig() {
+  const roles = [
+    "pm-ba", "designer", "architect", "software-engineer", "tester", "devops"
+  ];
+  return {
+    version: 1,
+    project: { name: "Old project", summary: "Before optional design outputs" },
+    agent: { client: "codex" },
+    paths: { agents: ".codex/agents", outputs: "docs" },
+    roles: roles.map((id) => ({ id, name: id, mission: id, responsibilities: [] })),
+    workflow: {
+      phases: [
+        { id: "discovery", owner: "pm-ba", inputs: [], outputs: ["prd", "user-stories"], gate: "review" },
+        { id: "design", owner: "designer", inputs: ["prd", "user-stories"], outputs: ["design-baseline", "design-spec"], gate: "review" },
+        { id: "architecture", owner: "architect", inputs: ["design-spec"], outputs: ["architecture"], gate: "review" },
+        { id: "implementation", owner: "software-engineer", inputs: ["design-baseline", "architecture"], outputs: ["implementation-notes"], gate: "review" },
+        { id: "verification", owner: "tester", inputs: ["implementation-notes"], outputs: ["test-report"], gate: "review" },
+        { id: "release", owner: "devops", inputs: ["test-report"], outputs: ["release-runbook"], gate: "review" }
+      ]
+    },
+    artifacts: [
+      { id: "prd", owner: "pm-ba", path: "prd.md" },
+      { id: "user-stories", owner: "pm-ba", path: "user-stories" },
+      { id: "design-baseline", owner: "designer", path: "DESIGN_BASELINE.md" },
+      { id: "design-spec", owner: "designer", path: "design-spec.md" },
+      { id: "architecture", owner: "architect", path: "architecture.md" },
+      { id: "implementation-notes", owner: "software-engineer", path: "implementation-notes.md" },
+      { id: "test-report", owner: "tester", path: "test-report.md" },
+      { id: "release-runbook", owner: "devops", path: "release-runbook.md" }
+    ]
+  };
+}
