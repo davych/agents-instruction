@@ -16,8 +16,8 @@ paths:
 roles:
   - id: pm-ba
     name: PM / BA
-    mission: Turn a product opportunity into a short PRD and testable user stories.
-    responsibilities: [user problems, business rules, product scope, acceptance criteria]
+    mission: Route each immutable change contract to the smallest sufficient product evidence without rewriting a project PRD for every Run.
+    responsibilities: [change impact, user problems, business rules, product scope, acceptance criteria]
   - id: designer
     name: Designer
     mission: Turn confirmed product needs into clear interface behavior and a developer-ready design handoff.
@@ -44,26 +44,26 @@ workflow:
     - id: discovery
       owner: pm-ba
       inputs: []
-      outputs: [prd, user-stories]
-      gate: The user problem, confirmed scope, business rules, and acceptance criteria are clear.
+      outputs: [change-contract, prd, user-stories]
+      gate: The immutable Run change contract exists and the selected product disposition has sufficient scope, business-rule, acceptance, and regression evidence.
     - id: design
       owner: designer
-      inputs: [prd, user-stories]
+      inputs: [change-contract, prd, user-stories]
       outputs: [design-baseline, design-spec, design-prototype, figma-handoff]
-      gate: The selected design outputs are complete and evidence-backed; a selected design spec traces the confirmed stories and acceptance criteria, is ready-for-engineering with validation evidence, and has no blockers.
+      gate: An explicit design disposition is recorded; skip and reuse have valid evidence, or the selected design outputs are complete, traceable, validated, ready-for-engineering, and unblocked.
     - id: architecture
       owner: architect
-      inputs: [prd, user-stories, design-spec]
+      inputs: [change-contract, prd, user-stories, design-spec]
       outputs: [architecture, architecture-discovery-context, architecture-options, architecture-c4-context, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs, architecture-adversarial]
       gate: Human acceptance evidence is recorded after the selected direction, C4 views, decisions, quality budgets, risks, and open human decisions are complete.
     - id: implementation
       owner: software-engineer
-      inputs: [prd, user-stories, design-baseline, design-spec, architecture, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs]
+      inputs: [change-contract, prd, user-stories, design-baseline, design-spec, architecture, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs]
       outputs: [implementation-notes]
       gate: 实现和必要测试完成。
     - id: verification
       owner: tester
-      inputs: [prd, user-stories, architecture, architecture-nfrs, implementation-notes]
+      inputs: [change-contract, prd, user-stories, architecture, architecture-nfrs, implementation-notes]
       outputs: [test-report]
       gate: 验收标准和主要风险已有验证证据。
     - id: release
@@ -75,6 +75,8 @@ workflow:
 artifacts:
   # path 相对于 paths.outputs；修改 outputs 即可整体迁移 AI 产物目录。
   # PM/BA 的 path 会拼接角色 config.output.subdirectory。
+  # change-contract 由平台按 Run 生成任务级文件；这里的 path 是非平台客户端使用的基名。
+  - { id: change-contract, owner: pm-ba, path: change-contract.md }
   - { id: prd, owner: pm-ba, path: prd.md }
   - { id: user-stories, owner: pm-ba, path: user-stories }
   # Designer 的 path 是文件名，最终目录还会拼接角色 config.output.subdirectory。

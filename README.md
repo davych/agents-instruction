@@ -8,8 +8,9 @@ It keeps one canonical Markdown source for each role, then installs one client-n
 
 The project helps one person work through a complete product delivery cycle with six explicit roles:
 
-- PM / BA turns product intent into a PRD and testable user stories.
-- Designer turns confirmed stories into validated design behavior.
+- Every Run starts with an immutable Change Contract and an evidence-backed Product Impact route.
+- PM / BA runs only for partial or full product work; a new Run does not automatically rewrite the PRD.
+- Designer can skip, reuse, partially update, or fully design work according to real UI/UX impact.
 - Architect compares options and prepares a human-approved architecture pack.
 - Software Engineer implements the confirmed product, design, and architecture.
 - Tester verifies acceptance criteria and important risks.
@@ -21,16 +22,16 @@ The workflow is controlled by `ai-native.yaml`. Markdown remains the source form
 
 ```mermaid
 flowchart LR
-  Intent["Human intent"] --> PMBA["PM / BA"]
-  PMBA -->|"PRD and stories"| Designer["Designer"]
-  Designer -->|"Validated design"| Architect["Architect"]
-  Architect -->|"Accepted architecture"| Engineer["Software Engineer"]
+  Intent["Immutable Change Contract"] --> Product["Product Impact"]
+  Product --> Design["Design Impact"]
+  Design --> Architect["Architecture Impact<br/>skip / reuse / partial / full"]
+  Architect --> Engineer["Software Engineer"]
   Engineer -->|"Implementation evidence"| Tester["Tester"]
   Tester -->|"Test evidence"| DevOps["DevOps"]
   DevOps -->|"Release runbook"| Human["Human release decision"]
 ```
 
-Each arrow is a handoff. A later role reads the registered artifacts from the earlier roles. Human decisions stay human-owned, especially product scope, architecture selection and acceptance, risk acceptance, and release approval.
+Each arrow is a handoff. `direct`, `skip`, and `reuse` can avoid a role execution while preserving evidence and provenance; `partial` updates only affected outputs. A bounded bug may therefore use Product `direct`, Design `skip`, and Architecture `skip` to reach Software Engineer without running those Agents, but it still needs acceptance and targeted regression evidence in Verification. Human decisions stay human-owned, especially product scope, architecture selection and acceptance, risk acceptance, and release approval.
 
 ## Quick start
 
@@ -84,8 +85,8 @@ Each Agent defines one role's identity, rules, boundaries, and handoff. PM / BA,
 | [Configuration](guidelines/configuration/README.md) | `ai-native.yaml`, role configs, artifact paths, and safe customization |
 | [End-to-End Workflow](guidelines/workflow/README.md) | Phase order, gates, feedback loops, artifacts, and human decisions |
 | [Role Relationships](guidelines/roles/README.md) | How the six roles depend on and hand work to one another |
-| [PM / BA](guidelines/roles/pm-ba/README.md) | Product discovery, PRD, stories, acceptance criteria, and handoff |
-| [Designer](guidelines/roles/designer/README.md) | Design evidence, components, design spec, validation, and engineering handoff |
+| [PM / BA](guidelines/roles/pm-ba/README.md) | Change Contract routing, Product Impact, PRD/story deltas, acceptance criteria, and handoff |
+| [Designer](guidelines/roles/designer/README.md) | Design Impact, skip/reuse/partial/full paths, project baseline, task spec, and handoff |
 | [Architect](guidelines/roles/architect/README.md) | Context, options, human selection, C4, ADRs, NFRs, and premortem |
 | [Software Engineer](guidelines/roles/software-engineer/README.md) | Implementation preconditions, traceability, checks, and notes |
 | [Tester](guidelines/roles/tester/README.md) | Risk-based verification, evidence, defects, and test report |

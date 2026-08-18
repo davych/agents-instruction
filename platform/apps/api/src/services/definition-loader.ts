@@ -78,7 +78,9 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
   } catch (error) {
     throw new AppError("ai-native.yaml 格式无效", 400, "CONFIG_INVALID", error);
   }
+  registerPlatformChangeContract(config);
   registerPlatformDesignOutputs(config);
+  registerPlatformArchitectureOutputs(config);
 
   const phaseIds = config.workflow.phases.map((phase) => phase.id);
   if (phaseIds.length !== PHASE_IDS.length || phaseIds.some((id, index) => id !== PHASE_IDS[index])) {
@@ -194,6 +196,54 @@ const platformDesignArtifacts = [
   { id: "figma-handoff", owner: "designer", path: "figma-handoff.md" }
 ] as const;
 
+const platformChangeContractArtifact = {
+  id: "change-contract",
+  owner: "pm-ba",
+  path: "change-contract.md",
+} as const;
+
+const changeContractInputPhaseIds = [
+  "design",
+  "architecture",
+  "implementation",
+  "verification",
+] as const;
+
+/**
+ * Older initialized projects predate the immutable per-Run Change Contract.
+ * Extend their parsed definition in memory so routing has one canonical input,
+ * while leaving the project-owned ai-native.yaml byte-for-byte unchanged.
+ */
+function registerPlatformChangeContract(config: RawConfig): void {
+  if (!config.artifacts.some((artifact) => artifact.id === platformChangeContractArtifact.id)) {
+    config.artifacts.push({ ...platformChangeContractArtifact });
+  }
+
+  const discovery = config.workflow.phases.find((phase) => phase.id === "discovery");
+  if (discovery && !discovery.outputs.includes(platformChangeContractArtifact.id)) {
+    discovery.outputs.unshift(platformChangeContractArtifact.id);
+  }
+
+  for (const phaseId of changeContractInputPhaseIds) {
+    const phase = config.workflow.phases.find((candidate) => candidate.id === phaseId);
+    if (phase && !phase.inputs.includes(platformChangeContractArtifact.id)) {
+      phase.inputs.unshift(platformChangeContractArtifact.id);
+    }
+  }
+}
+
+const platformArchitectureArtifacts = [
+  { id: "architecture", owner: "architect", path: "architecture.md" },
+  { id: "architecture-discovery-context", owner: "architect", path: "00-discovery-context.md" },
+  { id: "architecture-options", owner: "architect", path: "00-options.md" },
+  { id: "architecture-c4-context", owner: "architect", path: "01-context.mmd" },
+  { id: "architecture-c4-containers", owner: "architect", path: "02-containers.mmd" },
+  { id: "architecture-adrs", owner: "architect", path: "04-adrs" },
+  { id: "architecture-patterns", owner: "architect", path: "05-patterns.md" },
+  { id: "architecture-nfrs", owner: "architect", path: "06-nfrs.md" },
+  { id: "architecture-adversarial", owner: "architect", path: "07-adversarial.md" }
+] as const;
+
 /**
  * Older initialized projects predate selectable HTML/Figma design deliverables.
  * Treat these two platform capabilities as a backwards-compatible extension so
@@ -207,6 +257,22 @@ function registerPlatformDesignOutputs(config: RawConfig): void {
       config.artifacts.push({ ...artifact });
     }
     if (!design.outputs.includes(artifact.id)) design.outputs.push(artifact.id);
+  }
+}
+
+/**
+ * Older initialized projects registered only the architecture pack index. The
+ * platform now treats the complete architecture pack as one canonical contract,
+ * while keeping the project-owned YAML immutable for backwards compatibility.
+ */
+function registerPlatformArchitectureOutputs(config: RawConfig): void {
+  const architecture = config.workflow.phases.find((phase) => phase.id === "architecture");
+  if (!architecture) return;
+  for (const artifact of platformArchitectureArtifacts) {
+    if (!config.artifacts.some((candidate) => candidate.id === artifact.id)) {
+      config.artifacts.push({ ...artifact });
+    }
+    if (!architecture.outputs.includes(artifact.id)) architecture.outputs.push(artifact.id);
   }
 }
 

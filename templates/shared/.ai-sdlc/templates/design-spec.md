@@ -5,7 +5,7 @@
   "mode": "new",
   "status": "draft",
   "framework": "<verified project framework or unknown>",
-  "source": ["artifact:prd", "artifact:user-stories", "artifact:design-baseline"],
+  "source": ["artifact:change-contract", "artifact:prd-or-user-stories-when-applicable", "artifact:design-baseline"],
   "screens": [
     {
       "id": "<screen-id>",

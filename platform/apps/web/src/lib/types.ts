@@ -11,6 +11,123 @@ export type PhaseStatus =
 
 export type ReviewDecision = "approve" | "request_changes";
 
+export type WorkType = "feature" | "change" | "bug" | "technical";
+
+export interface ChangeContract {
+  workType: WorkType;
+  summary: string;
+  currentBehavior: string;
+  expectedBehavior: string;
+  inScope: string[];
+  outOfScope: string[];
+  acceptanceCriteria: string[];
+  regressionScope: string[];
+  riskFlags: string[];
+  evidenceRefs: string[];
+}
+
+export type DiscoveryResolutionMode = "direct" | "reuse" | "partial" | "full";
+export type DesignResolutionMode = "skip" | "reuse" | "partial" | "full";
+export type ArchitectureResolutionMode = "skip" | "reuse" | "partial" | "full";
+export type PhaseResolutionMode =
+  | Exclude<DiscoveryResolutionMode, "full">
+  | Exclude<DesignResolutionMode, "full">
+  | Exclude<ArchitectureResolutionMode, "full">;
+
+export interface PhaseResolution {
+  phaseId: "discovery" | "design" | "architecture";
+  mode: PhaseResolutionMode;
+  rationale: string;
+  inputArtifactIds: string[];
+  sourceRunId: string | null;
+  sourceRunTitle: string | null;
+  sourcePhaseRunId: string | null;
+  sourceArtifactIds: string[];
+  affectedOutputKeys: string[];
+  routeVersion: 1;
+  decidedAt: string;
+}
+
+export interface PhaseBaseline {
+  phaseId: "discovery" | "design";
+  sourceRunId: string;
+  sourceRunTitle: string;
+  sourcePhaseRunId: string;
+  approvedAt: string;
+  artifacts: Array<{
+    id: string;
+    artifactKey: string;
+    contentHash: string;
+  }>;
+}
+
+export interface AssessProductImpactInput {
+  mode: Exclude<DiscoveryResolutionMode, "full">;
+  rationale: string;
+  selectedArtifactIds: string[];
+  expectedBaselineArtifactIds: string[];
+  affectedOutputKeys: string[];
+}
+
+export interface AssessDesignImpactInput {
+  mode: Exclude<DesignResolutionMode, "full">;
+  rationale: string;
+  selectedArtifactIds: string[];
+  expectedBaselineArtifactIds: string[];
+  affectedOutputKeys: string[];
+}
+
+export type ArchitectureImpactMode = "reuse" | "partial";
+
+export interface ArchitectureSelectionEvidence {
+  optionId: string;
+  reviewId: string;
+  optionsArtifactId: string;
+  selectedAt: string;
+}
+
+export interface ArchitectureBaseline {
+  sourceRunId: string;
+  sourceRunTitle: string;
+  sourcePhaseRunId: string;
+  approvedAt: string;
+  artifacts: Array<{
+    id: string;
+    artifactKey: string;
+    contentHash: string;
+  }>;
+  selection: ArchitectureSelectionEvidence;
+}
+
+export interface ArchitectureImpact {
+  mode: ArchitectureImpactMode;
+  rationale: string;
+  sourceRunId: string;
+  sourceRunTitle: string;
+  sourcePhaseRunId: string;
+  sourceArtifactIds: string[];
+  inputArtifactIds: string[];
+  affectedOutputKeys: string[];
+  assessedAt: string;
+  selection: ArchitectureSelectionEvidence;
+}
+
+export interface AssessArchitectureImpactInput {
+  mode: ArchitectureImpactMode;
+  rationale: string;
+  selectedArtifactIds: string[];
+  expectedBaselineArtifactIds: string[];
+  affectedOutputKeys: string[];
+}
+
+export interface AssessArchitectureDispositionInput {
+  mode: "skip" | ArchitectureImpactMode;
+  rationale: string;
+  selectedArtifactIds: string[];
+  expectedBaselineArtifactIds: string[];
+  affectedOutputKeys: string[];
+}
+
 export type TicketStatus = "backlog" | "todo" | "in_progress" | "done";
 
 export interface HealthStatus {
@@ -148,6 +265,7 @@ export interface Review {
   phaseRunId?: string;
   decision: ReviewDecision;
   comment?: string;
+  artifactIds?: string[];
   createdAt?: string;
   reviewer?: string;
 }
@@ -193,6 +311,8 @@ export interface PhaseRun {
   events: RunEvent[];
   selectedArtifactIds?: string[];
   availableArtifacts?: Artifact[];
+  resolution?: PhaseResolution | null;
+  architectureImpact?: ArchitectureImpact | null;
   error?: string;
   startedAt?: string;
   completedAt?: string;
@@ -204,6 +324,7 @@ export interface WorkflowRun {
   projectId: string;
   title: string;
   objective?: string;
+  changeContract?: ChangeContract | null;
   brief?: string;
   status?: "active" | "completed" | "failed";
   currentPhaseId?: string;
@@ -240,6 +361,9 @@ export interface RunDetail {
   project: Project;
   definition: WorkflowDefinition;
   phases: PhaseRun[];
+  productBaseline?: PhaseBaseline | null;
+  designBaseline?: PhaseBaseline | null;
+  architectureBaseline?: ArchitectureBaseline | null;
 }
 
 export interface CreateProjectInput {
@@ -252,6 +376,7 @@ export interface CreateProjectInput {
 export interface CreateRunInput {
   title: string;
   objective: string;
+  changeContract?: ChangeContract;
 }
 
 export interface ApiErrorPayload {

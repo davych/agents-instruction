@@ -3,6 +3,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   type CodexReasoningEffort,
+  assessArchitectureDispositionSchema,
+  assessDesignImpactSchema,
+  assessProductImpactSchema,
   createArtifactRevisionSchema,
   createProjectSchema,
   createRunSchema,
@@ -162,6 +165,27 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     const { id, phaseId } = phaseParamsSchema.parse(request.params);
     const execution = await service.executePhase(id, phaseId, executePhaseSchema.parse(request.body ?? {}));
     return reply.status(202).send({ execution });
+  });
+  app.post("/api/runs/:id/phases/architecture/impact", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const input = assessArchitectureDispositionSchema.parse(request.body ?? {});
+    return input.mode === "skip"
+      ? service.waiveArchitecture(id, input)
+      : service.assessArchitectureImpact(id, input);
+  });
+  app.post("/api/runs/:id/phases/discovery/impact", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.assessProductImpact(
+      id,
+      assessProductImpactSchema.parse(request.body ?? {}),
+    );
+  });
+  app.post("/api/runs/:id/phases/design/impact", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.assessDesignImpact(
+      id,
+      assessDesignImpactSchema.parse(request.body ?? {}),
+    );
   });
   app.post("/api/runs/:id/phases/:phaseId/review", async (request) => {
     const { id, phaseId } = phaseParamsSchema.parse(request.params);

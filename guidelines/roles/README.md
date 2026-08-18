@@ -1,19 +1,24 @@
 # Role Relationships
 
-The workflow has one canonical Markdown source for each of six roles. The initializer derives one native Agent set for the selected client, so the target project never receives three duplicated sets. Roles collaborate through registered artifacts.
+The workflow has one canonical Markdown source for each of six roles. The initializer derives one native Agent set for the selected client, so the target project never receives three duplicated sets. Every Run begins with an immutable Change Contract; roles collaborate through registered artifacts and structured impact clearances.
 
 ## Relationship map
 
 ```mermaid
 flowchart LR
-  Human["Human owner"] -->|"Intent, evidence, decisions"| PMBA["PM / BA"]
-  PMBA -->|"PRD and stories"| Designer["Designer"]
-  PMBA -->|"Product contract"| Architect["Architect"]
-  Designer -->|"Design spec"| Architect
-  PMBA -->|"Scope and acceptance criteria"| Engineer["Software Engineer"]
-  Designer -->|"Baseline and ready design spec"| Engineer
+  Human["Human owner"] --> Contract["Immutable Change Contract"]
+  Contract --> Product["Product Impact<br/>direct / reuse / partial / full"]
+  Product --> PMBA["PM / BA when needed"]
+  Product --> Design["Design Impact<br/>skip / reuse / partial / full"]
+  PMBA --> Design
+  Design --> Designer["Designer when needed"]
+  Design --> Architect["Architecture Impact"]
+  Designer --> Architect
+  Product --> Engineer["Software Engineer"]
+  Design --> Engineer
   Architect -->|"Accepted architecture pack"| Engineer
-  PMBA -->|"Acceptance criteria"| Tester["Tester"]
+  Contract --> Tester["Tester"]
+  Product --> Tester
   Architect -->|"NFRs and risks"| Tester
   Engineer -->|"Implementation notes"| Tester
   Architect -->|"ADRs, NFRs, and premortem"| DevOps["DevOps"]
@@ -23,16 +28,16 @@ flowchart LR
 
 The diagram has three kinds of handoff:
 
-- **Product handoff** — PM / BA defines the user outcome, scope, rules, and acceptance criteria.
-- **Design and architecture handoff** — Designer defines observable interface behavior; Architect defines accepted system constraints.
+- **Product handoff** — The Change Contract and Product clearance define the user outcome, scope, rules, acceptance criteria, and applicable product evidence; PM / BA contributes only when needed.
+- **Design and architecture handoff** — The Design clearance provides skip/reuse evidence or Designer output; Architect defines accepted system constraints.
 - **Delivery evidence handoff** — Software Engineer, Tester, and DevOps record implementation, verification, and release evidence.
 
 ## Role matrix
 
 | Role | Main question | Owns | Hands off to | Does not own |
 |---|---|---|---|---|
-| [PM / BA](pm-ba/README.md) | What problem and outcome are confirmed? | PRD and user stories | Designer; later consumers | Visual or technical design |
-| [Designer](designer/README.md) | How must the user experience behave? | Design baseline and design spec | Architect and Software Engineer | Product scope, APIs, architecture, production code |
+| [PM / BA](pm-ba/README.md) | Is the Change Contract sufficient, reusable, locally changed, or a full product change? | Product disposition, PRD, and user stories | Designer; later consumers | Change Contract mutation, visual or technical design |
+| [Designer](designer/README.md) | Can design be skipped/reused, or what experience work is affected? | Design disposition, project baseline, and task spec | Architect and Software Engineer | Product scope, APIs, architecture, production code |
 | [Architect](architect/README.md) | Which system direction best fits the evidence and constraints? | Indexed architecture pack | Software Engineer, Tester, DevOps | Final option approval or risk acceptance |
 | [Software Engineer](software-engineer/README.md) | How do we implement the confirmed contracts correctly? | Code, tests, implementation notes | Tester | Product, design, or architecture decisions |
 | [Tester](tester/README.md) | What evidence shows the change meets acceptance and risk expectations? | Test evidence and report | DevOps and human release owner | Requirement changes or release approval |
@@ -65,13 +70,15 @@ Do not confuse a role workflow with `.ai-sdlc/workflows/default.md`: the default
 
 A handoff is ready when:
 
-1. the role wrote the registered output artifact;
+1. the role wrote the selected registered artifact, or the platform recorded a valid direct/skip/reuse clearance and imported any required source revisions;
 2. evidence, assumptions, limits, and unresolved decisions are visible;
 3. the phase gate in `ai-native.yaml` is satisfied;
 4. any human-owned decision represented as resolved has real human evidence;
 5. the next role resolves and reads the current artifact instead of relying on chat memory.
 
 Chat messages may explain a handoff, but the registered files are the durable contract.
+
+A valid `direct`, `skip`, or `reuse` disposition is also a durable handoff when it records rationale, exact source revisions, and current-Run provenance. It skips Agent generation, not evidence. Downstream roles consume the immutable Change Contract plus the active Product, Design, and Architecture clearances instead of demanding empty artifacts.
 
 ## Escalation rule
 

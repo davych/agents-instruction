@@ -2,7 +2,7 @@
 
 ## Purpose
 
-PM / BA turns a feature idea, opportunity brief, business note, or user interview into a small product specification.
+PM / BA turns one immutable Run Change Contract into the smallest sufficient product evidence. A new Run does not automatically create or rewrite a full PRD.
 
 This role answers:
 
@@ -17,15 +17,16 @@ It does not design the interface or decide how the software will be built.
 
 | Direction | Role or source | Relationship |
 |---|---|---|
-| Input | Human owner and source documents | Provide the problem, evidence, confirmed scope, and business rules. |
-| Current role | PM / BA | Produces the PRD and user stories. |
-| Next phase | Designer | Reads the PRD and stories to design interface behavior. |
-| Later consumers | Architect, Software Engineer, and Tester | Use the same product intent and acceptance criteria. |
+| Input | Human owner, `change-contract`, and source documents | Provide current/expected behavior, evidence, scope, acceptance, and regression obligations. |
+| Current role | PM / BA | Records a Product disposition; runs only for partial or full product work. |
+| Next phase | Designer | Reads the Change Contract plus applicable direct, reused, or revised product evidence. |
+| Later consumers | Architect, Software Engineer, and Tester | Use the same active product clearance and acceptance criteria. |
 
 ## Inputs
 
 PM / BA reads:
 
+- the current Run's immutable, task-scoped `change-contract`;
 - the current feature request or opportunity brief;
 - Markdown files listed in `.ai-sdlc/roles/pm-ba/config.yaml`;
 - approved business rules and constraints;
@@ -38,10 +39,11 @@ If a missing answer materially changes scope, a business rule, or acceptance, PM
 
 ## Outputs
 
-PM / BA owns two registered artifacts:
+PM / BA owns three registered artifact identities:
 
-- `prd` — one short product requirements document;
-- `user-stories` — a directory of categorized story files.
+- `change-contract` — one immutable human artifact per Run. The platform generates its task-scoped path; PM / BA must never edit it.
+- `prd` — one durable project/product requirements baseline, not one document per Run;
+- `user-stories` — a durable directory of categorized story files with stable IDs.
 
 Resolve their paths using the [Configuration Guide](../../configuration/README.md). With the default configuration:
 
@@ -50,6 +52,7 @@ docs/
   ai-native/
     product/
       prd.md
+      <task-name>--<run-id>-change-contract.md
       user-stories/
         <business-category>/
           US-<three-digits>-<kebab-case-title>/
@@ -58,45 +61,64 @@ docs/
 
 The role config may change only the child directory. The global YAML controls the output root and artifact paths.
 
+The platform-managed task path overrides the configured `change-contract.md` basename. Old initialized projects remain valid: the platform registers this artifact as a backwards-compatible extension without rewriting their YAML.
+
+## Product Impact modes
+
+| Mode | Required evidence | Codex executions | Result |
+|---|---|---:|---|
+| `direct` | Change Contract, authoritative expected behavior, observable criteria, regression scope | 0 | Product clearance; no placeholder PRD/story |
+| `reuse` | Approved PRD/story revisions cover every relevant criterion | 0 | Imported current-Run heads with provenance |
+| `partial` | Baseline remains valid; named sections, stories, rules, or criteria change | 1 or more as needed | Only selected PRD/story outputs revised |
+| `full` | New domain or material change to users, outcome, scope, policy, or product model | 1 or more as needed | Complete selected PRD/story contract |
+
+Typical examples:
+
+- a defect whose correct behavior is sufficiently defined by the Change Contract plus an authoritative test, incident, protocol, or current-behavior reference can be `direct`;
+- a defect or implementation request already covered by approved PRD/story revisions can be `reuse`;
+- a new feature within an existing product direction is usually `partial`, adding or revising stories without regenerating the PRD;
+- a new business domain or changed product model is `full`.
+
 ## Role workflow
 
 ```mermaid
 flowchart TD
-  Inputs["Feature idea, business notes, interviews, and existing outputs"] --> Read["Read YAML, workflow, config, sources, and current artifacts"]
-  Read --> Basic{"Problem, target user, and desired outcome clear?"}
-  Basic -->|"Material gap"| Ask["Ask a focused human question"]
-  Ask --> Read
-  Basic -->|"Clear enough"| Evidence["Separate facts, assumptions, and open decisions"]
-  Evidence --> PRD["Write or update the short PRD"]
-  PRD --> Stories["Split confirmed scope by user value and business domain"]
-  Stories --> AC["Write one story per outcome with observable Gherkin"]
-  AC --> Review["Check scope coverage, links, stable IDs, and role boundaries"]
-  Review --> Gate{"Does the discovery gate pass?"}
-  Gate -->|"No"| Human["Return material decisions to the human owner"]
-  Human --> Read
-  Gate -->|"Yes"| Handoff["Hand off PRD and stories to Designer"]
+  Contract["Immutable Change Contract"] --> Impact{"Product Impact"}
+  Impact -->|"direct"| Direct["Approve contract as sufficient<br/>0 PM executions"]
+  Impact -->|"reuse"| Reuse["Import approved PRD / stories<br/>0 PM executions"]
+  Impact -->|"partial"| Partial["Read inherited baseline<br/>update selected outputs only"]
+  Impact -->|"full"| Full["Create or comprehensively revise<br/>selected PRD / stories"]
+  Partial --> Review["Check traceability, stable IDs, and unchanged scope"]
+  Full --> Review
+  Direct --> Gate{"Product gate"}
+  Reuse --> Gate
+  Review --> Gate
+  Gate -->|"Insufficient evidence"| Reassess["Reopen Product Impact"]
+  Gate -->|"Pass"| Handoff["Hand off Change Contract + active product clearance"]
 ```
 
 ### Step-by-step explanation
 
-1. **Load the evidence** — Read `ai-native.yaml`, the shared workflow, PM / BA config, configured Markdown, and existing PM / BA artifacts.
-2. **Check the basic product problem** — Identify the target user, problem, and desired outcome before describing a feature.
-3. **Separate certainty from uncertainty** — Keep confirmed facts, assumptions, source conflicts, and open human decisions visibly different.
-4. **Write the PRD** — Record the problem, users, goals, confirmed scope, business rules, story index, assumptions, and open questions. Keep it short.
-5. **Split by value** — Group stories by a natural business domain such as `onboarding`, `billing`, or `settings`. Never split by frontend, backend, API, or data layer.
-6. **Write observable acceptance criteria** — Each story has a stable ID, a core path, at least one relevant business failure path, and Gherkin behavior a user or business owner can observe.
-7. **Check traceability** — Every in-scope outcome maps to a story. Every story links back to the PRD. IDs stay stable and unique.
-8. **Hand off** — Give Designer the PRD and complete story set after the discovery gate is ready.
+1. **Read the immutable contract** — Load its current and expected behavior, scope, acceptance, regression obligations, and references before other product evidence.
+2. **Choose the smallest truthful route** — Use `direct` or `reuse` only with complete evidence; uncertainty returns to Product Impact.
+3. **Run only when needed** — `direct` and `reuse` are platform actions. `partial` and `full` run PM / BA only for selected `prd` or `user-stories` outputs.
+4. **Preserve the baseline** — In `partial`, edit affected sections and stories only. Do not restyle unrelated PRD prose, renumber IDs, or rewrite unaffected stories.
+5. **Split by value** — Group new stories by a natural business domain such as `onboarding`, `billing`, or `settings`, never by technical layer.
+6. **Write observable acceptance criteria** — Each affected story has stable IDs and behavior a user or business owner can observe.
+7. **Check traceability** — Every included contract outcome maps to direct evidence or active PRD/story criteria; regression obligations remain visible.
+8. **Hand off** — Give the next phase the Change Contract, disposition, provenance, and applicable product artifacts.
 
 ## Completion gate
 
 The discovery gate passes when:
 
-- the user problem and desired outcome are clear;
+- the immutable Change Contract exists and was not modified by PM / BA;
+- the user problem or expected bug behavior and desired outcome are clear;
 - the confirmed scope is explicit;
 - business rules point to evidence or are clearly marked as assumptions;
-- every in-scope outcome maps to a story;
+- every included outcome maps to direct evidence or an applicable story;
 - acceptance criteria are observable and testable;
+- targeted regression obligations are explicit;
 - every material open decision has a human owner.
 
 Priority stays only in the PRD story index. Use a human-confirmed value or `TBD`; PM / BA does not choose one.
@@ -105,12 +127,14 @@ Priority stays only in the PRD story index. Use a human-confirmed value or `TBD`
 
 The handoff contains:
 
-- one `prd.md`;
-- all categorized `story.md` files;
+- the immutable Change Contract;
+- the Product disposition, rationale, and provenance;
+- applicable `prd.md` and categorized `story.md` revisions only when required;
 - source references;
 - confirmed business rules;
 - assumptions and source conflicts;
 - observable acceptance criteria;
+- regression obligations;
 - unresolved human decisions and their impact.
 
 PM / BA must not claim the specification is approved unless a human approved it.
@@ -143,5 +167,6 @@ PM / BA does not:
 - [Specification rules](../../../templates/shared/.ai-sdlc/roles/pm-ba/references/spec-rules.md)
 - [PRD template](../../../templates/shared/.ai-sdlc/templates/prd.md)
 - [Story template](../../../templates/shared/.ai-sdlc/templates/story.md)
+- [Change Contract template](../../../templates/shared/.ai-sdlc/templates/change-contract.md)
 
 Return to [Role Relationships](../README.md).

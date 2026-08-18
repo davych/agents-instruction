@@ -6,7 +6,7 @@ import test from "node:test";
 import type { PhaseDefinition, ProjectDto, WorkflowRunDto } from "@ai-sdlc/contracts";
 
 import { resolveTaskArtifactPaths } from "../src/domain/task-artifact-paths.ts";
-import { CodexTerminalRunner } from "../src/services/codex-runner.ts";
+import { buildTaskEnvelope, CodexTerminalRunner } from "../src/services/codex-runner.ts";
 import type { LoadedDefinition } from "../src/services/definition-loader.ts";
 
 const roots: string[] = [];
@@ -213,6 +213,278 @@ test("a design spec is written to the current task path and never to the default
   await assert.rejects(() => readFile(path.join(root, "docs", "design-spec.md"), "utf8"), /ENOENT/u);
 });
 
+test("the architect envelope reconciles pause points with selected output materialization", async () => {
+  const root = await mkdtemp(path.join(process.cwd(), ".test-tmp-"));
+  roots.push(root);
+  await mkdir(path.join(root, ".codex", "agents"), { recursive: true });
+  await writeFile(path.join(root, ".codex", "agents", "architect.toml"), "name='architect'\n", "utf8");
+  await mkdir(path.join(root, "docs", "ai-native", "architecture"), { recursive: true });
+  await writeFile(
+    path.join(root, "docs", "ai-native", "architecture", "architecture.md"),
+    "# Uncommitted checkpoint residue\n",
+    "utf8",
+  );
+  const now = new Date().toISOString();
+  const outputDefinitions = [
+    ["architecture", "architecture.md"],
+    ["architecture-discovery-context", "00-discovery-context.md"],
+    ["architecture-options", "00-options.md"],
+    ["architecture-c4-context", "01-context.mmd"],
+    ["architecture-c4-containers", "02-containers.mmd"],
+    ["architecture-adrs", "04-adrs"],
+    ["architecture-patterns", "05-patterns.md"],
+    ["architecture-nfrs", "06-nfrs.md"],
+    ["architecture-adversarial", "07-adversarial.md"],
+  ] as const;
+  const phase: PhaseDefinition = {
+    id: "architecture",
+    owner: "architect",
+    inputs: ["prd", "user-stories", "design-spec"],
+    outputs: outputDefinitions.map(([id]) => id),
+    gate: "human architecture acceptance",
+  };
+  const definition: LoadedDefinition = {
+    version: 1,
+    project: { name: "Demo", summary: "Demo" },
+    roles: [{ id: "architect", name: "Architect", mission: "Decide", responsibilities: [] }],
+    phases: [phase],
+    agentClient: "codex",
+    agentDirectory: ".codex/agents",
+    outputRoot: path.join(root, "docs"),
+    artifacts: outputDefinitions.map(([id, fileName]) => ({
+      id,
+      owner: "architect",
+      relativePath: `docs/ai-native/architecture/${fileName}`,
+      absolutePath: path.join(root, "docs", "ai-native", "architecture", fileName),
+    })),
+    configPath: path.join(root, "ai-native.yaml"),
+  };
+  const project: ProjectDto = {
+    id: crypto.randomUUID(),
+    name: "Demo",
+    summary: "Demo",
+    rootPath: root,
+    configPath: definition.configPath,
+    runCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const run: WorkflowRunDto = {
+    id: crypto.randomUUID(),
+    projectId: project.id,
+    title: "Architecture checkpoint",
+    objective: "Choose an evidence-backed architecture",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const request = {
+    executionId: crypto.randomUUID(),
+    project,
+    run,
+    phase,
+    definition,
+    selectedArtifacts: [],
+    selectedOutputKeys: phase.outputs,
+    ...executionConfig,
+  };
+  const prompt = buildTaskEnvelope(request);
+
+  for (const [id, fileName] of outputDefinitions) {
+    assert.match(prompt, new RegExp(`- ${id}: docs/ai-native/architecture/${fileName}`, "u"));
+  }
+  assert.match(prompt, /每一个输出路径都必须存在且包含非空白内容/u);
+  assert.match(prompt, /stop、pause[\s\S]*不允许省略/u);
+  assert.match(prompt, /没有人类选项选择证据[\s\S]*pending scaffold/u);
+  assert.match(prompt, /C4 `\.mmd`[\s\S]*可渲染的 Mermaid pending notice/u);
+  assert.match(prompt, /ADR 目录至少写入 `README\.md`[\s\S]*不是 ADR/u);
+  assert.match(prompt, /Pending scaffold 不是有效的 C4[\s\S]*不得把架构阶段标为可实施或已接受/u);
+  assert.match(prompt, /没有对应的当前 artifact revision[\s\S]*architecture[\s\S]*实际重写/u);
+
+  const discoveryPath = path.join(root, "docs", "ai-native", "architecture", "00-discovery-context.md");
+  const discoveryBefore = "# Reviewed discovery context\n";
+  await writeFile(discoveryPath, discoveryBefore, "utf8");
+  const strictStub = path.join(root, "strict-refresh-stub.mjs");
+  await writeFile(strictStub, [
+    "#!/usr/bin/env node",
+    'import { writeFileSync } from "node:fs";',
+    'import path from "node:path";',
+    "for await (const _chunk of process.stdin) {}",
+    'writeFileSync(path.join(process.cwd(), "docs", "ai-native", "architecture", "architecture.md"), "# Selected architecture\\n", "utf8");',
+    "",
+  ].join("\n"), "utf8");
+  await chmod(strictStub, 0o755);
+  const currentArtifacts = [
+    {
+      id: crypto.randomUUID(),
+      phaseRunId: crypto.randomUUID(),
+      artifactKey: "architecture",
+      filePath: "docs/ai-native/architecture/architecture.md",
+      content: "# Uncommitted checkpoint residue\n",
+      contentHash: "a".repeat(64),
+      reviewStatus: "changes_requested" as const,
+      revision: 1,
+      revisionSource: "ai" as const,
+      parentArtifactId: null,
+      createdAt: now,
+    },
+    {
+      id: crypto.randomUUID(),
+      phaseRunId: crypto.randomUUID(),
+      artifactKey: "architecture-discovery-context",
+      filePath: "docs/ai-native/architecture/00-discovery-context.md",
+      content: discoveryBefore,
+      contentHash: "b".repeat(64),
+      reviewStatus: "changes_requested" as const,
+      revision: 1,
+      revisionSource: "ai" as const,
+      parentArtifactId: null,
+      createdAt: now,
+    },
+  ];
+  const architectureSelection = {
+    optionId: "B",
+    reviewId: "review-newest",
+    optionsArtifactId: "options-v1",
+    selectedAt: "2026-08-18T08:00:00.000Z",
+  };
+  assert.match(
+    buildTaskEnvelope({
+      ...request,
+      selectedOutputKeys: ["architecture", "architecture-discovery-context"],
+      currentArtifacts,
+      requireEverySelectedOutputUpdated: true,
+      architectureSelection,
+    }),
+    /有效人工选型之后[\s\S]*每一个 selected 输出都必须[\s\S]*完全相同[\s\S]*拒绝整次执行并回滚/u,
+  );
+  assert.match(
+    buildTaskEnvelope({
+      ...request,
+      selectedOutputKeys: ["architecture"],
+      currentArtifacts,
+      revisionFeedback: ["Selected option: A", "consider another change"],
+      architectureSelection,
+    }),
+    /平台验证的架构选型[\s\S]*Selected option: B[\s\S]*review-newest[\s\S]*options-v1[\s\S]*若普通反馈中出现其他 Option[\s\S]*以本区块为准/u,
+  );
+  await assert.rejects(
+    () => new CodexTerminalRunner({ binary: strictStub, fake: false }).run(
+      {
+        ...request,
+        executionId: crypto.randomUUID(),
+        selectedOutputKeys: ["architecture", "architecture-discovery-context"],
+        currentArtifacts,
+        requireEverySelectedOutputUpdated: true,
+        architectureSelection,
+      },
+      async () => undefined,
+    ),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, "SELECTED_OUTPUTS_UNCHANGED");
+      assert.deepEqual(
+        (error as { details?: { unchanged?: string[] } }).details?.unchanged,
+        ["architecture-discovery-context"],
+      );
+      return true;
+    },
+  );
+  assert.equal(
+    await readFile(path.join(root, "docs", "ai-native", "architecture", "architecture.md"), "utf8"),
+    "# Uncommitted checkpoint residue\n",
+  );
+  assert.equal(await readFile(discoveryPath, "utf8"), discoveryBefore);
+
+  const partialStub = path.join(root, "partial-architect-stub.mjs");
+  await writeFile(partialStub, [
+    "#!/usr/bin/env node",
+    'import { mkdirSync, writeFileSync } from "node:fs";',
+    'import path from "node:path";',
+    "for await (const _chunk of process.stdin) {}",
+    'const output = path.join(process.cwd(), "docs", "ai-native", "architecture");',
+    "mkdirSync(output, { recursive: true });",
+    'writeFileSync(path.join(output, "architecture.md"), "# Awaiting human selection\\n", "utf8");',
+    'writeFileSync(path.join(output, "00-discovery-context.md"), "# Context\\n", "utf8");',
+    'writeFileSync(path.join(output, "00-options.md"), "# Options\\n", "utf8");',
+    "",
+  ].join("\n"), "utf8");
+  await chmod(partialStub, 0o755);
+
+  await assert.rejects(
+    () => new CodexTerminalRunner({ binary: partialStub, fake: false }).run(
+      { ...request, executionId: crypto.randomUUID() },
+      async () => undefined,
+    ),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, "OUTPUT_ARTIFACTS_MISSING");
+      assert.deepEqual(
+        (error as { details?: { missing?: string[] } }).details?.missing,
+        [
+          "architecture-c4-context (docs/ai-native/architecture/01-context.mmd)",
+          "architecture-c4-containers (docs/ai-native/architecture/02-containers.mmd)",
+          "architecture-adrs (docs/ai-native/architecture/04-adrs)",
+          "architecture-patterns (docs/ai-native/architecture/05-patterns.md)",
+          "architecture-nfrs (docs/ai-native/architecture/06-nfrs.md)",
+          "architecture-adversarial (docs/ai-native/architecture/07-adversarial.md)",
+        ],
+      );
+      return true;
+    },
+  );
+  assert.equal(
+    await readFile(path.join(root, "docs", "ai-native", "architecture", "architecture.md"), "utf8"),
+    "# Uncommitted checkpoint residue\n",
+  );
+  await assert.rejects(
+    () => readFile(path.join(root, "docs", "ai-native", "architecture", "00-options.md"), "utf8"),
+    /ENOENT/u,
+  );
+
+  const mutateRulebookStub = path.join(root, "mutate-rulebook-stub.mjs");
+  await writeFile(mutateRulebookStub, [
+    "#!/usr/bin/env node",
+    'import { mkdirSync, writeFileSync } from "node:fs";',
+    'import path from "node:path";',
+    "for await (const _chunk of process.stdin) {}",
+    'const output = path.join(process.cwd(), "docs", "ai-native", "architecture");',
+    'const rules = path.join(process.cwd(), ".ai-sdlc", "roles", "architect", "references", "rules");',
+    "mkdirSync(output, { recursive: true });",
+    "mkdirSync(rules, { recursive: true });",
+    'writeFileSync(path.join(output, "architecture.md"), "# Mutated selected output\\n", "utf8");',
+    'writeFileSync(path.join(rules, "api.md"), "# Mutated rulebook\\n", "utf8");',
+    "",
+  ].join("\n"), "utf8");
+  await chmod(mutateRulebookStub, 0o755);
+  await assert.rejects(
+    () => new CodexTerminalRunner({ binary: mutateRulebookStub, fake: false }).run(
+      {
+        ...request,
+        executionId: crypto.randomUUID(),
+        selectedOutputKeys: ["architecture"],
+        currentArtifacts,
+      },
+      async () => undefined,
+    ),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, "UNSELECTED_OUTPUTS_CHANGED");
+      assert.deepEqual(
+        (error as { details?: { changed?: string[] } }).details?.changed,
+        ["architect-rulebook-packs"],
+      );
+      return true;
+    },
+  );
+  assert.equal(
+    await readFile(path.join(root, "docs", "ai-native", "architecture", "architecture.md"), "utf8"),
+    "# Uncommitted checkpoint residue\n",
+  );
+  await assert.rejects(
+    () => readFile(path.join(root, ".ai-sdlc", "roles", "architect", "references", "rules", "api.md"), "utf8"),
+    /ENOENT/u,
+  );
+});
+
 test("real Codex runner spawns the configured binary and consumes JSONL output", async () => {
   const temporaryRoot = path.join(process.cwd(), ".test-tmp-");
   const root = await mkdtemp(temporaryRoot);
@@ -405,6 +677,7 @@ test("real Codex runner spawns the configured binary and consumes JSONL output",
       "#!/usr/bin/env node",
       'import { writeFileSync } from "node:fs";',
       'import path from "node:path";',
+      'writeFileSync(path.join(process.cwd(), "docs", "prd.md"), "selected mutation before failure", "utf8");',
       'writeFileSync(path.join(process.cwd(), "docs", "architecture.md"), "mutated before failure", "utf8");',
       `process.stderr.write(${JSON.stringify(`authorization: Bearer ${secret}`)} + "x".repeat(4096));`,
       "process.exit(7);",
@@ -413,6 +686,8 @@ test("real Codex runner spawns the configured binary and consumes JSONL output",
     "utf8"
   );
   await chmod(failingStubPath, 0o755);
+  const selectedPath = path.join(root, "docs", "prd.md");
+  const selectedBeforeFailure = await readFile(selectedPath, "utf8");
   const protectedPath = path.join(root, "docs", "architecture.md");
   await writeFile(protectedPath, "original unselected bytes", "utf8");
   const protectedDefinition: LoadedDefinition = {
@@ -453,6 +728,11 @@ test("real Codex runner spawns the configured binary and consumes JSONL output",
     }
   );
   assert.equal(
+    await readFile(selectedPath, "utf8"),
+    selectedBeforeFailure,
+    "runner failures must restore every selected output before returning",
+  );
+  assert.equal(
     await readFile(protectedPath, "utf8"),
     "original unselected bytes",
     "runner failures must restore every unselected output before returning",
@@ -488,6 +768,124 @@ test("real Codex runner spawns the configured binary and consumes JSONL output",
       );
       return true;
     }
+  );
+});
+
+test("a successful runner that mutates an unselected output restores every touched artifact", async () => {
+  const root = await mkdtemp(path.join(process.cwd(), ".test-tmp-"));
+  roots.push(root);
+  await mkdir(path.join(root, ".codex", "agents"), { recursive: true });
+  await mkdir(path.join(root, "docs"), { recursive: true });
+  await writeFile(path.join(root, ".codex", "agents", "pm-ba.toml"), "name='pm-ba'\n", "utf8");
+
+  const selectedPath = path.join(root, "docs", "prd.md");
+  const unselectedPath = path.join(root, "docs", "architecture.md");
+  const selectedBefore = "# Original PRD\n";
+  const unselectedBefore = "# Original architecture\n";
+  await writeFile(selectedPath, selectedBefore, "utf8");
+  await writeFile(unselectedPath, unselectedBefore, "utf8");
+
+  const stubPath = path.join(root, "codex-scope-violation-stub.mjs");
+  await writeFile(
+    stubPath,
+    [
+      "#!/usr/bin/env node",
+      'import { writeFileSync } from "node:fs";',
+      'import path from "node:path";',
+      "for await (const _chunk of process.stdin) {}",
+      'writeFileSync(path.join(process.cwd(), "docs", "prd.md"), "# Updated PRD\\n", "utf8");',
+      'writeFileSync(path.join(process.cwd(), "docs", "architecture.md"), "# Out-of-scope architecture\\n", "utf8");',
+      'process.stdout.write(`${JSON.stringify({ type: "thread.started", thread_id: "scope-violation" })}\\n`);',
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await chmod(stubPath, 0o755);
+
+  const now = new Date().toISOString();
+  const phase: PhaseDefinition = {
+    id: "discovery",
+    owner: "pm-ba",
+    inputs: [],
+    outputs: ["prd"],
+    gate: "human review",
+  };
+  const definition: LoadedDefinition = {
+    version: 1,
+    project: { name: "Scope guard", summary: "Runner rollback regression" },
+    roles: [{ id: "pm-ba", name: "PM", mission: "Stories", responsibilities: [] }],
+    phases: [phase],
+    agentClient: "codex",
+    agentDirectory: ".codex/agents",
+    outputRoot: path.join(root, "docs"),
+    artifacts: [
+      {
+        id: "prd",
+        owner: "pm-ba",
+        relativePath: "docs/prd.md",
+        absolutePath: selectedPath,
+      },
+      {
+        id: "architecture",
+        owner: "architect",
+        relativePath: "docs/architecture.md",
+        absolutePath: unselectedPath,
+      },
+    ],
+    configPath: path.join(root, "ai-native.yaml"),
+  };
+  const project: ProjectDto = {
+    id: crypto.randomUUID(),
+    name: "Scope guard",
+    summary: "Runner rollback regression",
+    rootPath: root,
+    configPath: definition.configPath,
+    runCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const run: WorkflowRunDto = {
+    id: crypto.randomUUID(),
+    projectId: project.id,
+    title: "Scope guard",
+    objective: "Reject out-of-scope writes atomically",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await assert.rejects(
+    () => new CodexTerminalRunner({ binary: stubPath, fake: false }).run(
+      {
+        executionId: crypto.randomUUID(),
+        project,
+        run,
+        phase,
+        definition,
+        selectedArtifacts: [],
+        selectedOutputKeys: ["prd"],
+        ...executionConfig,
+      },
+      async () => undefined,
+    ),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, "UNSELECTED_OUTPUTS_CHANGED");
+      assert.deepEqual(
+        (error as { details?: { changed?: string[]; restored?: boolean } }).details,
+        { changed: ["architecture"], restored: true },
+      );
+      return true;
+    },
+  );
+  assert.equal(
+    await readFile(selectedPath, "utf8"),
+    selectedBefore,
+    "the selected write must roll back when the later scope validation rejects the run",
+  );
+  assert.equal(
+    await readFile(unselectedPath, "utf8"),
+    unselectedBefore,
+    "the unselected write must be restored before the scope error is returned",
   );
 });
 

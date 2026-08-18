@@ -1,104 +1,59 @@
-# Architecture rules
+# Architecture rulebook index
 
-## 1. Build the context before the solution
+Read this file and [the core rules](rules/core.md) on every Architect run. This file is the small router for the rulebook; the other files under `rules/` are conditional packs. Do not load a conditional pack merely because it exists. Load every pack whose trigger is supported by evidence, and load a pack whose applicability is still unknown when that uncertainty could change an option or trust boundary.
 
-Capture four layers and cite the source for every material statement:
+These rules constrain architecture work; they do not replace project evidence or select an option for the human owner.
 
-- **Business:** desired outcomes, cost or revenue pressure, decision owners, and success measures.
-- **Product:** users, critical journeys, channels, and accepted scope from the PRD and stories.
-- **Engineering:** current systems, integrations, data ownership, team and operating limits, and measured behavior.
-- **Regulation and policy:** named rules and their specific architecture effect. Never infer that a regulation applies.
+## Enforcement levels
 
-Expose at least five hidden assumptions. For each one, record the source clue, the assumption, what breaks if it is wrong, and who can confirm it.
+| Level | Meaning |
+|-------|---------|
+| `MUST` | Required whenever the stated scope exists. A conflict blocks readiness until a human changes the rule or approves a superseding ADR. |
+| `DEFAULT` | Preferred when its trigger applies. Brownfield compatibility may preserve an evidenced existing convention. The rule's `Deviation` policy says whether an evidence-backed reason is sufficient or an accepted ADR is always required. |
+| `WHEN` | Evaluate the trigger explicitly. If true, the requirement becomes mandatory; if false, record `Not triggered` rather than adopting the pattern. |
+| `FORBIDDEN` | Do not introduce it. Only an explicit human rule change or superseding accepted ADR can remove the prohibition. |
 
-## 2. Diverge before selecting
+Rules never turn an assumption into a fact. If evidence is missing, mark the rule or pack `Blocked` and name the evidence owner.
 
-- Find the load-bearing decisions: source of truth, sync or async interaction, ownership boundaries, build or buy, migration shape, and similar choices.
-- Options must differ on at least one load-bearing decision. Renaming the same topology is not divergence.
-- For each option, state the core idea, what it optimizes, what it gives up, and the constraint most likely to reject it.
-- Use a 1–5 score and evidence-backed weights. If weights are not confirmed, label equal weights as an assumption.
-- Recommend, but do not select. Record a human selection and its evidence before moving to active diagrams.
-- Pause when the top two weighted scores differ by less than 1.0, or when the choice creates irreversible migration, major lock-in, or organization-wide blast radius.
+## Project mode
 
-## 3. Keep C4 views at the right level
+Classify the affected scope before applying technology defaults:
 
-### L1: system context
+| Mode | Evidence | Effect |
+|------|----------|--------|
+| `Greenfield` | No implemented system exists in the affected scope. | Apply relevant `DEFAULT` rules unless the selected option documents a justified deviation. |
+| `Brownfield` | Manifests, lockfiles, source, tests, deployed behavior, or accepted ADRs show an existing implementation. | Derive current patterns from the implementation. Do not replace its framework or cross-cutting conventions merely to match a default. |
+| `Hybrid` | Existing components are extended while an isolated new scope is created. | Apply brownfield rules at existing boundaries and greenfield defaults only inside a clearly defined new boundary. |
 
-- Show the focal software system, the people who use it, and directly related external systems.
-- Add people and external systems only when the evidence shows they exist. A machine-to-machine system may have no human actor.
-- Label each relationship with a clear verb phrase.
-- Do not show containers, data stores, deployment nodes, replicas, or low-level protocols.
+Use `rulebook.project_mode` from the Architect config when a human sets it. When it is `auto`, cite repository or operational evidence for the classification. A product described as “new” is not enough to call a repository greenfield when implementation evidence exists.
 
-### L2: containers
+## Conditional pack router
 
-- Show the applications and data stores needed to run the selected system.
-- Add clients, data stores, queues, and external relationships only when supported by the selected option and evidence.
-- Give every container a responsibility and high-level technology choice.
-- Label cross-process relationships with purpose and protocol when known.
-- Use `ContainerDb` or `ContainerQueue` only when the selected option actually contains one.
-- Do not show deployment topology; use a deployment view later if the project needs it.
+Evaluate every row and record the result in the Discovery Context Rule Pack Applicability Matrix.
 
-Mermaid C4 syntax is experimental. Check both `.mmd` files in the project's real Mermaid runtime. If that runtime does not support C4 syntax, use a normal Mermaid flowchart that preserves the same C4 scope and labels, and record the fallback in the index.
+| Pack | Load when | It may be `Not applicable` only when | Path | Primary evidence targets |
+|------|-----------|--------------------------------------|------|--------------------------|
+| API | The scope exposes or consumes a first-party HTTP/JSON API, webhook, or frontend/backend contract. | No HTTP application contract is in scope. | [API rules](rules/api.md) | Options, C4 relationships, ADRs, Patterns |
+| Data | The scope persists business data, owns a data store, publishes state-change events, or proposes a cache. | It is stateless and neither reads nor writes owned persistent data. | [Data rules](rules/data.md) | C4 containers, ADRs, Patterns, NFRs |
+| Integration | A process calls another process or external system, uses messaging, or crosses a semantic boundary. | The selected scope has no remote or asynchronous dependency. | [Integration rules](rules/integration.md) | C4 relationships, ADRs, Patterns, NFRs |
+| Security | Users, service identities, protected actions, trust boundaries, or sensitive fields exist. | The evidence shows none of those concerns in scope. | [Security rules](rules/security.md) | C4 trust boundaries, ADRs, Patterns, NFRs, premortem |
+| Observability | The selected system has a deployable runtime, inbound request, job, event consumer, or remote call. | No runtime behavior is being designed. | [Observability rules](rules/observability.md) | C4 containers, Patterns, NFRs, premortem |
+| Frontend | A browser or other interactive client is in scope, or an existing frontend is affected. | No interactive client is created or changed. | [Frontend rules](rules/frontend.md) | Discovery evidence, ADRs, Patterns, C4 |
 
-## 4. Write decisions, not technology labels
+For an `Applicable` pack, read the whole pack. For a `Blocked` pack, read enough to identify the decision and evidence needed. Do not read a `Not applicable` pack after recording the evidence unless later evidence changes the result.
 
-Each ADR must include:
+## Required traceability
 
-- a verb-led title and status;
-- the project context that forces the decision;
-- one clear decision;
-- serious alternatives and project-specific reasons for rejecting them;
-- positive and negative consequences;
-- evidence and a way to validate the result;
-- an agent-readable summary with explicit `Must` and `Do not` rules.
+1. In `architecture-discovery-context`, record all six packs as `Applicable`, `Not applicable`, or `Blocked`, with trigger evidence and project mode.
+2. In `architecture-options`, show which applicable rules constrain or reject each option. A rule must not silently preselect an option.
+3. After human option selection, enumerate every rule × affected scope from every applicable pack exactly once in the `architecture-patterns` Rule Disposition Register as `Adopted`, `Not triggered`, `Justified deviation`, `Exception`, or `Blocked`.
+4. Put topology and ownership effects in C4, material cross-project decisions and exceptions in ADRs, reusable implementation rules in Patterns, and measurable quality gates in NFRs. Link those artifacts from the rule register.
+5. Summarize pack status in `architecture.md`. A pack or rule marked `Blocked` prevents `Ready for human acceptance` when it affects selected scope.
 
-Keep status `Proposed` until human approval evidence exists. Accepted ADRs are constraints, not suggestions. New work may supersede an ADR, but it must not silently rewrite its history.
+`Justified deviation` is only for a triggered `DEFAULT` whose catalog `Deviation` policy is `Reason allowed`; it needs a concrete reason and evidence but no ADR. A rule marked `ADR required`, or any `MUST`/`FORBIDDEN` waiver, uses `Exception` and needs a human-approved superseding ADR. The first Architect run may stop after context, options, and the index. It must still complete pack applicability and option constraints. The selected-state run completes the rule × scope disposition register and evidence links. No loaded rule may disappear between those runs without an evidence-backed applicability change.
 
-## 5. Place patterns; do not list a catalog
+## Machine gate
 
-Record a pattern only when it was adopted or seriously rejected. For an adopted pattern, name its C4 L2 location, the constraint it addresses, the trade-off it creates, and how the team will keep it true. For a rejected pattern, state the project-specific reason.
+When `rulebook.validation` is `required`, human-readable tables are paired with the unique rulebook v1 JSON blocks in the Discovery, Options, Architecture, and Patterns templates. Run `node .ai-sdlc/roles/architect/scripts/rulebook-digest.mjs` and copy its exact digest into all four blocks. The digest binds `rulebook.project_mode`, the index, core, and every domain pack. The platform rejects option selection or final approval for a missing/duplicate block, stale digest, configured-mode mismatch, missing rule × scope disposition, mismatched selection evidence, blocked rule, inconsistent pack status, unapproved exception, or Greenfield frontend default forced onto a Brownfield boundary.
 
-## 6. Make NFRs falsifiable
-
-A complete NFR needs:
-
-- a numeric threshold or binary gate;
-- a measurement window and operating condition;
-- the responsible C4 L2 container or relationship;
-- a repeatable test or measurement method;
-- the evidence behind the target;
-- the visible failure signal and the design behavior that would violate it.
-
-Reach both `quality.minimum_nfrs` and `quality.minimum_nfr_families` using relevant families such as performance, reliability, security and privacy, compliance, cost and capacity, operability, and correctness. If the configured floor does not fit the project, block and ask a human to change the config. Do not force an irrelevant family or invent project targets from an industry average. A proposed range may be cited as a discussion aid, but the NFR stays blocked until a human confirms the target.
-
-## 7. Use an independent premortem
-
-Run the review in a fresh session or with a reviewer who did not create the pack. Give that reviewer the selected pack and evidence, not the author's hidden reasoning.
-
-Test three stressors:
-
-1. **Load:** ten times the confirmed peak baseline. If no baseline exists, record that gap and do not invent one.
-2. **Malicious input:** relevant abuse such as injection, replay, authorization bypass, or policy manipulation.
-3. **External outage:** a critical external dependency is unavailable for at least two hours.
-
-For each finding, name the failing location, trigger or attack path, visible symptom, mitigation or risk proposed for human acceptance, owner, and affected artifact. The Architect must not accept the risk. A same-session review or a finding without ownership is incomplete.
-
-## Human decisions and pause points
-
-Return these decisions to a human:
-
-- final option selection;
-- final trust or compliance boundary placement;
-- irreversible migration and cutover order;
-- trade-off arbitration when concerns conflict;
-- organization-wide platform or vendor commitments;
-- final acceptance that the architecture is ready to build.
-
-Pause when a trust boundary changes, an NFR cannot be tested, option scores are too close, a choice is hard to reverse, or the brief names a solution without explaining the problem.
-
-## Reference material
-
-- [C4 system context](https://c4model.com/diagrams/system-context) and [container diagrams](https://c4model.com/diagrams/container)
-- [C4 notation](https://c4model.com/diagrams/notation)
-- [Mermaid C4 syntax](https://mermaid.js.org/syntax/c4.html)
-- [ADR templates and guidance](https://adr.github.io/adr-templates/)
+The machine block is traceability metadata, not a substitute for the evidence and trade-offs in the Markdown document.

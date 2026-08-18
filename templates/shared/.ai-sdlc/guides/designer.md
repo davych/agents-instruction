@@ -4,12 +4,14 @@ The initializer installs one native Designer Agent for the selected AI client. `
 
 Before starting:
 
-1. Configure role inputs in `.ai-sdlc/roles/designer/config.yaml`.
-2. Set up the component query if the task needs real project components.
-3. Give your AI tool access to the project. Tell it to read the Designer Agent and role workflow.
-4. For Figma work, provide the real reference or target file. Make sure the current session can access Figma.
+1. Read the immutable Change Contract and record Design Impact as `skip`, `reuse`, `partial`, or `full`.
+2. Invoke Designer only for `partial` or `full`; the platform handles `skip` and `reuse` without a Codex execution.
+3. Configure role inputs in `.ai-sdlc/roles/designer/config.yaml`.
+4. Set up the component query if the task needs real project components.
+5. Give your AI tool access to the project. Tell it to read the Designer Agent and role workflow.
+6. For Figma work, provide the real reference or target file. Make sure the current session can access Figma.
 
-When the platform opens the design execution dialog, `design-baseline` and `design-spec` remain required for downstream phases. Select `design-prototype` when a self-contained HTML interaction prototype will help validation, and select `figma-handoff` only when the Figma integration is configured and authorized. The execution contract's selected output list controls what the Designer may create or update.
+When the platform opens the design execution dialog for `partial` or `full`, the execution contract's selected output list controls what Designer may create or update. Select `design-baseline` only for missing or changed project-wide evidence and `design-spec` for task behavior. Select `design-prototype` when a self-contained HTML interaction prototype will help validation, and `figma-handoff` only when the Figma integration is configured and authorized. `skip` creates no placeholder; `reuse` imports approved current-Run heads.
 
 Use this common task prompt in any client:
 
@@ -19,7 +21,9 @@ Use the project Designer Agent. Read ai-native.yaml,
 .ai-sdlc/roles/designer/workflow.md.
 
 Act as the Designer for this task: [describe the result you want].
-Inputs: [PRD, relevant story.md files, screenshots, or references].
+Immutable Change Contract: [resolved task-scoped path].
+Design disposition: [partial or full].
+Inputs: [Product clearance, relevant PRD/story evidence, screenshots, or references].
 Expected output: [the selected registered outputs: design-baseline, design-spec, design-prototype, and/or figma-handoff].
 
 Use the exact resolved output path from the active execution contract. For a task-scoped
@@ -30,7 +34,7 @@ Check project components before naming component props, events, slots, or tokens
 assumptions, checks, risks, and the next step.
 ```
 
-For a Software Engineer handoff, require the design SPEC to use status `ready-for-engineering` with an empty `blockers` list. The handoff must name the covered stories and acceptance criteria, required behavior, verified components and assets, responsive and accessibility constraints, validation evidence, and any design detail the developer must not infer.
+For a generated Software Engineer handoff, require the design SPEC to use status `ready-for-engineering` with an empty `blockers` list. The handoff must name the covered Change Contract/story criteria, required behavior, verified components and assets, responsive and accessibility constraints, validation evidence, and any design detail the developer must not infer. For `skip` or `reuse`, hand off the structured clearance and provenance instead of running this prompt.
 
 ## GitHub Copilot
 

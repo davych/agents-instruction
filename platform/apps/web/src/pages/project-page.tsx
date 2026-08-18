@@ -21,8 +21,16 @@ import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import {
+  changeContractMissingFields,
+  changeContractObjective,
+  EMPTY_CHANGE_CONTRACT_DRAFT,
+  materializeChangeContract,
+  WORK_TYPE_OPTIONS,
+  type ChangeContractDraft,
+} from "@/lib/change-contract";
 import type { CreateRunInput, WorkflowRun } from "@/lib/types";
-import { formatDate, initials, truncate } from "@/lib/utils";
+import { cn, formatDate, initials, truncate } from "@/lib/utils";
 import { FALLBACK_PHASES, FALLBACK_ROLES, getPhaseName } from "@/lib/workflow";
 
 export function ProjectPage({
@@ -88,7 +96,7 @@ export function ProjectPage({
           </div>
           <Button size="lg" variant="primary" onClick={() => setCreateRunOpen(true)}>
             <Plus className="h-4 w-4" aria-hidden />
-            创建故事工作流
+            创建交付任务
           </Button>
         </div>
       </section>
@@ -99,10 +107,10 @@ export function ProjectPage({
             <div>
               <div className="flex items-center gap-2 text-sm font-semibold">
                 <Sparkles className="h-4 w-4 text-teal-300" aria-hidden />
-                固定交付链路
+                可审计交付链路
               </div>
               <p className="mt-1 text-xs leading-5 text-slate-400">
-                每个阶段都需要人工确认，审核通过后才会解锁下一个角色。
+                每个阶段都由人工选择完整执行、局部更新、复用或有依据地跳过。
               </p>
             </div>
             <Badge className="border-white/10 bg-white/10 text-slate-200">6 roles</Badge>
@@ -137,8 +145,8 @@ export function ProjectPage({
       <section>
         <div className="mb-4 flex items-end justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold tracking-tight text-slate-950">故事工作流</h2>
-            <p className="mt-1 text-sm text-slate-500">每条工作流是一项可以从需求一直推进到发布的工作。</p>
+            <h2 className="text-lg font-semibold tracking-tight text-slate-950">交付任务</h2>
+            <p className="mt-1 text-sm text-slate-500">新功能、局部变更、缺陷与技术工作都从一份 Change Contract 开始。</p>
           </div>
           <span className="text-xs font-medium text-slate-400">共 {runs.length} 条</span>
         </div>
@@ -150,12 +158,12 @@ export function ProjectPage({
           </div>
         ) : (
           <EmptyState
-            title="从第一个故事开始"
-            description="写下希望交付的用户价值。PM / BA 会先运行并产出 PRD 与用户故事，等待你审核。"
+            title="创建第一项交付任务"
+            description="先确认当前与期望行为、范围、验收标准和回归面，再判断哪些角色确实需要运行。"
             action={
               <Button variant="primary" onClick={() => setCreateRunOpen(true)}>
                 <GitBranch className="h-4 w-4" aria-hidden />
-                创建故事工作流
+                创建交付任务
               </Button>
             }
           />
@@ -223,61 +231,182 @@ function CreateRunDialog({
   onCreated: (run: WorkflowRun) => void;
 }) {
   const queryClient = useQueryClient();
-  const [form, setForm] = useState<CreateRunInput>({ title: "", objective: "" });
+  const [title, setTitle] = useState("");
+  const [draft, setDraft] = useState<ChangeContractDraft>({ ...EMPTY_CHANGE_CONTRACT_DRAFT });
   const [error, setError] = useState<string>();
   const mutation = useMutation({
     mutationFn: (input: CreateRunInput) => api.createRun(projectId, input),
     onSuccess: async (run) => {
       await queryClient.invalidateQueries({ queryKey: ["runs", projectId] });
-      setForm({ title: "", objective: "" });
+      setTitle("");
+      setDraft({ ...EMPTY_CHANGE_CONTRACT_DRAFT });
       setError(undefined);
       onOpenChange(false);
       onCreated(run);
     },
     onError: (mutationError) =>
-      setError(mutationError instanceof Error ? mutationError.message : "创建故事失败"),
+      setError(mutationError instanceof Error ? mutationError.message : "创建交付任务失败"),
   });
+  const updateDraft = <K extends keyof ChangeContractDraft>(
+    field: K,
+    value: ChangeContractDraft[K],
+  ) => setDraft((current) => ({ ...current, [field]: value }));
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!form.title.trim() || !form.objective.trim()) {
-      setError("请填写故事名称和目标。 ");
+    const changeContract = materializeChangeContract(draft);
+    const missing = changeContractMissingFields(changeContract);
+    if (!title.trim()) {
+      setError("请填写任务名称。");
       return;
     }
-    mutation.mutate({ title: form.title.trim(), objective: form.objective.trim() });
+    if (missing.length > 0) {
+      setError(`Change Contract 尚未完整：${missing.join("、")}。`);
+      return;
+    }
+    mutation.mutate({
+      title: title.trim(),
+      objective: changeContractObjective(changeContract),
+      changeContract,
+    });
   };
 
   return (
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title="创建故事工作流"
-      description="先说清楚想交付的结果，PM / BA 会把它整理成第一批可审核产物。"
+      title="创建交付任务"
+      description="Change Contract 是每个角色共同使用的不可跳过输入；角色本身可以在影响检查后复用或跳过。"
+      className="h-[calc(100dvh-2rem)] max-h-[58rem] max-w-4xl"
     >
-      <form onSubmit={submit} className="overflow-y-auto p-6">
+      <form onSubmit={submit} className="min-h-0 overflow-y-auto p-6">
         <div className="space-y-5">
-          <Field label="故事名称" required>
+          <Field label="任务名称" required>
             <Input
               autoFocus
-              placeholder="例如：用户可以使用邮箱登录"
-              value={form.title}
-              onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
+              maxLength={200}
+              placeholder="例如：修复订单重复提交"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
             />
           </Field>
-          <Field label="目标与背景" hint="告诉 AI 为什么做" required>
+
+          <fieldset>
+            <legend className="text-sm font-medium text-slate-700">
+              工作类型<span className="ml-1 text-rose-500">*</span>
+            </legend>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {WORK_TYPE_OPTIONS.map((option) => (
+                <label key={option.value} className="cursor-pointer">
+                  <input
+                    type="radio"
+                    name="change-contract-work-type"
+                    value={option.value}
+                    checked={draft.workType === option.value}
+                    onChange={() => updateDraft("workType", option.value)}
+                    className="peer sr-only"
+                  />
+                  <span
+                    className={cn(
+                      "block h-full rounded-xl border bg-white px-3.5 py-3 transition peer-focus-visible:ring-2 peer-focus-visible:ring-teal-500 peer-focus-visible:ring-offset-2",
+                      draft.workType === option.value
+                        ? "border-teal-400 bg-teal-50/60 ring-1 ring-teal-100"
+                        : "border-slate-200 hover:border-slate-300",
+                    )}
+                  >
+                    <span className="block text-xs font-semibold text-slate-900">{option.label}</span>
+                    <span className="mt-1 block text-[11px] leading-4 text-slate-500">
+                      {option.description}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
+          <Field label="变更摘要" hint="本 Run 的 objective" required>
             <Textarea
-              className="min-h-40"
-              placeholder="目标用户是谁？遇到了什么问题？希望得到什么结果？已知的范围或约束是什么？"
-              value={form.objective}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, objective: event.target.value }))
-              }
+              maxLength={2_000}
+              className="min-h-24"
+              placeholder="用一小段话说明为什么做、为谁解决什么问题，以及希望交付什么结果。"
+              value={draft.summary}
+              onChange={(event) => updateDraft("summary", event.target.value)}
             />
           </Field>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="当前行为" required>
+              <Textarea
+                maxLength={5_000}
+                className="min-h-28"
+                placeholder="目前用户或系统实际发生什么；新功能可写“目前没有该能力”。"
+                value={draft.currentBehavior}
+                onChange={(event) => updateDraft("currentBehavior", event.target.value)}
+              />
+            </Field>
+            <Field label="期望行为" required>
+              <Textarea
+                maxLength={5_000}
+                className="min-h-28"
+                placeholder="完成后可观察到的目标行为，不写技术实现方案。"
+                value={draft.expectedBehavior}
+                onChange={(event) => updateDraft("expectedBehavior", event.target.value)}
+              />
+            </Field>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <LineListField
+              label="范围内事项"
+              required
+              value={draft.inScope}
+              placeholder="每行一项，例如：\n订单创建接口\n客户端超时重试"
+              onChange={(value) => updateDraft("inScope", value)}
+            />
+            <LineListField
+              label="范围外事项"
+              value={draft.outOfScope}
+              placeholder="每行一项；没有已确认排除项可留空。"
+              onChange={(value) => updateDraft("outOfScope", value)}
+            />
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <LineListField
+              label="验收标准"
+              required
+              value={draft.acceptanceCriteria}
+              placeholder="每行一条可观察、可验证的结果。"
+              onChange={(value) => updateDraft("acceptanceCriteria", value)}
+            />
+            <LineListField
+              label="回归范围"
+              required
+              value={draft.regressionScope}
+              placeholder="每行一个必须保持正确的已有流程或边界。"
+              onChange={(value) => updateDraft("regressionScope", value)}
+            />
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <LineListField
+              label="风险标记"
+              value={draft.riskFlags}
+              placeholder="可选；例如：支付、权限、隐私、数据迁移。"
+              onChange={(value) => updateDraft("riskFlags", value)}
+            />
+            <LineListField
+              label="证据引用"
+              value={draft.evidenceRefs}
+              placeholder="可选；每行一个 Issue、日志、截图或文档引用。"
+              onChange={(value) => updateDraft("evidenceRefs", value)}
+            />
+          </div>
+
           <div className="rounded-xl border border-teal-100 bg-teal-50/70 p-4">
             <div className="flex gap-3">
               <Bot className="mt-0.5 h-4 w-4 shrink-0 text-teal-600" aria-hidden />
               <p className="text-xs leading-5 text-teal-800">
-                创建后只会解锁第一个角色。你仍需点击“运行 PM / BA”，Codex 才会在本地项目中开始工作。
+                创建后先做 Product Impact Check。功能缺陷或纯技术工作在合同足够清晰时，可以不运行 PM / BA；平台仍会保存本合同作为后续实现与测试依据。
               </p>
             </div>
           </div>
@@ -298,5 +427,30 @@ function CreateRunDialog({
         </div>
       </form>
     </Dialog>
+  );
+}
+
+function LineListField({
+  label,
+  value,
+  placeholder,
+  required = false,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  required?: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <Field label={label} hint="每行一项" required={required}>
+      <Textarea
+        className="min-h-28"
+        placeholder={placeholder}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </Field>
   );
 }
