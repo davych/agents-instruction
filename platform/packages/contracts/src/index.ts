@@ -63,12 +63,18 @@ const uniqueChangeContractList = (minimum: number, maximum: number, fieldName: s
     .max(maximum)
     .refine((items) => new Set(items).size === items.length, `${fieldName} 不能重复`);
 
+const sourceRunIdsSchema = z.array(z.string().uuid())
+  .min(1, "至少选择一个原始任务")
+  .max(20)
+  .refine((ids) => new Set(ids).size === ids.length, "sourceRunIds 不能重复");
+
 /**
  * The immutable, run-scoped contract for one unit of work. Product/design/
  * architecture roles may be routed around, but this evidence is never skipped.
  */
 export const changeContractSchema = z.object({
   workType: workTypeSchema,
+  sourceRunIds: sourceRunIdsSchema.optional(),
   summary: changeContractTextSchema.max(2_000),
   currentBehavior: changeContractTextSchema.max(5_000),
   expectedBehavior: changeContractTextSchema.max(5_000),
@@ -78,20 +84,43 @@ export const changeContractSchema = z.object({
   regressionScope: uniqueChangeContractList(1, 100, "regressionScope"),
   riskFlags: uniqueChangeContractList(0, 50, "riskFlags"),
   evidenceRefs: uniqueChangeContractList(0, 100, "evidenceRefs")
-}).strict();
+}).strict().superRefine((contract, context) => {
+  if (contract.workType === "feature" && contract.sourceRunIds) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["sourceRunIds"],
+      message: "新功能不能关联原始任务",
+    });
+  }
+});
 export type ChangeContract = z.infer<typeof changeContractSchema>;
 export type ChangeContractDto = ChangeContract;
 
-export const createRunSchema = z.object({
-  title: z.string()
-    .trim()
-    .min(1)
-    .max(200)
-    .regex(/^[^\u0000-\u001f\u007f]+$/u, "任务名称不能包含控制字符"),
+const runTitleSchema = z.string()
+  .trim()
+  .min(1)
+  .max(200)
+  .regex(/^[^\u0000-\u001f\u007f]+$/u, "任务名称不能包含控制字符");
+
+const legacyCreateRunSchema = z.object({
+  title: runTitleSchema,
   objective: z.string().trim().min(1).max(10_000),
   // Optional for backward compatibility. New clients should always submit it.
   changeContract: changeContractSchema.optional()
-});
+}).strict();
+
+const linkedCreateRunSchema = z.object({
+  title: runTitleSchema,
+  workType: z.enum(["change", "bug", "technical"]),
+  sourceRunIds: sourceRunIdsSchema,
+  expectedBehavior: z.string()
+    .trim()
+    .min(1, "请填写期望行为")
+    .max(2_000)
+    .regex(/^[^\u0000]*$/u, "期望行为不能包含空字符"),
+}).strict();
+
+export const createRunSchema = z.union([linkedCreateRunSchema, legacyCreateRunSchema]);
 export type CreateRunInput = z.infer<typeof createRunSchema>;
 
 export const createArtifactRevisionSchema = z.object({

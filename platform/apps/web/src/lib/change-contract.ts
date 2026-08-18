@@ -29,6 +29,7 @@ export const WORK_TYPE_OPTIONS: ReadonlyArray<{
 
 export interface ChangeContractDraft {
   workType: WorkType;
+  sourceRunIds: string[];
   summary: string;
   currentBehavior: string;
   expectedBehavior: string;
@@ -42,6 +43,7 @@ export interface ChangeContractDraft {
 
 export const EMPTY_CHANGE_CONTRACT_DRAFT: ChangeContractDraft = {
   workType: "feature",
+  sourceRunIds: [],
   summary: "",
   currentBehavior: "",
   expectedBehavior: "",
@@ -52,6 +54,20 @@ export const EMPTY_CHANGE_CONTRACT_DRAFT: ChangeContractDraft = {
   riskFlags: "",
   evidenceRefs: "",
 };
+
+export function isLinkedWorkType(
+  workType: WorkType,
+): workType is Exclude<WorkType, "feature"> {
+  return workType !== "feature";
+}
+
+export function linkedChangeMissingFields(draft: ChangeContractDraft): string[] {
+  const missing: string[] = [];
+  if (draft.sourceRunIds.length === 0) missing.push("原始任务");
+  if (draft.sourceRunIds.length > 20) missing.push("原始任务（最多 20 个）");
+  if (!draft.expectedBehavior.trim()) missing.push("期望行为");
+  return missing;
+}
 
 export function parseChangeContractLines(value: string): string[] {
   return [...new Set(

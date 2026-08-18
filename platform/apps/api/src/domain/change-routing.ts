@@ -1,4 +1,6 @@
-import type {
+import {
+  changeContractSchema,
+  type WorkType,
   ChangeContractDto,
   PhaseId,
   PhaseResolutionDto,
@@ -8,6 +10,65 @@ import type {
 import { AppError } from "./errors.js";
 
 export const CHANGE_CONTRACT_ARTIFACT_KEY = "change-contract";
+
+export interface LinkedChangeSource {
+  id: string;
+  title: string;
+  objective: string;
+  changeContract?: ChangeContractDto | null;
+}
+
+export function linkedChangeContract(
+  workType: Exclude<WorkType, "feature">,
+  expectedBehavior: string,
+  sources: LinkedChangeSource[],
+): ChangeContractDto {
+  const sourceRunIds = sources.map((source) => source.id);
+  const sourceContext = boundedSourceContext(sources, 5_000);
+  const sourceValues = (
+    select: (contract: ChangeContractDto) => string[],
+    fallback: (source: LinkedChangeSource) => string,
+    maximum: number,
+    fieldName: string,
+  ) => boundedUniqueStrings(sources.flatMap((source) => {
+    const values = source.changeContract ? select(source.changeContract) : [];
+    return values.length > 0 ? values : [fallback(source)];
+  }), maximum, fieldName);
+
+  return changeContractSchema.parse({
+    workType,
+    sourceRunIds,
+    summary: expectedBehavior,
+    currentBehavior: sourceContext,
+    expectedBehavior,
+    inScope: sourceValues(
+      (contract) => contract.inScope,
+      (source) => `原始任务「${source.title}」所覆盖的范围`,
+      100,
+      "inScope",
+    ),
+    outOfScope: boundedUniqueStrings(sources.flatMap(
+      (source) => source.changeContract?.outOfScope ?? [],
+    ), 100, "outOfScope"),
+    acceptanceCriteria: boundedUniqueStrings([
+      expectedBehavior,
+      ...sources.flatMap((source) => source.changeContract?.acceptanceCriteria ?? []),
+    ], 100, "acceptanceCriteria"),
+    regressionScope: sourceValues(
+      (contract) => contract.regressionScope,
+      (source) => `原始任务「${source.title}」的已确认行为保持正确`,
+      100,
+      "regressionScope",
+    ),
+    riskFlags: boundedUniqueStrings(sources.flatMap(
+      (source) => source.changeContract?.riskFlags ?? [],
+    ), 50, "riskFlags"),
+    evidenceRefs: boundedUniqueStrings([
+      ...sourceRunIds.map((id) => `workflow-run:${id}`),
+      ...sources.flatMap((source) => source.changeContract?.evidenceRefs ?? []),
+    ], 100, "evidenceRefs"),
+  });
+}
 
 export function renderChangeContract(contract: ChangeContractDto): string {
   const section = (title: string, values: string[]) => [
@@ -22,6 +83,7 @@ export function renderChangeContract(contract: ChangeContractDto): string {
     `- Work type: ${contract.workType}`,
     `- Summary: ${contract.summary}`,
     "",
+    ...section("Original tasks", contract.sourceRunIds ?? []),
     "## Current behavior",
     "",
     contract.currentBehavior,
@@ -52,6 +114,45 @@ export function legacyChangeContract(title: string, objective: string): ChangeCo
     riskFlags: ["legacy-intake-incomplete"],
     evidenceRefs: ["workflow-run-objective"],
   };
+}
+
+function boundedSourceContext(sources: LinkedChangeSource[], maximum: number): string {
+  const heading = "当前行为由以下原始任务定义：";
+  const overflowMarker = "- 其余原始任务详见 sourceRunIds。";
+  const lines = [heading];
+  for (const source of sources) {
+    const behavior = source.changeContract?.expectedBehavior || source.objective;
+    const line = `- ${source.title}：${behavior}`;
+    if ([...lines, line].join("\n").length > maximum) {
+      while (
+        lines.length > 1
+        && [...lines, overflowMarker].join("\n").length > maximum
+      ) {
+        lines.pop();
+      }
+      lines.push(overflowMarker);
+      break;
+    }
+    lines.push(line);
+  }
+  return lines.join("\n");
+}
+
+function boundedUniqueStrings(
+  values: string[],
+  maximum: number,
+  fieldName: string,
+): string[] {
+  const unique = [...new Set(values)];
+  if (unique.length > maximum) {
+    throw new AppError(
+      `原始任务合并后的 ${fieldName} 超过 ${maximum} 项，请减少关联任务`,
+      400,
+      "SOURCE_CONTEXT_TOO_LARGE",
+      { fieldName, maximum, actual: unique.length },
+    );
+  }
+  return unique;
 }
 
 export function validatePhaseResolutionExecution(

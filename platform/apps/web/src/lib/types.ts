@@ -15,6 +15,7 @@ export type WorkType = "feature" | "change" | "bug" | "technical";
 
 export interface ChangeContract {
   workType: WorkType;
+  sourceRunIds?: string[];
   summary: string;
   currentBehavior: string;
   expectedBehavior: string;
@@ -373,11 +374,18 @@ export interface CreateProjectInput {
   initialize: boolean;
 }
 
-export interface CreateRunInput {
-  title: string;
-  objective: string;
-  changeContract?: ChangeContract;
-}
+export type CreateRunInput =
+  | {
+      title: string;
+      objective: string;
+      changeContract?: ChangeContract;
+    }
+  | {
+      title: string;
+      workType: Exclude<WorkType, "feature">;
+      sourceRunIds: string[];
+      expectedBehavior: string;
+    };
 
 export interface ApiErrorPayload {
   message?: string;

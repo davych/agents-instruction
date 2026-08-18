@@ -108,6 +108,7 @@ import type {
   ReviewDecision,
   RoleDefinition,
   RunEvent,
+  WorkflowRun,
 } from "@/lib/types";
 import { cn, formatDate } from "@/lib/utils";
 import {
@@ -256,6 +257,11 @@ export function RunPage({
     refetchInterval: (query) =>
       query.state.data?.phases?.some((phase) => phase.status === "running") ? 1_500 : false,
   });
+  const sourceRunsQuery = useQuery({
+    queryKey: ["runs", runQuery.data?.run.projectId],
+    queryFn: () => api.listRuns(runQuery.data!.run.projectId),
+    enabled: Boolean(runQuery.data?.run.changeContract?.sourceRunIds?.length),
+  });
 
   useEffect(() => {
     if (selectedPhaseId || !runQuery.data?.phases?.length) return;
@@ -339,7 +345,13 @@ export function RunPage({
         </div>
       </section>
 
-      {run.changeContract ? <ChangeContractSummary contract={run.changeContract} /> : null}
+      {run.changeContract ? (
+        <ChangeContractSummary
+          contract={run.changeContract}
+          projectId={project.id}
+          projectRuns={sourceRunsQuery.data ?? []}
+        />
+      ) : null}
 
       <div className="flex w-fit items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
         <button
@@ -481,7 +493,15 @@ const WORK_TYPE_LABELS: Record<ChangeContract["workType"], string> = {
   technical: "技术变更",
 };
 
-function ChangeContractSummary({ contract }: { contract: ChangeContract }) {
+function ChangeContractSummary({
+  contract,
+  projectId,
+  projectRuns,
+}: {
+  contract: ChangeContract;
+  projectId: string;
+  projectRuns: WorkflowRun[];
+}) {
   return (
     <details className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
       <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 marker:hidden sm:px-6">
@@ -496,6 +516,13 @@ function ChangeContractSummary({ contract }: { contract: ChangeContract }) {
         <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 transition group-open:rotate-90" aria-hidden />
       </summary>
       <div className="grid gap-4 border-t border-slate-100 bg-slate-50/45 px-5 py-5 sm:px-6 lg:grid-cols-2">
+        {contract.sourceRunIds?.length ? (
+          <ContractSourceRuns
+            ids={contract.sourceRunIds}
+            projectId={projectId}
+            projectRuns={projectRuns}
+          />
+        ) : null}
         <ContractNarrative title="当前行为" content={contract.currentBehavior} />
         <ContractNarrative title="期望行为" content={contract.expectedBehavior} />
         <ContractList title="范围内" items={contract.inScope} />
@@ -506,6 +533,35 @@ function ChangeContractSummary({ contract }: { contract: ChangeContract }) {
         <ContractList title="证据引用" items={contract.evidenceRefs} empty="未提供额外证据引用" />
       </div>
     </details>
+  );
+}
+
+function ContractSourceRuns({
+  ids,
+  projectId,
+  projectRuns,
+}: {
+  ids: string[];
+  projectId: string;
+  projectRuns: WorkflowRun[];
+}) {
+  const runsById = new Map(projectRuns.map((run) => [run.id, run]));
+  return (
+    <div className="rounded-xl border border-teal-200 bg-teal-50/60 px-4 py-3 lg:col-span-2">
+      <div className="text-xs font-semibold text-teal-800">原始任务</div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {ids.map((id) => (
+          <a
+            key={id}
+            href={`?project=${encodeURIComponent(projectId)}&run=${encodeURIComponent(id)}`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-2.5 py-1.5 text-xs font-medium text-teal-700 transition hover:border-teal-300 hover:text-teal-900"
+          >
+            {runsById.get(id)?.title ?? `任务 ${id.slice(0, 8)}`}
+            <ExternalLink className="h-3 w-3" aria-hidden />
+          </a>
+        ))}
+      </div>
+    </div>
   );
 }
 
