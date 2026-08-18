@@ -60,6 +60,16 @@ The diagram means:
 
 Always use the artifact owner's config, not the active role's config.
 
+For the default Change Contract, `change-contract.md` is a configured basename. The platform creates one immutable human artifact for every Run and resolves it to a stable task-specific filename:
+
+```text
+docs + ai-native/product + change-contract.md
++ current task "修复结算舍入" + run 550e8400-e29b-41d4-a716-446655440000
+= docs/ai-native/product/修复结算舍入--550e8400-e29b-41d4-a716-446655440000-change-contract.md
+```
+
+Its logical ID remains `change-contract`. Although its registry owner is `pm-ba`, every Agent consumes it read-only. Changing the requested outcome requires a new Run and Change Contract, not an Agent edit.
+
 For the default Designer spec, `design-spec.md` is a configured basename. A platform-managed task resolves it to a stable task-specific filename:
 
 ```text
@@ -68,7 +78,9 @@ docs + ai-native/design + design-spec.md
 = docs/ai-native/design/登录改版--550e8400-e29b-41d4-a716-446655440000-design-spec.md
 ```
 
-The logical artifact ID remains `design-spec`, so downstream dependencies do not depend on a filename. Every re-run of that task resolves the same path; another task, including one with the same title, resolves a different path because its run ID differs. The active execution contract is authoritative for this resolved path.
+The logical artifact ID remains `design-spec`, so downstream dependencies do not depend on a filename. Every re-run of that task resolves the same path; another task, including one with the same title, resolves a different path because its run ID differs. The active execution contract is authoritative for both task-scoped artifacts.
+
+The phase input arrays declare the full evidence vocabulary for compatible clients. In a platform-managed Run, Product, Design, and Architecture dispositions resolve the concrete alternatives. For example, Product `direct` does not require a fake PRD and Design `skip` does not require a fake design spec. The platform extends older initialized projects with `change-contract` support in memory rather than rewriting project-owned YAML.
 
 For the default Software Engineer notes, there is no role config:
 

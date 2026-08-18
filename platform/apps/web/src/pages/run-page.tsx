@@ -42,7 +42,7 @@ import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import {
   artifactRevisionByteLength,
   artifactRevisionContentInvalid,
@@ -58,16 +58,50 @@ import {
   setFigmaRequested,
 } from "@/lib/design-execution-selection";
 import {
+  architecturePartialAllowedOutputKeys,
+  architecturePartialOutputKeys,
+  architectureOutputKeysRequiringRefresh,
+  architectureSelectionFromReviews,
   defaultFigmaFileName,
   initialPhaseOutputKeys,
   isPhaseOutputLocked,
   isPhaseOutputSelectionComplete,
+  isArchitectureImpactRationaleValid,
+  isArchitectureImpactOutputMutable,
+  isArchitecturePartialOutputSelectionComplete,
+  isArchitectureReselectionBlockedByImpact,
+  parseArchitectureSelectionId,
+  REQUIRED_ARCHITECTURE_BOOTSTRAP_OUTPUT_KEYS,
+  requiredPhaseApprovalOutputKeys,
+  type ArchitectureImpactChoice,
 } from "@/lib/phase-output-selection";
+import {
+  defaultRoutedPartialOutputKeys,
+  effectiveRequiredInputKeys,
+  impactChoiceRequiresBaseline,
+  impactOptionsForPhase,
+  isImpactAssessmentComplete,
+  isFirstPhaseImpactAttempt,
+  isProductDirectAllowed,
+  isResolutionOutputMutable,
+  phaseImpactActionLabel,
+  phaseImpactTitle,
+  resolutionIsReadOnly,
+  resolutionModeLabel,
+  shouldSubmitRoutedImpactAssessment,
+  type RoutedImpactChoice,
+  type RoutedImpactPhaseId,
+} from "@/lib/phase-impact";
 import type {
   Artifact,
+  ArchitectureBaseline,
+  AssessDesignImpactInput,
+  AssessProductImpactInput,
+  ChangeContract,
   CodexCapabilities,
   CodexReasoningEffort,
   FigmaTarget,
+  PhaseBaseline,
   PhaseDefinition,
   PhaseRun,
   PhaseStatus,
@@ -127,6 +161,33 @@ const DESIGN_OUTPUTS = [
     required: false,
   },
 ] as const;
+
+const ARCHITECTURE_IMPACT_OPTIONS: ReadonlyArray<{
+  value: ArchitectureImpactChoice;
+  title: string;
+  description: string;
+}> = [
+  {
+    value: "skip",
+    title: "无需架构工作",
+    description: "没有边界、集成、数据、安全或 NFR 变化，记录豁免理由后直接进入实现。",
+  },
+  {
+    value: "reuse",
+    title: "复用现有架构",
+    description: "本次变更不影响架构，沿用已批准基线，不生成新架构产物并完成本阶段。",
+  },
+  {
+    value: "partial",
+    title: "局部更新",
+    description: "保留既有选型，只更新架构索引和明确受影响的选型后产物。",
+  },
+  {
+    value: "full",
+    title: "完整重跑",
+    description: "重新生成 Discovery 与 Options，并进入新一轮人工选型。",
+  },
+];
 
 const statusStyle: Record<
   PhaseStatus,
@@ -210,9 +271,19 @@ export function RunPage({
   }
   if (!runQuery.data) return <PageSkeleton />;
 
-  const { run, project, definition } = runQuery.data;
+  const {
+    run,
+    project,
+    definition,
+    productBaseline,
+    designBaseline,
+    architectureBaseline,
+  } = runQuery.data;
   const phases = normalizePhases(runQuery.data.phases, definition?.phases);
   const phaseDefinitions = definition?.phases?.length ? definition.phases : FALLBACK_PHASES;
+  const outputKeysByPhase = Object.fromEntries(
+    phaseDefinitions.map((phase) => [phase.id, phase.outputs]),
+  );
   const roles = definition?.roles?.length ? definition.roles : FALLBACK_ROLES;
   const selectedPhase =
     phases.find((phase) => phase.phaseId === selectedPhaseId) ?? phases[0];
@@ -241,7 +312,7 @@ export function RunPage({
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <Badge variant={run.status === "completed" ? "success" : "info"}>
                 <GitBranch className="h-3 w-3" aria-hidden />
-                {run.status === "completed" ? "交付完成" : "故事工作流"}
+                {run.status === "completed" ? "交付完成" : "交付任务"}
               </Badge>
               <span className="text-xs text-slate-400">创建于 {formatDate(run.createdAt)}</span>
             </div>
@@ -267,6 +338,8 @@ export function RunPage({
           </div>
         </div>
       </section>
+
+      {run.changeContract ? <ChangeContractSummary contract={run.changeContract} /> : null}
 
       <div className="flex w-fit items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
         <button
@@ -323,8 +396,24 @@ export function RunPage({
             <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(330px,0.75fr)]">
               <PhasePanel
                 phase={selectedPhase}
+                phases={phases}
+                hasChangeContract={Boolean(run.changeContract)}
+                outputKeysByPhase={outputKeysByPhase}
                 definition={selectedDefinition}
                 role={selectedRole}
+                architectureImpactAvailable={
+                  selectedPhase.phaseId === "architecture"
+                  && selectedPhase.status === "ready"
+                  && !selectedPhase.resolution
+                  && !selectedPhase.architectureImpact
+                  && isFirstPhaseImpactAttempt(selectedPhase)
+                }
+                routedImpactCheckAvailable={
+                  (selectedPhase.phaseId === "discovery" || selectedPhase.phaseId === "design")
+                  && selectedPhase.status === "ready"
+                  && !selectedPhase.resolution
+                  && isFirstPhaseImpactAttempt(selectedPhase)
+                }
                 onExecute={(initialOutputKeys) =>
                   setExecuteTarget({ phaseId: selectedPhase.phaseId, initialOutputKeys })
                 }
@@ -342,6 +431,14 @@ export function RunPage({
               runId={runId}
               runTitle={run.title}
               phase={executePhase}
+              phases={phases}
+              hasChangeContract={Boolean(run.changeContract)}
+              outputKeysByPhase={outputKeysByPhase}
+              workType={run.changeContract?.workType}
+              hasEvidenceRefs={Boolean(run.changeContract?.evidenceRefs.length)}
+              productBaseline={productBaseline}
+              designBaseline={designBaseline}
+              architectureBaseline={architectureBaseline}
               initialOutputKeys={executeTarget?.initialOutputKeys}
               definition={
                 phaseDefinitions.find((definitionItem) => definitionItem.id === executePhase.phaseId) ??
@@ -372,6 +469,73 @@ export function RunPage({
             />
           ) : null}
         </>
+      )}
+    </div>
+  );
+}
+
+const WORK_TYPE_LABELS: Record<ChangeContract["workType"], string> = {
+  feature: "新功能",
+  change: "局部变更",
+  bug: "功能缺陷",
+  technical: "技术变更",
+};
+
+function ChangeContractSummary({ contract }: { contract: ChangeContract }) {
+  return (
+    <details className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 marker:hidden sm:px-6">
+        <span className="min-w-0">
+          <span className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold text-slate-950">Change Contract</span>
+            <Badge variant="info">{WORK_TYPE_LABELS[contract.workType]}</Badge>
+            <Badge variant="success">后续角色共同输入</Badge>
+          </span>
+          <span className="mt-1 block truncate text-xs text-slate-500">{contract.summary}</span>
+        </span>
+        <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 transition group-open:rotate-90" aria-hidden />
+      </summary>
+      <div className="grid gap-4 border-t border-slate-100 bg-slate-50/45 px-5 py-5 sm:px-6 lg:grid-cols-2">
+        <ContractNarrative title="当前行为" content={contract.currentBehavior} />
+        <ContractNarrative title="期望行为" content={contract.expectedBehavior} />
+        <ContractList title="范围内" items={contract.inScope} />
+        <ContractList title="范围外" items={contract.outOfScope} empty="未声明额外排除项" />
+        <ContractList title="验收标准" items={contract.acceptanceCriteria} />
+        <ContractList title="回归范围" items={contract.regressionScope} />
+        <ContractList title="风险标记" items={contract.riskFlags} empty="未声明风险标记" />
+        <ContractList title="证据引用" items={contract.evidenceRefs} empty="未提供额外证据引用" />
+      </div>
+    </details>
+  );
+}
+
+function ContractNarrative({ title, content }: { title: string; content: string }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+      <div className="text-xs font-semibold text-slate-700">{title}</div>
+      <p className="mt-1.5 whitespace-pre-wrap text-xs leading-5 text-slate-600">{content}</p>
+    </div>
+  );
+}
+
+function ContractList({
+  title,
+  items,
+  empty = "未填写",
+}: {
+  title: string;
+  items: string[];
+  empty?: string;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+      <div className="text-xs font-semibold text-slate-700">{title}</div>
+      {items.length > 0 ? (
+        <ul className="mt-1.5 space-y-1 text-xs leading-5 text-slate-600">
+          {items.map((item) => <li key={item}>• {item}</li>)}
+        </ul>
+      ) : (
+        <p className="mt-1.5 text-xs text-slate-400">{empty}</p>
       )}
     </div>
   );
@@ -463,6 +627,11 @@ function WorkflowBoard({
                     <span className={cn("h-1.5 w-1.5 rounded-full", style.dot, phase.status === "running" && "animate-pulse")} />
                     {STATUS_LABELS[phase.status] ?? phase.status}
                   </div>
+                  {phase.resolution ? (
+                    <div className="mt-2 truncate rounded-md bg-white/75 px-2 py-1 text-[10px] font-semibold text-teal-700 ring-1 ring-slate-200/80">
+                      {resolutionModeLabel(phase.resolution)}
+                    </div>
+                  ) : null}
                 </button>
               </div>
             );
@@ -475,22 +644,38 @@ function WorkflowBoard({
 
 function PhasePanel({
   phase,
+  phases,
+  hasChangeContract,
+  outputKeysByPhase,
   definition,
   role,
+  architectureImpactAvailable,
+  routedImpactCheckAvailable,
   onExecute,
   onReview,
   onOpenTickets,
 }: {
   phase: PhaseRun;
+  phases: PhaseRun[];
+  hasChangeContract: boolean;
+  outputKeysByPhase: Partial<Record<string, string[]>>;
   definition: PhaseDefinition;
   role: RoleDefinition;
+  architectureImpactAvailable?: boolean;
+  routedImpactCheckAvailable?: boolean;
   onExecute: (initialOutputKeys?: string[]) => void;
   onReview: (initialArtifactId?: string) => void;
   onOpenTickets: () => void;
 }) {
   const Icon = roleIcons[role.id] ?? Bot;
   const style = statusStyle[phase.status] ?? statusStyle.pending;
-  const canExecute = ["ready", "changes_requested", "rejected", "failed"].includes(phase.status);
+  const effectiveInputs = effectiveRequiredInputKeys(
+    definition.inputs,
+    phases,
+    { hasChangeContract, outputKeysByPhase },
+  );
+  const canExecute = ["ready", "changes_requested", "rejected", "failed"].includes(phase.status)
+    && !resolutionIsReadOnly(phase.resolution);
   const canReview = phase.status === "awaiting_review";
   const canReviseArtifacts = [
     "ready",
@@ -502,7 +687,24 @@ function PhasePanel({
   ].includes(phase.status);
   const canRerun =
     phase.artifacts.length > 0
-    && canReviseArtifacts;
+    && canReviseArtifacts
+    && !resolutionIsReadOnly(phase.resolution)
+    && phase.architectureImpact?.mode !== "reuse";
+  const showsArchitectureImpactAction = Boolean(
+    architectureImpactAvailable
+    && phase.phaseId === "architecture"
+    && phase.status === "ready",
+  );
+  const showsRoutedImpactAction = Boolean(
+    routedImpactCheckAvailable
+    && (phase.phaseId === "discovery" || phase.phaseId === "design")
+    && phase.status === "ready",
+  );
+  const showsImpactAction = showsArchitectureImpactAction || showsRoutedImpactAction;
+  const requiresFullRerun = phase.status === "ready"
+    && !phase.resolution
+    && ["discovery", "design", "architecture"].includes(phase.phaseId)
+    && !isFirstPhaseImpactAttempt(phase);
   const executionError = phase.executions?.[0]?.error || phase.error;
   return (
     <Card className="overflow-hidden shadow-sm">
@@ -524,8 +726,20 @@ function PhasePanel({
           <div className="flex flex-wrap justify-end gap-2">
             {canExecute ? (
               <Button variant="primary" onClick={() => onExecute()}>
-                {phase.status === "ready" ? <Play className="h-4 w-4" /> : <RotateCcw className="h-4 w-4" />}
-                {phase.status === "ready" ? `运行 ${role.name}` : "根据反馈重新运行"}
+                {showsImpactAction ? (
+                  <GitBranch className="h-4 w-4" />
+                ) : phase.status === "ready" ? (
+                  <Play className="h-4 w-4" />
+                ) : (
+                  <RotateCcw className="h-4 w-4" />
+                )}
+                {showsRoutedImpactAction
+                  ? phaseImpactActionLabel(phase.phaseId as RoutedImpactPhaseId)
+                  : showsArchitectureImpactAction
+                    ? "检查架构影响"
+                  : phase.status === "ready"
+                    ? `运行 ${role.name}`
+                    : "根据反馈重新运行"}
               </Button>
             ) : null}
             {canReview ? (
@@ -549,6 +763,15 @@ function PhasePanel({
         </div>
       </CardHeader>
       <CardContent className="p-5 sm:p-6">
+        {requiresFullRerun ? (
+          <div className="mb-5 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+            <span>
+              上游变化已使旧处置失效。本版本保留历史审核与执行记录，因此本阶段当前只支持完整重跑；
+              如需重新 Skip / Reuse / Partial，请新建 Run 重新评估。
+            </span>
+          </div>
+        ) : null}
         {phase.status === "running" ? (
           <div className="mb-5 flex items-center gap-3 rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-800">
             <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
@@ -571,7 +794,7 @@ function PhasePanel({
         ) : null}
 
         <div className="grid gap-5 md:grid-cols-2">
-          <ContractBlock title="阶段输入" icon={<ArrowRight />} items={definition.inputs} empty="这是起点，不需要上游产物" />
+          <ContractBlock title="有效阶段输入" icon={<ArrowRight />} items={effectiveInputs} empty="路由处置后，本阶段不需要上游产物" />
           <ContractBlock title="预期输出" icon={<FileText />} items={definition.outputs} empty="未注册输出" />
         </div>
         <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
@@ -581,6 +804,8 @@ function PhasePanel({
           </div>
           <p className="mt-2 text-sm leading-6 text-slate-700">{definition.gate || "人工确认本阶段产物满足交付要求。"}</p>
         </div>
+
+        {phase.resolution ? <PhaseResolutionSummary resolution={phase.resolution} /> : null}
 
         <div className="mt-5">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -592,6 +817,14 @@ function PhasePanel({
               {phase.artifacts.map((artifact) => {
                 const artifactKey = keyForArtifact(artifact);
                 const isSuperseded = artifact.superseded || artifact.reviewStatus === "superseded";
+                const isImpactReadOnly = artifactKey === "change-contract" || (phase.resolution
+                  ? !isResolutionOutputMutable(phase.resolution, artifactKey)
+                  : phase.phaseId === "architecture"
+                    && !isArchitectureImpactOutputMutable(
+                      phase.architectureImpact?.mode,
+                      phase.architectureImpact?.affectedOutputKeys,
+                      artifactKey,
+                    ));
                 return (
                   <div
                     key={artifact.id}
@@ -611,6 +844,11 @@ function PhasePanel({
                           <span className="truncate">{artifactLabel(artifactKey)}</span>
                           {artifact.revision ? <Badge variant="muted">v{artifact.revision}</Badge> : null}
                           {artifact.revisionSource === "human" ? <Badge variant="info">人工修订</Badge> : null}
+                          {isImpactReadOnly ? (
+                            <Badge variant="muted">
+                              {artifactKey === "change-contract" ? "任务合同只读" : "继承只读"}
+                            </Badge>
+                          ) : null}
                           {isSuperseded ? <Badge variant="muted">已被替代</Badge> : null}
                         </span>
                         <span className="mt-0.5 block truncate font-mono text-[10px] text-slate-400">
@@ -630,7 +868,7 @@ function PhasePanel({
                         <Eye className="h-3.5 w-3.5" aria-hidden />
                         查看
                       </Button>
-                      {!isSuperseded && canReviseArtifacts ? (
+                      {!isSuperseded && canReviseArtifacts && !isImpactReadOnly ? (
                         <Button size="sm" variant="ghost" onClick={() => onExecute([artifactKey])}>
                           <RotateCcw className="h-3.5 w-3.5" aria-hidden />
                           仅重跑此产物
@@ -643,12 +881,57 @@ function PhasePanel({
             </div>
           ) : (
             <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-xs text-slate-400">
-              {phase.status === "running" ? "产物生成后会出现在这里" : "本阶段还没有生成产物"}
+              {phase.status === "running"
+                ? "产物生成后会出现在这里"
+                : phase.resolution && resolutionIsReadOnly(phase.resolution)
+                  ? "本阶段已通过可审核处置完成，没有生成新产物"
+                  : "本阶段还没有生成产物"}
             </div>
           )}
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function PhaseResolutionSummary({ resolution }: { resolution: NonNullable<PhaseRun["resolution"]> }) {
+  const inherited = resolution.sourceRunTitle && resolution.sourceRunId;
+  return (
+    <div className="mt-5 rounded-xl border border-teal-200 bg-teal-50/55 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs font-semibold text-teal-950">
+          <GitBranch className="h-4 w-4" aria-hidden />
+          阶段处置
+        </div>
+        <Badge variant="info">{resolutionModeLabel(resolution)}</Badge>
+      </div>
+      <p className="mt-2 text-xs leading-5 text-teal-900">{resolution.rationale}</p>
+      <div className="mt-3 grid gap-2 text-[11px] leading-5 text-teal-800 sm:grid-cols-2">
+        <div className="rounded-lg bg-white/75 px-3 py-2 ring-1 ring-teal-100">
+          <span className="font-semibold">来源：</span>
+          {inherited
+            ? `${resolution.sourceRunTitle}（${resolution.sourceArtifactIds.length} 项基线产物）`
+            : "当前 Change Contract / 人工路由判断"}
+        </div>
+        <div className="rounded-lg bg-white/75 px-3 py-2 ring-1 ring-teal-100">
+          <span className="font-semibold">决定时间：</span>{formatDate(resolution.decidedAt)}
+        </div>
+      </div>
+      {resolution.affectedOutputKeys.length > 0 ? (
+        <div className="mt-3">
+          <div className="text-[11px] font-semibold text-teal-900">受影响输出</div>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {resolution.affectedOutputKeys.map((key) => (
+              <Badge key={key} variant="outline" className="border-teal-200 bg-white/80 text-teal-800">
+                {artifactLabel(key)}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p className="mt-3 text-[11px] text-teal-700">本处置不生成或修改本阶段产物。</p>
+      )}
+    </div>
   );
 }
 
@@ -786,6 +1069,14 @@ function ExecuteDialog({
   runId,
   runTitle,
   phase,
+  phases,
+  hasChangeContract,
+  outputKeysByPhase,
+  workType,
+  hasEvidenceRefs,
+  productBaseline,
+  designBaseline,
+  architectureBaseline,
   definition,
   initialOutputKeys,
   open,
@@ -794,6 +1085,14 @@ function ExecuteDialog({
   runId: string;
   runTitle: string;
   phase: PhaseRun;
+  phases: PhaseRun[];
+  hasChangeContract: boolean;
+  outputKeysByPhase: Partial<Record<string, string[]>>;
+  workType?: ChangeContract["workType"];
+  hasEvidenceRefs: boolean;
+  productBaseline?: PhaseBaseline | null;
+  designBaseline?: PhaseBaseline | null;
+  architectureBaseline?: ArchitectureBaseline | null;
   definition: PhaseDefinition;
   initialOutputKeys?: string[];
   open: boolean;
@@ -802,10 +1101,69 @@ function ExecuteDialog({
   const queryClient = useQueryClient();
   const candidates = phase.availableArtifacts ?? [];
   const isDesignPhase = phase.phaseId === "design";
-  const hasExistingArtifacts = phase.artifacts.some(
-    (artifact) => !artifact.superseded && artifact.reviewStatus !== "superseded",
+  const executableOutputKeys = definition.outputs.filter((key) => key !== "change-contract");
+  const effectiveInputKeys = effectiveRequiredInputKeys(
+    definition.inputs,
+    phases,
+    { hasChangeContract, outputKeysByPhase },
   );
-  const outputOptions = definition.outputs.map((key) => {
+  const routedImpactPhaseId = phase.phaseId === "discovery" || phase.phaseId === "design"
+    ? phase.phaseId
+    : undefined;
+  const routedImpactBaseline = routedImpactPhaseId === "discovery"
+    ? productBaseline
+    : routedImpactPhaseId === "design"
+      ? designBaseline
+      : undefined;
+  const productDirectAllowed = isProductDirectAllowed(
+    hasChangeContract,
+    workType,
+    hasEvidenceRefs,
+  );
+  const existingOutputKeys = [...new Set(
+    phase.artifacts
+      .filter((artifact) => !artifact.superseded && artifact.reviewStatus !== "superseded")
+      .map((artifact) => keyForArtifact(artifact)),
+  )].filter((key) => key !== "change-contract");
+  const hasExistingArtifacts = existingOutputKeys.length > 0;
+  const canAssessRoutedImpact = Boolean(
+    routedImpactPhaseId
+    && phase.status === "ready"
+    && !phase.resolution
+    && isFirstPhaseImpactAttempt(phase),
+  );
+  const canAssessArchitectureImpact = phase.phaseId === "architecture"
+    && phase.status === "ready"
+    && !phase.resolution
+    && !phase.architectureImpact
+    && isFirstPhaseImpactAttempt(phase);
+  const hasAssessedPartialImpact = phase.phaseId === "architecture"
+    && phase.architectureImpact?.mode === "partial";
+  const isFirstAssessedPartialExecution = hasAssessedPartialImpact
+    && phase.executions.length === 0;
+  const currentArchitectureOptions = phase.artifacts.find(
+    (artifact) => !artifact.superseded
+      && artifact.reviewStatus !== "superseded"
+      && keyForArtifact(artifact) === "architecture-options",
+  );
+  const currentArchitectureDiscovery = phase.artifacts.find(
+    (artifact) => !artifact.superseded
+      && artifact.reviewStatus !== "superseded"
+      && keyForArtifact(artifact) === "architecture-discovery-context",
+  );
+  const architectureSelectionRecorded = hasAssessedPartialImpact
+    || (
+      phase.phaseId === "architecture"
+      && phase.status !== "ready"
+      && Boolean(currentArchitectureOptions)
+      && Boolean(currentArchitectureDiscovery)
+      && Boolean(architectureSelectionFromReviews(
+        phase.reviews,
+        currentArchitectureOptions!.id,
+        [currentArchitectureOptions!.id, currentArchitectureDiscovery!.id],
+      ))
+    );
+  const outputOptions = executableOutputKeys.map((key) => {
     const designOutput = DESIGN_OUTPUTS.find((output) => output.key === key);
     return {
       key,
@@ -814,15 +1172,80 @@ function ExecuteDialog({
     };
   });
   const [selected, setSelected] = useState<string[]>(() => candidates.map((artifact) => artifact.id));
-  const [selectedOutputs, setSelectedOutputs] = useState<string[]>(() =>
-    initialPhaseOutputKeys({
-      phaseId: phase.phaseId,
-      availableOutputKeys: definition.outputs,
-      hasExistingArtifacts,
-      initialOutputKeys,
-    }),
+  const [routedImpactChoice, setRoutedImpactChoice] = useState<RoutedImpactChoice | "">(
+    () => canAssessRoutedImpact ? "" : "",
   );
-  const figmaOutputSelected = isFigmaRequested(selectedOutputs);
+  const [routedImpactRationale, setRoutedImpactRationale] = useState("");
+  const [architectureImpactChoice, setArchitectureImpactChoice] = useState<
+    ArchitectureImpactChoice | ""
+  >(() => canAssessArchitectureImpact ? "" : hasAssessedPartialImpact ? "partial" : "full");
+  const [architectureImpactRationale, setArchitectureImpactRationale] = useState("");
+  const standardInitialOutputKeys = () => initialPhaseOutputKeys({
+      phaseId: phase.phaseId,
+      availableOutputKeys: executableOutputKeys,
+      hasExistingArtifacts,
+      existingOutputKeys,
+      initialOutputKeys,
+      architectureSelectionRecorded,
+    });
+  const [selectedOutputs, setSelectedOutputs] = useState<string[]>(() => {
+    if (canAssessRoutedImpact) return [];
+    if (phase.resolution?.mode === "partial") {
+      const affected = phase.resolution.affectedOutputKeys;
+      if (phase.executions.length === 0 || !initialOutputKeys?.length) return [...affected];
+      const requested = initialOutputKeys.filter((key) => affected.includes(key));
+      return requested.length > 0 ? requested : [...affected];
+    }
+    if (canAssessArchitectureImpact) return [];
+    if (hasAssessedPartialImpact) {
+      const affectedOutputKeys = phase.architectureImpact?.affectedOutputKeys ?? [];
+      return architecturePartialOutputKeys({
+        availableOutputKeys: executableOutputKeys,
+        affectedOutputKeys,
+        initialOutputKeys: initialOutputKeys?.length ? initialOutputKeys : affectedOutputKeys,
+        requireAllAffectedOutputs: isFirstAssessedPartialExecution,
+      });
+    }
+    return standardInitialOutputKeys();
+  });
+  const isArchitecturePartialMode = hasAssessedPartialImpact
+    || (canAssessArchitectureImpact && architectureImpactChoice === "partial");
+  const partialAffectedOutputKeys = hasAssessedPartialImpact
+    ? phase.architectureImpact?.affectedOutputKeys
+    : undefined;
+  const partialAllowedOutputKeys = architecturePartialAllowedOutputKeys(
+    executableOutputKeys,
+    partialAffectedOutputKeys,
+  );
+  const routedPartialOutputKeys = phase.resolution?.mode === "partial"
+    ? phase.resolution.affectedOutputKeys
+    : undefined;
+  const visibleOutputOptions = isArchitecturePartialMode
+    ? outputOptions.filter((output) => partialAllowedOutputKeys.includes(output.key))
+    : routedPartialOutputKeys
+      ? outputOptions.filter((output) => routedPartialOutputKeys.includes(output.key))
+      : outputOptions;
+  const runsRoutedFullExecution = Boolean(
+    canAssessRoutedImpact
+    && routedImpactChoice === "full",
+  );
+  const submitsRoutedImpactAssessment = Boolean(
+    canAssessRoutedImpact
+    && routedImpactPhaseId
+    && shouldSubmitRoutedImpactAssessment(routedImpactChoice),
+  );
+  const submitsArchitectureImpactAssessment = canAssessArchitectureImpact
+    && (
+      architectureImpactChoice === "skip"
+      || architectureImpactChoice === "reuse"
+      || architectureImpactChoice === "partial"
+    );
+  const showsImpactAssessmentOnly = submitsRoutedImpactAssessment
+    || (canAssessRoutedImpact && !routedImpactChoice)
+    || (canAssessArchitectureImpact && architectureImpactChoice !== "full");
+  const showsArchitectureImpactOnly = canAssessArchitectureImpact
+    && architectureImpactChoice !== "full";
+  const figmaOutputSelected = !submitsRoutedImpactAssessment && isFigmaRequested(selectedOutputs);
   const [model, setModel] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState<CodexReasoningEffort | "">("");
   const [figmaTargetMode, setFigmaTargetMode] = useState<FigmaTarget["mode"]>(
@@ -842,7 +1265,7 @@ function ExecuteDialog({
   const capabilitiesQuery = useQuery({
     queryKey: ["codex", "capabilities", runId],
     queryFn: () => api.getCodexCapabilities(runId),
-    enabled: open && runnerMode === "real",
+    enabled: open && runnerMode === "real" && !showsImpactAssessmentOnly,
     staleTime: 10_000,
     retry: 1,
   });
@@ -956,6 +1379,49 @@ function ExecuteDialog({
   }, [figmaPlans, figmaPlansConfirmed]);
   const mutation = useMutation({
     mutationFn: () => {
+      if (submitsRoutedImpactAssessment && routedImpactPhaseId && routedImpactChoice) {
+        const needsBaseline = impactChoiceRequiresBaseline(
+          routedImpactPhaseId,
+          routedImpactChoice,
+        );
+        if (needsBaseline && !routedImpactBaseline) {
+          throw new Error("已批准基线已变化或不可用，请刷新后重新判断");
+        }
+        const common = {
+          rationale: routedImpactRationale.trim(),
+          selectedArtifactIds: selected,
+          expectedBaselineArtifactIds: needsBaseline
+            ? routedImpactBaseline?.artifacts.map((artifact) => artifact.id) ?? []
+            : [],
+          affectedOutputKeys: routedImpactChoice === "partial" ? selectedOutputs : [],
+        };
+        if (routedImpactPhaseId === "discovery") {
+          return api.assessProductImpact(runId, {
+            ...common,
+            mode: routedImpactChoice as AssessProductImpactInput["mode"],
+          });
+        }
+        return api.assessDesignImpact(runId, {
+          ...common,
+          mode: routedImpactChoice as AssessDesignImpactInput["mode"],
+        });
+      }
+      if (submitsArchitectureImpactAssessment) {
+        const requiresBaseline = architectureImpactChoice === "reuse"
+          || architectureImpactChoice === "partial";
+        if (requiresBaseline && !architectureBaseline) {
+          throw new Error("架构基线已变化，请刷新后重试");
+        }
+        return api.assessArchitectureImpact(runId, {
+          mode: architectureImpactChoice as "skip" | "reuse" | "partial",
+          rationale: architectureImpactRationale.trim(),
+          selectedArtifactIds: selected,
+          expectedBaselineArtifactIds: requiresBaseline
+            ? architectureBaseline?.artifacts.map((artifact) => artifact.id) ?? []
+            : [],
+          affectedOutputKeys: architectureImpactChoice === "partial" ? selectedOutputs : [],
+        });
+      }
       if (!figmaExecutionOptions.valid) {
         throw new Error(
           figmaExecutionOptions.reason === "FIGMA_INTEGRATION_NOT_READY"
@@ -975,25 +1441,101 @@ function ExecuteDialog({
       await queryClient.invalidateQueries({ queryKey: ["run", runId] });
       onOpenChange(false);
     },
-    onError: (mutationError) =>
-      setError(mutationError instanceof Error ? mutationError.message : "无法启动 Codex"),
+    onError: async (mutationError) => {
+      if (mutationError instanceof ApiError && mutationError.status === 409) {
+        await queryClient.invalidateQueries({ queryKey: ["run", runId] });
+      }
+      setError(
+        mutationError instanceof Error
+          ? mutationError.message
+          : submitsRoutedImpactAssessment
+            ? "提交阶段影响评估失败"
+            : submitsArchitectureImpactAssessment
+              ? "提交架构影响评估失败"
+            : "无法启动 Codex",
+      );
+    },
   });
-  const requiredKeys = new Set(definition.inputs);
+  const requiredKeys = new Set(effectiveInputKeys);
   const selectedKeys = new Set(
     candidates
       .filter((artifact) => selected.includes(artifact.id))
       .map((artifact) => keyForArtifact(artifact)),
   );
-  const hasAllRequiredInputs = definition.inputs.every((key) => selectedKeys.has(key));
-  const hasAllRequiredOutputs = isPhaseOutputSelectionComplete({
-    phaseId: phase.phaseId,
-    availableOutputKeys: definition.outputs,
-    selectedOutputKeys: selectedOutputs,
-    hasExistingArtifacts,
-  });
-  const hasUnsupportedFigmaOutput = !figmaExecutionOptions.valid;
+  const missingRequiredInputKeys = effectiveInputKeys.filter((key) => !selectedKeys.has(key));
+  const hasAllRequiredInputs = missingRequiredInputKeys.length === 0;
+  const hasImpactAssessmentInputs = routedImpactPhaseId === "discovery"
+    ? true
+    : hasAllRequiredInputs;
+  const hasInputsForCurrentAction = canAssessRoutedImpact && !runsRoutedFullExecution
+    ? hasImpactAssessmentInputs
+    : hasAllRequiredInputs;
+  const hasAllRequiredOutputs = canAssessRoutedImpact && !runsRoutedFullExecution
+    ? routedImpactChoice !== "partial" || selectedOutputs.length > 0
+    : phase.resolution?.mode === "partial"
+      ? selectedOutputs.length > 0
+        && selectedOutputs.every((key) => phase.resolution?.affectedOutputKeys.includes(key))
+        && (
+          phase.executions.length > 0
+          || phase.resolution.affectedOutputKeys.every((key) => selectedOutputs.includes(key))
+        )
+    : canAssessArchitectureImpact
+      ? architectureImpactChoice === "skip"
+      || architectureImpactChoice === "reuse"
+      || (
+        architectureImpactChoice === "partial"
+        && isArchitecturePartialOutputSelectionComplete({
+          availableOutputKeys: executableOutputKeys,
+          selectedOutputKeys: selectedOutputs,
+        })
+      )
+      || (
+        architectureImpactChoice === "full"
+        && isPhaseOutputSelectionComplete({
+          phaseId: phase.phaseId,
+          availableOutputKeys: executableOutputKeys,
+          selectedOutputKeys: selectedOutputs,
+          hasExistingArtifacts,
+          existingOutputKeys,
+          architectureSelectionRecorded,
+        })
+      )
+    : isArchitecturePartialMode
+      ? isArchitecturePartialOutputSelectionComplete({
+        availableOutputKeys: executableOutputKeys,
+        selectedOutputKeys: selectedOutputs,
+        affectedOutputKeys: partialAffectedOutputKeys,
+        requireAllAffectedOutputs: isFirstAssessedPartialExecution,
+      })
+      : isPhaseOutputSelectionComplete({
+        phaseId: phase.phaseId,
+        availableOutputKeys: executableOutputKeys,
+        selectedOutputKeys: selectedOutputs,
+        hasExistingArtifacts,
+        existingOutputKeys,
+        architectureSelectionRecorded,
+      });
+  const routedImpactAssessmentReady = !canAssessRoutedImpact
+    || runsRoutedFullExecution
+    || Boolean(
+      routedImpactPhaseId
+      && isImpactAssessmentComplete({
+        phaseId: routedImpactPhaseId,
+        choice: routedImpactChoice,
+        rationale: routedImpactRationale,
+        baseline: routedImpactBaseline,
+        affectedOutputKeys: selectedOutputs,
+        hasAllRequiredInputs: hasImpactAssessmentInputs,
+      }),
+    );
+  const hasValidArchitectureImpactRationale = !submitsArchitectureImpactAssessment
+    || isArchitectureImpactRationaleValid(architectureImpactRationale);
+  const hasUnsupportedFigmaOutput = !showsImpactAssessmentOnly
+    && !figmaExecutionOptions.valid;
   const canUseSelectedCodexConfiguration =
-    runnerMode !== "real" || hasResolvedCodexConfiguration;
+    showsImpactAssessmentOnly
+    || runnerMode !== "real"
+    || hasResolvedCodexConfiguration;
 
   const selectModel = (nextModel: string) => {
     setModel(nextModel);
@@ -1006,12 +1548,104 @@ function ExecuteDialog({
     );
   };
 
+  const selectArchitectureImpactChoice = (choice: ArchitectureImpactChoice) => {
+    if (mutation.isPending) return;
+    if (
+      choice === "skip"
+      && (
+        (workType !== "bug" && workType !== "technical")
+        || !hasEvidenceRefs
+      )
+    ) {
+      setError("只有在 Change Contract 中带明确证据引用的 Bug 或技术任务可以声明无需架构工作。");
+      return;
+    }
+    if ((choice === "reuse" || choice === "partial") && !architectureBaseline) {
+      setError("当前项目还没有可复用的已批准架构基线；请选择跳过或完整重跑。");
+      return;
+    }
+    setArchitectureImpactChoice(choice);
+    if (choice === "skip" || choice === "reuse") {
+      setSelectedOutputs([]);
+    } else if (choice === "partial") {
+      setSelectedOutputs(architecturePartialOutputKeys({
+        availableOutputKeys: executableOutputKeys,
+        initialOutputKeys,
+      }));
+    } else {
+      setSelectedOutputs(standardInitialOutputKeys());
+    }
+    setError(undefined);
+  };
+
+  const selectRoutedImpactChoice = (choice: RoutedImpactChoice) => {
+    if (mutation.isPending || !routedImpactPhaseId) return;
+    if (
+      routedImpactPhaseId === "discovery"
+      && choice !== "full"
+      && !hasChangeContract
+    ) {
+      setError("旧 Run 没有 Change Contract，只能选择 Full 运行 PM / BA 补齐产品产物。");
+      return;
+    }
+    if (
+      routedImpactPhaseId === "discovery"
+      && choice === "direct"
+      && !productDirectAllowed
+    ) {
+      setError("Direct 仅适用于预期行为明确的 Bug 或无行为变化的技术任务；请选择 Partial 或 Full。");
+      return;
+    }
+    if (impactChoiceRequiresBaseline(routedImpactPhaseId, choice) && !routedImpactBaseline) {
+      setError("当前项目还没有可复用的已批准基线；请选择直接、跳过或完整执行。");
+      return;
+    }
+    setRoutedImpactChoice(choice);
+    setSelectedOutputs(
+      choice === "partial"
+        ? defaultRoutedPartialOutputKeys(routedImpactPhaseId, executableOutputKeys)
+        : choice === "full"
+          ? standardInitialOutputKeys()
+          : [],
+    );
+    setError(undefined);
+  };
+
   const toggleOutput = (key: string) => {
     if (mutation.isPending) return;
+    if (canAssessRoutedImpact && !runsRoutedFullExecution) {
+      if (routedImpactChoice !== "partial") return;
+      setSelectedOutputs((current) =>
+        current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
+      );
+      return;
+    }
+    if (phase.resolution?.mode === "partial") {
+      if (
+        phase.executions.length === 0
+        || !phase.resolution.affectedOutputKeys.includes(key)
+      ) return;
+      setSelectedOutputs((current) =>
+        current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
+      );
+      return;
+    }
+    if (isArchitecturePartialMode) {
+      if (
+        key === "architecture"
+        || isFirstAssessedPartialExecution
+        || !partialAllowedOutputKeys.includes(key)
+      ) return;
+      setSelectedOutputs((current) =>
+        current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
+      );
+      return;
+    }
     if (isPhaseOutputLocked({
       phaseId: phase.phaseId,
       outputKey: key,
       hasExistingArtifacts,
+      architectureSelectionRecorded,
     })) return;
     if (key === "figma-handoff") {
       setSelectedOutputs((current) =>
@@ -1033,34 +1667,318 @@ function ExecuteDialog({
       }}
       title={`运行 · ${getPhaseName(definition)}`}
       description="选择 Codex 本次可以使用的上游产物，以及需要交付的阶段输出。"
-      className="max-w-2xl"
+      className="h-[calc(100dvh-1rem)] max-h-[52rem] max-w-2xl sm:h-[calc(100dvh-3rem)]"
     >
       <fieldset
         disabled={mutation.isPending}
         aria-busy={mutation.isPending}
-        className="m-0 min-w-0 overflow-y-auto border-0 p-6"
+        className="m-0 flex min-h-0 min-w-0 flex-1 flex-col border-0 p-0"
       >
-        <div className="rounded-xl border border-slate-200 bg-slate-950 p-4 text-slate-100">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-xs font-semibold">
-              <TerminalSquare className="h-4 w-4 text-teal-300" aria-hidden />
-              Codex Terminal
-            </div>
-            <Badge variant={runnerMode === "fake" ? "warning" : runnerMode === "real" ? "success" : "muted"}>
-              {runnerMode === "fake" ? "模拟执行" : runnerMode === "real" ? "真实执行" : "检测中"}
-            </Badge>
-          </div>
-          <p className="mt-2 text-xs leading-5 text-slate-400">
-            {runnerMode === "fake"
-              ? "当前服务处于 Fake 模式，只会生成模拟产物，不会调用 Codex。"
-              : runnerMode === "real"
-                ? "Codex CLI 会在项目根目录真实执行当前角色任务。平台负责阶段边界、输入选择与审核。"
-                : healthQuery.isError
-                  ? "无法确认服务运行模式，请检查本地 API 后重试。"
-                  : "正在确认本地 API 的 Codex 运行模式…"}
-          </p>
-        </div>
+        <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto overscroll-contain p-6">
+          {canAssessRoutedImpact && routedImpactPhaseId ? (
+            <section
+              className="mb-5 rounded-2xl border border-teal-200 bg-teal-50/50 p-4"
+              aria-labelledby="routed-impact-check-title"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 id="routed-impact-check-title" className="text-sm font-semibold text-slate-950">
+                    {phaseImpactTitle(routedImpactPhaseId)}
+                  </h3>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">
+                    先判断本阶段的处理方式；Direct、Reuse、Partial 会留存处置证据，Full 会直接启动当前角色。
+                  </p>
+                </div>
+                <Badge variant={routedImpactBaseline ? "info" : "muted"}>
+                  {routedImpactBaseline ? "存在已批准基线" : "暂无可复用基线"}
+                </Badge>
+              </div>
+              {routedImpactBaseline ? (
+                <p className="mt-3 rounded-lg bg-white/80 px-3 py-2 text-[11px] leading-5 text-slate-500 ring-1 ring-teal-100">
+                  来源：{routedImpactBaseline.sourceRunTitle} · {routedImpactBaseline.artifacts.length} 项产物 ·
+                  批准于 {formatDate(routedImpactBaseline.approvedAt)}
+                </p>
+              ) : (
+                <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
+                  Reuse 与 Partial 需要已批准基线，当前只能选择
+                  {routedImpactPhaseId === "discovery" && productDirectAllowed
+                    ? " Direct 或 Full"
+                    : routedImpactPhaseId === "discovery"
+                      ? " Full"
+                      : " Skip 或 Full"}。
+                </p>
+              )}
+              {routedImpactPhaseId === "discovery" && !hasChangeContract ? (
+                <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
+                  这是没有 Change Contract 的旧 Run；Direct、Reuse、Partial 不可用，请用 Full 补齐产品产物。
+                </p>
+              ) : null}
 
+              <fieldset className="mt-3">
+                <legend className="sr-only">选择阶段处置方式</legend>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                  {impactOptionsForPhase(routedImpactPhaseId).map((option) => {
+                    const missingBaseline = option.requiresBaseline && !routedImpactBaseline;
+                    const legacyProductChoice = routedImpactPhaseId === "discovery"
+                      && !hasChangeContract
+                      && option.value !== "full";
+                    const directNotAllowed = routedImpactPhaseId === "discovery"
+                      && option.value === "direct"
+                      && !productDirectAllowed;
+                    const disabled = missingBaseline || legacyProductChoice || directNotAllowed;
+                    return (
+                      <label
+                        key={option.value}
+                        className={cn(disabled ? "cursor-not-allowed opacity-55" : "cursor-pointer")}
+                      >
+                        <input
+                          type="radio"
+                          name={`routed-impact-${phase.id ?? phase.phaseId}`}
+                          value={option.value}
+                          checked={routedImpactChoice === option.value}
+                          disabled={disabled}
+                          onChange={() => selectRoutedImpactChoice(option.value)}
+                          className="peer sr-only"
+                        />
+                        <span
+                          className={cn(
+                            "block h-full rounded-xl border bg-white px-3 py-3 transition peer-focus-visible:ring-2 peer-focus-visible:ring-teal-500 peer-focus-visible:ring-offset-2",
+                            routedImpactChoice === option.value
+                              ? "border-teal-400 ring-1 ring-teal-200"
+                              : "border-slate-200",
+                            !disabled && "hover:border-slate-300",
+                          )}
+                        >
+                          <span className="block text-xs font-semibold text-slate-900">{option.title}</span>
+                          <span className="mt-1 block text-[11px] leading-4 text-slate-500">
+                            {option.description}
+                          </span>
+                          {directNotAllowed && hasChangeContract ? (
+                            <span className="mt-1 block text-[10px] font-semibold text-amber-700">
+                              {!hasEvidenceRefs
+                                ? "Change Contract 缺少证据引用；请选择 Full 或新建 Run 补充"
+                                : "新功能 / 局部变更请选择 Partial 或 Full"}
+                            </span>
+                          ) : null}
+                          {legacyProductChoice ? (
+                            <span className="mt-1 block text-[10px] font-semibold text-amber-700">
+                              旧 Run 缺少 Change Contract
+                            </span>
+                          ) : null}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+
+              {routedImpactChoice && routedImpactChoice !== "full" ? (
+                <label className="mt-4 block">
+                  <span className="text-xs font-semibold text-slate-700">处置理由</span>
+                  <Textarea
+                    value={routedImpactRationale}
+                    maxLength={2_000}
+                    onChange={(event) => setRoutedImpactRationale(event.target.value)}
+                    placeholder={routedImpactChoice === "partial"
+                      ? "说明哪些输出受影响，以及为什么其他输出仍可继承…"
+                      : "说明 Change Contract、现有基线和代码事实如何支持这个判断…"}
+                    aria-invalid={Boolean(
+                      routedImpactRationale
+                      && routedImpactRationale.trim().length < 10
+                    )}
+                    className="mt-1.5 min-h-24 bg-white"
+                  />
+                  <span className="mt-1.5 block text-[11px] leading-4 text-slate-500">
+                    至少 10 个字符；来源基线、选定输入、理由和受影响输出会一起留痕。
+                  </span>
+                </label>
+              ) : routedImpactChoice === "full" ? (
+                <p className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">
+                  将在当前窗口直接选择输入与输出并启动 Codex；完整执行本身作为 execution 审计证据，
+                  不另建 PhaseResolution，也不采集不会持久化的处置理由。
+                </p>
+              ) : (
+                <p className="mt-3 text-xs leading-5 text-teal-800">请选择一种处置方式后继续。</p>
+              )}
+            </section>
+          ) : null}
+
+          {canAssessArchitectureImpact ? (
+            <section
+              className="mb-5 rounded-2xl border border-teal-200 bg-teal-50/50 p-4"
+              aria-labelledby="architecture-impact-check-title"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 id="architecture-impact-check-title" className="text-sm font-semibold text-slate-950">
+                    Architecture Impact Check
+                  </h3>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">
+                    先判断本次需求对已批准架构的影响，再决定是否运行架构师。
+                  </p>
+                </div>
+                <Badge variant={architectureBaseline ? "info" : "muted"}>
+                  {architectureBaseline
+                    ? `基线 Option ${architectureBaseline.selection.optionId}`
+                    : "暂无可复用架构基线"}
+                </Badge>
+              </div>
+              {architectureBaseline ? (
+                <p className="mt-3 rounded-lg bg-white/80 px-3 py-2 text-[11px] leading-5 text-slate-500 ring-1 ring-teal-100">
+                  来源：{architectureBaseline.sourceRunTitle} · 批准于 {formatDate(architectureBaseline.approvedAt)}
+                </p>
+              ) : (
+                <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
+                  Reuse 与 Partial 需要已批准架构基线；当前仍可选择无需架构工作或完整重跑。
+                </p>
+              )}
+
+              <fieldset className="mt-3">
+                <legend className="sr-only">选择架构影响范围</legend>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                  {ARCHITECTURE_IMPACT_OPTIONS.map((option) => {
+                    const disabled = (
+                      (option.value === "reuse" || option.value === "partial")
+                      && !architectureBaseline
+                    ) || (
+                      option.value === "skip"
+                      && workType !== "bug"
+                      && workType !== "technical"
+                    ) || (
+                      option.value === "skip"
+                      && !hasEvidenceRefs
+                    );
+                    return (
+                    <label
+                      key={option.value}
+                      className={cn(disabled ? "cursor-not-allowed opacity-55" : "cursor-pointer")}
+                    >
+                      <input
+                        type="radio"
+                        name={`architecture-impact-${phase.id ?? phase.phaseId}`}
+                        value={option.value}
+                        checked={architectureImpactChoice === option.value}
+                        disabled={disabled}
+                        onChange={() => selectArchitectureImpactChoice(option.value)}
+                        className="peer sr-only"
+                      />
+                      <span
+                        className={cn(
+                          "block h-full rounded-xl border bg-white px-3 py-3 transition peer-focus-visible:ring-2 peer-focus-visible:ring-teal-500 peer-focus-visible:ring-offset-2",
+                          architectureImpactChoice === option.value
+                            ? "border-teal-400 ring-1 ring-teal-200"
+                            : "border-slate-200 hover:border-slate-300",
+                        )}
+                      >
+                        <span className="block text-xs font-semibold text-slate-900">{option.title}</span>
+                          <span className="mt-1 block text-[11px] leading-4 text-slate-500">
+                            {option.description}
+                          </span>
+                          {option.value === "skip" && disabled ? (
+                            <span className="mt-1 block text-[10px] font-semibold text-amber-700">
+                              仅限带证据引用的 Bug / 技术任务
+                            </span>
+                          ) : null}
+                      </span>
+                    </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+
+              {architectureImpactChoice === "skip"
+                || architectureImpactChoice === "reuse"
+                || architectureImpactChoice === "partial" ? (
+                <label className="mt-4 block">
+                  <span className="text-xs font-semibold text-slate-700">判断依据</span>
+                  <Textarea
+                    value={architectureImpactRationale}
+                    maxLength={2_000}
+                    onChange={(event) => setArchitectureImpactRationale(event.target.value)}
+                    placeholder={architectureImpactChoice === "skip"
+                      ? "说明为什么该工作不影响系统边界、集成、数据、安全或 NFR…"
+                      : architectureImpactChoice === "reuse"
+                        ? "说明为什么本次需求不会改变边界、选型、NFR 或架构规则…"
+                        : "说明受影响的架构范围，以及为什么无需重新选型…"}
+                    aria-invalid={Boolean(
+                      architectureImpactRationale
+                      && !isArchitectureImpactRationaleValid(architectureImpactRationale)
+                    )}
+                    className="mt-1.5 min-h-24 bg-white"
+                  />
+                  <span className="mt-1.5 block text-[11px] leading-4 text-slate-500">
+                    至少 10 个字符；该判断会随架构基线和上游产物一起留痕。
+                  </span>
+                </label>
+              ) : architectureImpactChoice === "full" ? (
+                <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+                  完整重跑分两步：本次先刷新 Architecture、Discovery 与 Options，随后人工选型并生成完整架构包。
+                </p>
+              ) : (
+                <p className="mt-3 text-xs leading-5 text-teal-800">请选择一种影响范围后继续。</p>
+              )}
+            </section>
+          ) : hasAssessedPartialImpact && phase.architectureImpact ? (
+            <section className="mb-5 rounded-xl border border-teal-200 bg-teal-50/50 px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-semibold text-teal-950">已确认局部架构更新</div>
+                <Badge variant="info">沿用 Option {phase.architectureImpact.selection.optionId}</Badge>
+              </div>
+              <p className="mt-1 text-xs leading-5 text-teal-800">
+                本次 Codex 只能更新已评估范围：
+                {partialAllowedOutputKeys.map(artifactLabel).join("、")}。
+              </p>
+            </section>
+          ) : null}
+
+          <div className="rounded-xl border border-slate-200 bg-slate-950 p-4 text-slate-100">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-xs font-semibold">
+                <TerminalSquare className="h-4 w-4 text-teal-300" aria-hidden />
+                {showsImpactAssessmentOnly
+                  ? routedImpactPhaseId && canAssessRoutedImpact
+                    ? phaseImpactTitle(routedImpactPhaseId)
+                    : "Architecture Impact"
+                  : "Codex Terminal"}
+              </div>
+              <Badge variant={showsImpactAssessmentOnly ? "info" : runnerMode === "fake" ? "warning" : runnerMode === "real" ? "success" : "muted"}>
+                {showsImpactAssessmentOnly
+                  ? routedImpactChoice || architectureImpactChoice ? "仅记录路由判断" : "等待选择"
+                  : runnerMode === "fake" ? "模拟执行" : runnerMode === "real" ? "真实执行" : "检测中"}
+              </Badge>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-slate-400">
+              {canAssessRoutedImpact && routedImpactPhaseId
+                ? routedImpactChoice === "direct"
+                  ? "平台会采用已确认的 Change Contract，不运行 PM / BA；本次路由判断仍会留痕。"
+                  : routedImpactChoice === "skip"
+                    ? "平台会记录无需设计工作的理由并完成本阶段，不启动 Designer。"
+                    : routedImpactChoice === "reuse"
+                      ? "平台会继承已批准基线并完成本阶段，本次不启动 Codex。"
+                      : routedImpactChoice === "partial"
+                        ? "平台会先记录局部影响范围；确认后再单独启动 Codex 更新这些输出。"
+                        : routedImpactChoice === "full"
+                          ? "平台会在本窗口直接启动当前角色，生成选定的完整阶段产物。"
+                          : "请选择处置方式；选择前不会启动 Codex。"
+                : showsArchitectureImpactOnly
+                  ? architectureImpactChoice === "skip"
+                    ? "平台会记录架构豁免理由并完成本阶段，本次生成 0 项架构产物。"
+                    : architectureImpactChoice === "reuse"
+                  ? "平台会复用已批准架构基线并完成本阶段，本次生成 0 项架构产物。"
+                  : architectureImpactChoice === "partial"
+                    ? "平台会继承已批准架构基线并记录局部更新范围；确认后再运行 Codex。"
+                    : "请选择复用、局部更新或完整重跑；选择前不会启动 Codex。"
+                : runnerMode === "fake"
+                ? "当前服务处于 Fake 模式，只会生成模拟产物，不会调用 Codex。"
+                : runnerMode === "real"
+                  ? "Codex CLI 会在项目根目录真实执行当前角色任务。平台负责阶段边界、输入选择与审核。"
+                  : healthQuery.isError
+                    ? "无法确认服务运行模式，请检查本地 API 后重试。"
+                  : "正在确认本地 API 的 Codex 运行模式…"}
+            </p>
+          </div>
+
+        {!showsImpactAssessmentOnly ? (
         <section className="mt-5" aria-labelledby="codex-execution-settings-title">
           <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
             <div>
@@ -1176,6 +2094,7 @@ function ExecuteDialog({
             )}
           </div>
         </section>
+        ) : null}
 
         <div className="mt-5">
           <div className="mb-3 flex items-center justify-between">
@@ -1245,33 +2164,93 @@ function ExecuteDialog({
             </div>
           ) : (
             <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-7 text-center text-xs leading-5 text-slate-500">
-              {definition.inputs.length
+              {effectiveInputKeys.length
                 ? "暂时没有可用的上游产物。只有审核通过的产物才会出现在这里。"
                 : "这是第一个阶段，不需要选择上游产物。"}
             </div>
           )}
+          {missingRequiredInputKeys.length > 0 ? (
+            <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+              还需选择有效阶段输入：{missingRequiredInputKeys.map(artifactLabel).join("、")}。
+            </p>
+          ) : null}
         </div>
 
         <div className="mt-6 border-t border-slate-100 pt-5">
           <div className="mb-3">
             <h3 className="text-sm font-semibold text-slate-900">本次预期输出</h3>
             <p className="mt-1 text-xs leading-5 text-slate-500">
-              {hasExistingArtifacts
+              {canAssessRoutedImpact && !routedImpactChoice
+                ? "先选择阶段处置方式；Partial 声明受影响输出，Full 直接选择本次 Codex 交付。"
+                : canAssessRoutedImpact && routedImpactChoice === "partial"
+                  ? routedImpactPhaseId === "design"
+                    ? "Design Partial 必须包含设计规格；可按实际影响追加基线、HTML 原型或 Figma，未选产物保持只读。"
+                    : "勾选本次允许 Codex 更新的精确 PRD / Stories 输出；未选择的基线产物保持只读。"
+                  : runsRoutedFullExecution
+                    ? "选择本次完整执行要生成的产物；Change Contract 是不可变上下文，不会成为可写输出。"
+                  : canAssessRoutedImpact
+                    ? "本次只记录处置判断，不在这个步骤生成阶段产物。"
+                : canAssessArchitectureImpact && !architectureImpactChoice
+                ? "请选择复用、局部更新或完整重跑；平台不会替你推断影响范围。"
+                : canAssessArchitectureImpact
+                  && (architectureImpactChoice === "skip" || architectureImpactChoice === "reuse")
+                  ? architectureImpactChoice === "skip"
+                    ? "架构豁免不会生成产物；理由和当前输入会作为可审核处置证据。"
+                    : "复用不会生成新架构产物；平台将完整继承已批准基线并完成架构阶段。"
+                  : isArchitecturePartialMode
+                    ? "只允许更新影响评估范围内的选型后产物；Architecture 索引必须同步刷新。"
+              : phase.phaseId === "architecture" && !architectureSelectionRecorded
+                ? REQUIRED_ARCHITECTURE_BOOTSTRAP_OUTPUT_KEYS.every((key) =>
+                    existingOutputKeys.includes(key)
+                  )
+                  ? "当前停在人工选型检查点；只能重跑索引、发现上下文或 options，选型后产物暂时锁定。"
+                  : "先补齐架构索引、发现上下文和 options；选型后产物将在人工记录有效 Option 后解锁。"
+                : phase.phaseId === "architecture"
+                  ? "已记录有效选型；默认刷新架构索引和全部选型后产物，已有完整包也可局部重跑。"
+                : hasExistingArtifacts
                 ? "已有阶段产物，可只选择需要调整的局部范围；未选择的产物会保持不变。"
                 : isDesignPhase
                   ? "首次设计执行必须包含设计基线和设计规格，HTML 原型与 Figma 可按需追加。"
                   : "首次执行需要生成本阶段的全部注册产物。"}
             </p>
           </div>
+          {(canAssessRoutedImpact
+              && routedImpactChoice !== "partial"
+              && routedImpactChoice !== "full")
+            || (canAssessArchitectureImpact
+              && (
+                architectureImpactChoice === ""
+                || architectureImpactChoice === "skip"
+                || architectureImpactChoice === "reuse"
+              )) ? (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-xs leading-5 text-slate-500">
+              {canAssessRoutedImpact
+                ? routedImpactChoice
+                  ? "本步骤生成 0 项产物；确认处置后，平台会完成或准备本阶段。"
+                  : "选择处置方式后，这里会显示需要更新的产物范围。"
+                : architectureImpactChoice === "skip"
+                  ? "本次生成 0 项产物；确认后记录架构豁免并完成本阶段。"
+                  : architectureImpactChoice === "reuse"
+                  ? "本次生成 0 项产物；确认后复用基线中的完整架构包。"
+                  : "选择影响范围后，这里会显示需要生成或更新的产物。"}
+            </div>
+          ) : (
           <div className="grid gap-2 sm:grid-cols-2">
-              {outputOptions.map((output) => {
+              {visibleOutputOptions.map((output) => {
                 const checked = selectedOutputs.includes(output.key);
                 const isFigma = output.key === "figma-handoff";
-                const locked = isPhaseOutputLocked({
-                  phaseId: phase.phaseId,
-                  outputKey: output.key,
-                  hasExistingArtifacts,
-                });
+                const locked = canAssessRoutedImpact && !runsRoutedFullExecution
+                  ? routedImpactChoice !== "partial"
+                  : phase.resolution?.mode === "partial"
+                    ? phase.executions.length === 0
+                  : isArchitecturePartialMode
+                  ? output.key === "architecture" || isFirstAssessedPartialExecution
+                  : isPhaseOutputLocked({
+                    phaseId: phase.phaseId,
+                    outputKey: output.key,
+                    hasExistingArtifacts,
+                    architectureSelectionRecorded,
+                  });
                 const disabled = locked || mutation.isPending;
                 return (
                   <div
@@ -1295,7 +2274,15 @@ function ExecuteDialog({
                       <span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-800">
                         {artifactLabel(output.key)}
                         {output.downstreamRequired ? <Badge variant="info">后续阶段必需</Badge> : null}
-                        {locked && !output.downstreamRequired ? <Badge variant="muted">首次执行必需</Badge> : null}
+                        {locked && !output.downstreamRequired ? (
+                          <Badge variant="muted">
+                            {isArchitecturePartialMode
+                              ? isFirstAssessedPartialExecution
+                                ? "首次局部更新必需"
+                                : "局部更新必需"
+                              : "首次执行必需"}
+                          </Badge>
+                        ) : null}
                         {isFigma && figmaOutputSelected && figmaReady ? (
                           <Badge variant="success">连接已授权</Badge>
                         ) : null}
@@ -1314,6 +2301,7 @@ function ExecuteDialog({
                 );
               })}
           </div>
+          )}
 
             {isDesignPhase && figmaOutputSelected ? (
               figmaReady ? (
@@ -1630,10 +2618,35 @@ function ExecuteDialog({
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 id="delivery-summary-title" className="text-sm font-semibold text-slate-900">
-                  本次将交付
+                  {submitsRoutedImpactAssessment || submitsArchitectureImpactAssessment
+                    ? "本次影响处理"
+                    : "本次将交付"}
                 </h3>
-                <Badge variant="muted">{selectedOutputs.length} 项产物</Badge>
+                <Badge variant="muted">
+                  {(canAssessRoutedImpact
+                      && routedImpactChoice !== "partial"
+                      && routedImpactChoice !== "full")
+                    || architectureImpactChoice === "skip"
+                    || architectureImpactChoice === "reuse"
+                    ? "0 项生成"
+                    : `${selectedOutputs.length} 项产物`}
+                </Badge>
               </div>
+              {canAssessRoutedImpact
+                && routedImpactChoice !== "partial"
+                && routedImpactChoice !== "full" ? (
+                <p className="mt-3 text-xs leading-5 text-slate-600">
+                  本次只记录 {routedImpactChoice ? "已选择的阶段处置" : "待选择的阶段处置"}；不会启动 Codex。
+                </p>
+              ) : architectureImpactChoice === "skip" ? (
+                <p className="mt-3 text-xs leading-5 text-slate-600">
+                  本次不生成架构产物；平台会保存豁免理由和选定输入。
+                </p>
+              ) : architectureImpactChoice === "reuse" ? (
+                <p className="mt-3 text-xs leading-5 text-slate-600">
+                  完整复用 {architectureBaseline?.artifacts.length ?? 0} 项已批准架构产物；不会启动 Codex。
+                </p>
+              ) : selectedOutputs.length > 0 ? (
               <ul className="mt-3 grid gap-2 sm:grid-cols-2">
                 {selectedOutputs.map((key) => (
                   <li
@@ -1652,6 +2665,9 @@ function ExecuteDialog({
                   </li>
                 ))}
               </ul>
+              ) : (
+                <p className="mt-3 text-xs leading-5 text-slate-500">尚未选择影响范围或预期输出。</p>
+              )}
               {isDesignPhase && figmaOutputSelected ? (
                 <p
                   className={cn(
@@ -1678,29 +2694,60 @@ function ExecuteDialog({
             {error}
           </div>
         ) : null}
-        <div className="mt-6 flex justify-end gap-3 border-t border-slate-100 pt-5">
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button
-            variant="primary"
-            loading={mutation.isPending}
-            onClick={() => mutation.mutate()}
-            disabled={
-              !hasAllRequiredInputs
-              || !hasAllRequiredOutputs
-              || hasUnsupportedFigmaOutput
-              || !canUseSelectedCodexConfiguration
-              || !runnerMode
-            }
-          >
-            <Play className="h-4 w-4" aria-hidden />
-            {runnerMode === "fake"
-              ? "启动模拟执行"
-              : runnerMode === "real"
-                ? "启动真实 Codex"
-                : "检测运行模式"}
-          </Button>
+          <div className="mt-6 flex justify-end gap-3 border-t border-slate-100 pt-5">
+            <Button variant="ghost" onClick={() => onOpenChange(false)}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              loading={mutation.isPending}
+              onClick={() => mutation.mutate()}
+              disabled={
+                !hasInputsForCurrentAction
+                || !hasAllRequiredOutputs
+                || !routedImpactAssessmentReady
+                || !hasValidArchitectureImpactRationale
+                || hasUnsupportedFigmaOutput
+                || !canUseSelectedCodexConfiguration
+                || (!showsImpactAssessmentOnly && !runnerMode)
+              }
+            >
+              {submitsRoutedImpactAssessment || submitsArchitectureImpactAssessment ? (
+                <CheckCircle2 className="h-4 w-4" aria-hidden />
+              ) : (
+                <Play className="h-4 w-4" aria-hidden />
+              )}
+              {canAssessRoutedImpact && !routedImpactChoice
+                ? "请选择阶段处置方式"
+                : canAssessRoutedImpact
+                  ? routedImpactChoice === "partial"
+                    ? "确认局部影响范围"
+                    : routedImpactChoice === "full"
+                      ? runnerMode === "fake" ? "启动完整模拟执行" : "启动完整 Codex 执行"
+                      : routedImpactChoice === "reuse"
+                        ? "确认复用基线"
+                        : routedImpactChoice === "skip"
+                          ? "确认跳过设计"
+                          : "确认直接采用合同"
+                : canAssessArchitectureImpact && !architectureImpactChoice
+                ? "请选择架构影响范围"
+                : architectureImpactChoice === "reuse"
+                ? "确认复用架构"
+                : architectureImpactChoice === "skip"
+                  ? "确认无需架构工作"
+                : canAssessArchitectureImpact && architectureImpactChoice === "partial"
+                  ? "确认局部更新范围"
+                  : hasAssessedPartialImpact
+                    ? "启动局部架构更新"
+                    : canAssessArchitectureImpact && architectureImpactChoice === "full"
+                      ? "开始完整架构重跑"
+                      : runnerMode === "fake"
+                ? "启动模拟执行"
+                : runnerMode === "real"
+                  ? "启动真实 Codex"
+                  : "检测运行模式"}
+            </Button>
+          </div>
         </div>
       </fieldset>
     </Dialog>
@@ -1751,6 +2798,14 @@ function ReviewDialog({
   const isHtmlArtifact =
     artifactKey === "design-prototype" || /\.(?:html?|xhtml)$/iu.test(artifactPath);
   const isSuperseded = artifact?.superseded || artifact?.reviewStatus === "superseded";
+  const isImpactReadOnly = artifactKey === "change-contract" || (phase.resolution
+    ? !isResolutionOutputMutable(phase.resolution, artifactKey)
+    : phase.phaseId === "architecture"
+      && !isArchitectureImpactOutputMutable(
+        phase.architectureImpact?.mode,
+        phase.architectureImpact?.affectedOutputKeys,
+        artifactKey,
+      ));
   const isDirty = typeof content === "string" && draftContent !== content;
   const revisionByteLength = artifactRevisionByteLength(draftContent);
   const revisionContentInvalid = artifactRevisionContentInvalid(draftContent);
@@ -1758,6 +2813,7 @@ function ReviewDialog({
     typeof content === "string"
     && Boolean(artifact?.contentHash)
     && !isSuperseded
+    && !isImpactReadOnly
     && [
       "ready",
       "awaiting_review",
@@ -1769,6 +2825,7 @@ function ReviewDialog({
   const canRerunArtifact =
     Boolean(artifactKey)
     && !isSuperseded
+    && !isImpactReadOnly
     && [
       "ready",
       "awaiting_review",
@@ -1777,6 +2834,57 @@ function ReviewDialog({
       "rejected",
       "failed",
     ].includes(phase.status);
+  const currentArtifactHeads = phase.artifacts.filter(
+    (candidate) => !candidate.superseded && candidate.reviewStatus !== "superseded",
+  );
+  const currentArtifactKeys = new Set(currentArtifactHeads.map((candidate) => keyForArtifact(candidate)));
+  const missingApprovalOutputKeys = requiredPhaseApprovalOutputKeys(
+    phase.phaseId,
+    definition.outputs,
+  ).filter((key) => !currentArtifactKeys.has(key));
+  const currentOptionsHead = currentArtifactHeads.find(
+    (candidate) => keyForArtifact(candidate) === "architecture-options",
+  );
+  const currentDiscoveryHead = currentArtifactHeads.find(
+    (candidate) => keyForArtifact(candidate) === "architecture-discovery-context",
+  );
+  const architectureSelection = phase.phaseId === "architecture"
+    ? phase.architectureImpact?.selection
+      ?? (
+        currentOptionsHead
+        && currentDiscoveryHead
+        ? architectureSelectionFromReviews(
+            phase.reviews,
+            currentOptionsHead.id,
+            [currentOptionsHead.id, currentDiscoveryHead.id],
+          )
+        : undefined
+      )
+    : undefined;
+  const isPartialArchitectureImpactReview = phase.phaseId === "architecture"
+    && phase.architectureImpact?.mode === "partial";
+  const staleArchitectureOutputKeys = architectureSelection
+    ? architectureOutputKeysRequiringRefresh({
+        impactMode: phase.architectureImpact?.mode,
+        affectedOutputKeys: phase.architectureImpact?.affectedOutputKeys,
+        availableOutputKeys: definition.outputs,
+        artifacts: currentArtifactHeads.map((artifactHead) => ({
+          artifactKey: keyForArtifact(artifactHead),
+          revision: artifactHead.revision,
+          createdAt: artifactHead.createdAt,
+        })),
+        selectedAt: architectureSelection.selectedAt,
+      })
+    : [];
+  const isArchitectureSelectionCheckpoint =
+    phase.phaseId === "architecture" && !architectureSelection;
+  const architectureSelectionIdInComment = parseArchitectureSelectionId(comment.trim());
+  const architectureReselectionBlocked = isArchitectureReselectionBlockedByImpact(
+    phase.architectureImpact?.mode,
+    comment.trim(),
+  );
+  const showsArchitectureSelectionAction = Boolean(architectureSelectionIdInComment)
+    && !architectureReselectionBlocked;
 
   useEffect(() => {
     const preservedDraft = preservedDraftRef.current;
@@ -1951,6 +3059,34 @@ function ReviewDialog({
     }
     if (!comment.trim()) {
       setError(decision === "approve" ? "请留下简短的审核结论。" : "请说明需要修改的内容。");
+      return;
+    }
+    if (decision === "request_changes" && architectureReselectionBlocked) {
+      setError("局部更新不能重新选型，请完整重跑。");
+      return;
+    }
+    if (decision === "approve" && isArchitectureSelectionCheckpoint) {
+      setError("请先使用 `Selected option: <ID>` 记录一个针对当前 options revision 的人工选型。");
+      return;
+    }
+    if (decision === "approve" && missingApprovalOutputKeys.length > 0) {
+      setError(`阶段产物尚未齐全，不能通过：${missingApprovalOutputKeys.join(", ")}`);
+      return;
+    }
+    if (decision === "approve" && staleArchitectureOutputKeys.length > 0) {
+      setError(
+        isPartialArchitectureImpactReview
+          ? `这些产物尚未在本次影响评估后更新：${staleArchitectureOutputKeys.join(", ")}`
+          : `这些产物早于人工选型，必须重新生成：${staleArchitectureOutputKeys.join(", ")}`,
+      );
+      return;
+    }
+    if (
+      decision === "request_changes"
+      && architectureSelectionIdInComment
+      && !currentOptionsHead
+    ) {
+      setError("必须先生成 architecture-options 才能记录选型。");
       return;
     }
     const expectedArtifactIds = currentArtifactHeadIds(phase.artifacts);
@@ -2176,10 +3312,37 @@ function ReviewDialog({
 
           {isReviewable ? (
             <div className="mt-5">
+              {isArchitectureSelectionCheckpoint ? (
+                <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <GitBranch className="h-4 w-4" aria-hidden />
+                    当前是架构选型检查点
+                  </div>
+                  <p className="mt-1">
+                    使用独立一行 <code>Selected option: B</code>（将 B 换成 options 文档中的真实 ID）
+                    记录选型，然后点击“记录选型并继续”。普通修改意见仍可直接提交，但不会越过选型检查点。
+                  </p>
+                  {missingApprovalOutputKeys.length > 0 ? (
+                    <p className="mt-1 text-amber-700">
+                      待生成：{missingApprovalOutputKeys.map(artifactLabel).join("、")}
+                    </p>
+                  ) : null}
+                </div>
+              ) : staleArchitectureOutputKeys.length > 0 ? (
+                <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                  {isPartialArchitectureImpactReview
+                    ? `以下产物尚未在本次影响评估后更新：${staleArchitectureOutputKeys.map(artifactLabel).join("、")}。请完成本次局部更新后再提交批准。`
+                    : `已记录 Option ${architectureSelection?.optionId}，但以下产物仍早于该选型：${staleArchitectureOutputKeys.map(artifactLabel).join("、")}。请执行选型后的默认输出集，再提交批准。`}
+                </div>
+              ) : null}
               <Field label="审核意见" hint="必填" required>
                 <Textarea
                   className="min-h-32 bg-white"
-                  placeholder="记录你的判断，或者准确描述需要修改的地方…"
+                  placeholder={
+                    isArchitectureSelectionCheckpoint
+                      ? "Selected option: B\n条件：先验证外部依赖的限流能力。"
+                      : "记录你的判断，或者准确描述需要修改的地方…"
+                  }
                   value={comment}
                   onChange={(event) => setComment(event.target.value)}
                   required
@@ -2188,6 +3351,14 @@ function ReviewDialog({
                   aria-describedby={error ? "review-comment-error" : undefined}
                 />
               </Field>
+              {architectureReselectionBlocked ? (
+                <div
+                  role="alert"
+                  className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-900"
+                >
+                  局部更新不能重新选型，请完整重跑。请删除 Selected option 标记后提交普通修改意见。
+                </div>
+              ) : null}
               {error ? (
                 <div
                   id="review-comment-error"
@@ -2199,17 +3370,26 @@ function ReviewDialog({
               ) : null}
               <div className="mt-4 grid grid-cols-2 gap-2">
                 <Button
-                  variant="destructive"
+                  variant={showsArchitectureSelectionAction ? "primary" : "destructive"}
                   className="px-2"
                   loading={
                     reviewMutation.isPending
                     && reviewMutation.variables?.decision === "request_changes"
                   }
-                  disabled={reviewMutation.isPending || revisionMutation.isPending || isDirty}
+                  disabled={
+                    reviewMutation.isPending
+                    || revisionMutation.isPending
+                    || isDirty
+                    || architectureReselectionBlocked
+                  }
                   onClick={() => submit("request_changes")}
                 >
-                  <XCircle className="h-4 w-4" aria-hidden />
-                  要求修改
+                  {showsArchitectureSelectionAction ? (
+                    <GitBranch className="h-4 w-4" aria-hidden />
+                  ) : (
+                    <XCircle className="h-4 w-4" aria-hidden />
+                  )}
+                  {showsArchitectureSelectionAction ? "记录选型并继续" : "要求修改"}
                 </Button>
                 <Button
                   variant="success"
@@ -2218,7 +3398,14 @@ function ReviewDialog({
                     reviewMutation.isPending
                     && reviewMutation.variables?.decision === "approve"
                   }
-                  disabled={reviewMutation.isPending || revisionMutation.isPending || isDirty}
+                  disabled={
+                    reviewMutation.isPending
+                    || revisionMutation.isPending
+                    || isDirty
+                    || missingApprovalOutputKeys.length > 0
+                    || isArchitectureSelectionCheckpoint
+                    || staleArchitectureOutputKeys.length > 0
+                  }
                   onClick={() => submit("approve")}
                 >
                   <CheckCircle2 className="h-4 w-4" aria-hidden />

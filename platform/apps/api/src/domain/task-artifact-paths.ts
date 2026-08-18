@@ -7,7 +7,7 @@ import type {
   LoadedDefinition
 } from "../services/definition-loader.js";
 
-const DESIGN_SPEC_ARTIFACT_KEY = "design-spec";
+const TASK_SCOPED_ARTIFACT_KEYS = new Set(["change-contract", "design-spec"]);
 const TASK_SLUG_MAX_BYTES = 96;
 const runIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
@@ -42,8 +42,8 @@ export function createTaskArtifactNamespace(task: TaskArtifactIdentity): string 
 
 /**
  * Returns a run-scoped definition without mutating the project definition.
- * Only the feature-level design spec is task-scoped; project-wide artifacts keep
- * their configured paths.
+ * Run-level contracts and feature-level design specs are task-scoped;
+ * project-wide artifacts keep their configured paths.
  */
 export function resolveTaskArtifactPaths(
   definition: LoadedDefinition,
@@ -51,8 +51,8 @@ export function resolveTaskArtifactPaths(
 ): LoadedDefinition {
   const namespace = createTaskArtifactNamespace(task);
   const artifacts = definition.artifacts.map((artifact) =>
-    artifact.id === DESIGN_SPEC_ARTIFACT_KEY
-      ? taskScopedDesignSpec(artifact, namespace)
+    TASK_SCOPED_ARTIFACT_KEYS.has(artifact.id)
+      ? taskScopedArtifact(artifact, namespace)
       : artifact
   );
   assertUniqueArtifactPaths(artifacts);
@@ -60,7 +60,7 @@ export function resolveTaskArtifactPaths(
 }
 
 /**
- * Once a task has produced its first design-spec revision, that registered path
+ * Once a task has produced a run-scoped artifact revision, that registered path
  * is authoritative for every later rerun even if the live project config moves
  * or renames the default artifact.
  */
@@ -69,25 +69,26 @@ export function pinExistingTaskArtifactPaths(
   projectRoot: string,
   existingArtifacts: ExistingArtifactPath[],
 ): LoadedDefinition {
-  const existingSpec = existingArtifacts.find(
-    (artifact) => artifact.artifactKey === DESIGN_SPEC_ARTIFACT_KEY,
-  );
-  if (!existingSpec) return definition;
-  const relativePath = assertSafeStoredArtifactPath(existingSpec.filePath);
-  const absolutePath = path.resolve(projectRoot, ...relativePath.split("/"));
-  if (!isWithin(projectRoot, absolutePath)) {
-    throw new AppError("已保存的任务产物路径逃逸项目目录", 422, "UNSAFE_ARTIFACT_PATH");
+  const pinnedPaths = new Map<string, { relativePath: string; absolutePath: string }>();
+  for (const existing of existingArtifacts) {
+    if (!TASK_SCOPED_ARTIFACT_KEYS.has(existing.artifactKey)) continue;
+    const relativePath = assertSafeStoredArtifactPath(existing.filePath);
+    const absolutePath = path.resolve(projectRoot, ...relativePath.split("/"));
+    if (!isWithin(projectRoot, absolutePath)) {
+      throw new AppError("已保存的任务产物路径逃逸项目目录", 422, "UNSAFE_ARTIFACT_PATH");
+    }
+    pinnedPaths.set(existing.artifactKey, { relativePath, absolutePath });
   }
-  const artifacts = definition.artifacts.map((artifact) =>
-    artifact.id === DESIGN_SPEC_ARTIFACT_KEY
-      ? { ...artifact, relativePath, absolutePath }
-      : artifact
-  );
+  if (pinnedPaths.size === 0) return definition;
+  const artifacts = definition.artifacts.map((artifact) => {
+    const pinned = pinnedPaths.get(artifact.id);
+    return pinned ? { ...artifact, ...pinned } : artifact;
+  });
   assertUniqueArtifactPaths(artifacts);
   return { ...definition, artifacts };
 }
 
-function taskScopedDesignSpec(
+function taskScopedArtifact(
   artifact: LoadedArtifactDefinition,
   namespace: string
 ): LoadedArtifactDefinition {

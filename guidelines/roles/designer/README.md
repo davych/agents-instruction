@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Designer turns confirmed product needs into clear interface behavior and a design handoff that Software Engineer can build and test.
+Designer turns confirmed product needs into the smallest sufficient design clearance. It creates or updates a design handoff only when the Run has real experience-design work.
 
 This role defines:
 
@@ -19,18 +19,19 @@ Designer does not write production code or make product and architecture decisio
 
 | Direction | Role | Relationship |
 |---|---|---|
-| Upstream | PM / BA | Provides the PRD, stories, business rules, and acceptance criteria. |
-| Current role | Designer | Produces the design baseline and feature design spec. |
-| Next phase | Architect | Reads the design spec with the product artifacts. |
-| Handoff destination | Software Engineer | Builds from the baseline and ready design spec after the architecture gate passes. |
+| Upstream | Change Contract and Product clearance | Provide the requested outcome, acceptance, regression scope, and applicable direct/reused/revised product evidence. |
+| Current role | Designer | Records Design Impact and runs only for partial or full work. |
+| Next phase | Architect | Reads the Design clearance and applicable design evidence. |
+| Handoff destination | Software Engineer | Builds from active Product, Design, and Architecture clearances. |
 
-The `design-spec` artifact names Software Engineer as its next owner because it is the implementation-facing design contract. Its platform-managed filename is scoped to the current task rather than fixed to `design-spec.md`. The default phase order still runs Architect before implementation. Software Engineer starts only when both the design gate and architecture gate pass.
+The `design-spec` artifact names Software Engineer as its next owner because it is the implementation-facing design contract. Its platform-managed filename is scoped to the current task rather than fixed to `design-spec.md`. A valid `skip` or `reuse` Design clearance can replace new design generation; Software Engineer still starts only after all active phase gates pass.
 
 ## Inputs
 
 Designer reads:
 
-- the registered `prd` and `user-stories` artifacts;
+- the immutable task-scoped `change-contract`;
+- the Product disposition and applicable `prd` or `user-stories` evidence;
 - configured Markdown and role resources;
 - the current `design-baseline` and `design-spec` artifacts;
 - a small representative source slice for the affected product surface;
@@ -38,7 +39,7 @@ Designer reads:
 - approved screenshots, brand references, or Figma references;
 - the personal design profile.
 
-A missing baseline is an output to create, not a reason to stop. An unconfigured component catalog is unknown evidence, not proof that a component exists.
+A missing baseline is an output to create only when a `partial` or `full` execution selects it. It is not a reason to fabricate design work for `skip`. An unconfigured component catalog is unknown evidence, not proof that a component exists.
 
 ## Outputs
 
@@ -46,6 +47,8 @@ Designer owns:
 
 - `design-baseline` — verified project-wide design conventions and evidence;
 - `design-spec` — the single feature-level handoff to Software Engineer.
+
+Designer may also produce optional `design-prototype` and `figma-handoff` evidence when selected. A structured Design clearance, not a placeholder file, is the output of `skip`.
 
 Resolve each path as `paths.outputs` from `ai-native.yaml`, then the Designer config `output.subdirectory`, then the artifact `path` from the global YAML. The Designer config may change only its child directory.
 
@@ -69,11 +72,25 @@ The baseline records verified project-wide component and token sources, layout a
 
 The spec contains a machine-readable JSON contract plus concise Markdown. It records story and acceptance-criteria coverage, layouts, states, responsive behavior, accessibility, components, assets, content, validation evidence, assumptions, open questions, blockers, and the final engineering handoff.
 
+## Design Impact modes
+
+| Mode | Required evidence | Codex executions | Result |
+|---|---|---:|---|
+| `skip` | No interface, interaction, copy, responsive, or accessibility behavior changes | 0 | Design clearance; no fake design artifact |
+| `reuse` | An approved design exactly covers the affected behavior and criteria | 0 | Imported current-Run revisions with provenance |
+| `partial` | Existing surface and patterns remain valid but named behavior changes | 1 or more as needed | Only selected task/design outputs updated |
+| `full` | New journey, page family, or material experience model | 1 or more as needed | New task-scoped design spec; baseline reused where valid |
+
+The baseline is project-level. The spec is task-level. Therefore a new feature commonly needs a new spec but not a rewritten baseline. A code defect that merely makes the implementation differ from an approved design normally uses `reuse`; a backend-only defect can use `skip`.
+
 ## Role workflow
 
 ```mermaid
 flowchart TD
-  Product["PRD, stories, configured inputs, references, and current design artifacts"] --> Inspect["Inspect the smallest useful project and UI evidence"]
+  Contract["Change Contract + Product clearance"] --> Impact{"Design Impact"}
+  Impact -->|"skip"| Skip["Record no-UX-impact evidence<br/>0 Designer executions"]
+  Impact -->|"reuse"| Reuse["Import exact approved design<br/>0 Designer executions"]
+  Impact -->|"partial / full"| Inspect["Inspect the smallest useful project and UI evidence"]
   Inspect --> Behavior["Define outcome, hierarchy, primary action, viewports, and real states"]
   Behavior --> Components["Query the component catalog and verify local usage"]
   Components --> Policy["Reuse a verified pattern or follow the component fallback policy"]
@@ -88,37 +105,38 @@ flowchart TD
   Ready -->|"No"| Blocked["Use draft or blocked; name owner and next action"]
   Blocked --> Spec
   Ready -->|"Yes"| Handoff["Set ready-for-engineering and complete the handoff"]
-  Handoff --> Architecture["Architect reviews the product and design intent"]
+  Skip --> DesignGate{"Design gate"}
+  Reuse --> DesignGate
+  Handoff --> DesignGate
+  DesignGate -->|"Impact changed"| Impact
+  DesignGate -->|"Pass"| Architecture["Architect reads active design clearance"]
   Architecture --> ArchGate{"Architecture gate passed?"}
   ArchGate -->|"No"| Wait["Implementation waits"]
-  ArchGate -->|"Yes"| Engineer["Software Engineer reads baseline, spec, and architecture pack"]
+  ArchGate -->|"Yes"| Engineer["Software Engineer reads active clearances and applicable evidence"]
 ```
 
 ### Step-by-step explanation
 
-1. **Load product and project evidence** — Read the global YAML, shared workflow, Designer config, Agent, role workflow, upstream product artifacts, existing design artifacts, and approved references.
-2. **Inspect representative source** — Read only enough current source to understand the real shell, layouts, tokens, components, nearby behavior, and useful tests or stories.
-3. **Define behavior first** — Establish the user outcome, hierarchy, primary action, data conditions, viewports, states, and transitions before choosing components.
-4. **Verify components** — Run the component query before declaring props, events, slots, or tokens. Also inspect real local usage.
-5. **Use the fallback policy** — Prefer an existing product pattern, then a verified catalog component, verified primitives, feature-local custom work, and finally shared custom work only when repeated need is proven.
-6. **Maintain the baseline** — Add only verified project-wide rules. Keep feature behavior in the current task's resolved `design-spec` artifact.
-7. **Write traceable design** — Give every supplied acceptance-criteria ID an observable design response.
-8. **Use Figma only when relevant** — Confirm the task, target, access, components, and viewports. Record real file or node evidence and never invent a Figma change.
-9. **Validate the handoff** — Set the final status and blockers, then run the included spec validator.
-10. **Hand off without inventing** — Use `ready-for-engineering` only when the spec is complete and blockers are empty.
-11. **Wait for architecture** — A ready design does not bypass architecture selection and acceptance.
+1. **Load the contract and disposition** — Read the immutable Change Contract, Product clearance, Design Impact decision, selected outputs, existing design evidence, and approved references.
+2. **Stop cleanly when no generation is needed** — `skip` and `reuse` are platform actions. Do not invoke Designer to create a summary or placeholder.
+3. **Inspect representative source** — For `partial` or `full`, read only enough source to understand the real shell, layouts, tokens, components, nearby behavior, and useful tests or stories.
+4. **Define behavior first** — Establish the user outcome, hierarchy, primary action, data conditions, viewports, states, and transitions before choosing components.
+5. **Verify components** — Run the component query before declaring props, events, slots, or tokens. Also inspect real local usage.
+6. **Use the fallback policy** — Prefer an existing product pattern, then a verified catalog component, verified primitives, feature-local custom work, and finally shared custom work only when repeated need is proven.
+7. **Maintain the project baseline** — Add only verified project-wide rules. Do not refresh it for task-local changes.
+8. **Write a task-scoped design** — Give every supplied Change Contract or story acceptance-criteria ID an observable design response.
+9. **Use Figma only when relevant** — Confirm the task, target, access, components, and viewports. Record real evidence and never invent a Figma change.
+10. **Validate the handoff** — Set final status and blockers, then run the included spec validator.
+11. **Hand off without inventing** — Use `ready-for-engineering` only when the selected spec is complete and blockers are empty.
+12. **Reassess changed impact** — Newly discovered UI behavior invalidates `skip`; a materially broader experience invalidates `partial`.
 
 ## Completion gate
 
-The design gate passes when:
+The design gate is route-specific:
 
-- every in-scope story and acceptance criterion has an observable design response;
-- required flows, states, and transitions are explicit;
-- responsive and accessibility behavior is explicit;
-- named components, assets, and content have real evidence or a visible status;
-- validation evidence is recorded;
-- JSON status is `ready-for-engineering`;
-- `blockers` is empty.
+- `skip` passes only with evidence that no user-visible interface, interaction, copy, responsive, or accessibility behavior changes.
+- `reuse` passes only when exact approved design revisions cover the current criteria and are imported with current-Run provenance.
+- `partial` and `full` pass when every applicable Change Contract/story criterion has an observable response; required flows, states, responsiveness, accessibility, components, assets, content, and validation are explicit; the selected JSON spec is `ready-for-engineering`; and `blockers` is empty.
 
 `ready-for-engineering` means the design is complete enough to implement. It is not product, legal, accessibility, brand, or architecture approval.
 
@@ -126,7 +144,8 @@ The design gate passes when:
 
 The Software Engineer handoff must contain:
 
-- covered story and acceptance-criteria IDs;
+- the Design disposition, rationale, and source provenance;
+- covered Change Contract and/or story acceptance-criteria IDs;
 - build scope;
 - behavior the implementation must preserve;
 - responsive and accessibility constraints;
@@ -163,6 +182,7 @@ A prototype or preview is non-production and is created only when explicitly req
 - [Figma workflow](../../../templates/shared/.ai-sdlc/roles/designer/references/figma-workflow.md)
 - [Design baseline template](../../../templates/shared/.ai-sdlc/templates/design-baseline.md)
 - [Design spec template](../../../templates/shared/.ai-sdlc/templates/design-spec.md)
+- [Change Contract template](../../../templates/shared/.ai-sdlc/templates/change-contract.md)
 - [Initialized Designer usage guide](../../../templates/shared/.ai-sdlc/guides/designer.md)
 
 Return to [Role Relationships](../README.md).

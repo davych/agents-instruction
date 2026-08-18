@@ -1,5 +1,8 @@
 import type {
   Artifact,
+  AssessArchitectureDispositionInput,
+  AssessDesignImpactInput,
+  AssessProductImpactInput,
   CodexCapabilities,
   CodexReasoningEffort,
   CreateArtifactRevisionInput,
@@ -189,6 +192,45 @@ export const api = {
       },
     );
     return "execution" in response ? response.execution : response;
+  },
+
+  assessArchitectureImpact(
+    runId: string,
+    input: AssessArchitectureDispositionInput,
+  ): Promise<unknown> {
+    return request<unknown>(
+      `/api/runs/${encodeURIComponent(runId)}/phases/architecture/impact`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    );
+  },
+
+  assessProductImpact(
+    runId: string,
+    input: AssessProductImpactInput,
+  ): Promise<unknown> {
+    return request<unknown>(
+      `/api/runs/${encodeURIComponent(runId)}/phases/discovery/impact`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    );
+  },
+
+  assessDesignImpact(
+    runId: string,
+    input: AssessDesignImpactInput,
+  ): Promise<unknown> {
+    return request<unknown>(
+      `/api/runs/${encodeURIComponent(runId)}/phases/design/impact`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    );
   },
 
   async reviewPhase(

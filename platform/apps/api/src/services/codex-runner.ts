@@ -9,17 +9,22 @@ import type {
   CodexReasoningEffort,
   FigmaTarget,
   PhaseDefinition,
+  PhaseResolutionDto,
   ProjectDto,
   WorkflowRunDto
 } from "@ai-sdlc/contracts";
 
 import { AppError } from "../domain/errors.js";
+import type { ArchitectureSelectionEvidence } from "../domain/workflow.js";
 import type { ArtifactRecordInput, SelectionArtifact } from "../db/store.js";
 import {
   assertRuntimePath,
   readArtifactContent,
+  withArtifactPathsRollbackOnError,
   withProtectedArtifactPaths,
 } from "./artifact-workspace.js";
+import { loadArchitectureRulebookContext } from "./architecture-rulebook-runtime.js";
+import { calculateArchitectureRulebookDigest } from "./architecture-rulebook-validator.js";
 import type { LoadedDefinition } from "./definition-loader.js";
 import { isWithin } from "./project-paths.js";
 
@@ -33,6 +38,9 @@ export interface CodexRunRequest {
   currentArtifacts?: Array<ArtifactDto & { content: string }>;
   revisionFeedback?: string[];
   selectedOutputKeys?: string[];
+  requireEverySelectedOutputUpdated?: boolean;
+  architectureSelection?: ArchitectureSelectionEvidence;
+  phaseResolution?: PhaseResolutionDto | null;
   model: string | null;
   reasoningEffort: CodexReasoningEffort | null;
   figmaTarget?: ResolvedFigmaTarget;
@@ -136,11 +144,34 @@ export class CodexTerminalRunner {
     const protectedArtifacts = request.definition.artifacts
       .filter((artifact) => !selected.has(artifact.id))
       .map((artifact) => ({ id: artifact.id, absolutePath: artifact.absolutePath }));
-    return withProtectedArtifactPaths(
+    if (request.phase.id === "architecture") {
+      const architectRoleRoot = path.join(request.project.rootPath, ".ai-sdlc", "roles", "architect");
+      protectedArtifacts.push(
+        { id: "architect-config", absolutePath: path.join(architectRoleRoot, "config.yaml") },
+        { id: "architect-workflow", absolutePath: path.join(architectRoleRoot, "workflow.md") },
+        {
+          id: "architect-rulebook-index",
+          absolutePath: path.join(architectRoleRoot, "references", "architecture-rules.md"),
+        },
+        {
+          id: "architect-rulebook-packs",
+          absolutePath: path.join(architectRoleRoot, "references", "rules"),
+        },
+      );
+    }
+    const selectedArtifacts = request.definition.artifacts
+      .filter((artifact) => selected.has(artifact.id))
+      .map((artifact) => ({ id: artifact.id, absolutePath: artifact.absolutePath }));
+    return withArtifactPathsRollbackOnError(
       request.project.rootPath,
-      protectedArtifacts,
+      selectedArtifacts,
       this.maxArtifactBytes,
-      () => this.runUnprotected(request, onEvent),
+      () => withProtectedArtifactPaths(
+        request.project.rootPath,
+        protectedArtifacts,
+        this.maxArtifactBytes,
+        () => this.runUnprotected(request, onEvent),
+      ),
     );
   }
 
@@ -160,7 +191,7 @@ export class CodexTerminalRunner {
       });
       await this.createFakeOutputs(request);
       const artifacts = await this.collectArtifacts(request);
-      assertOutputsUpdated(baseline, artifacts, outputKeys(request));
+      assertOutputsUpdated(baseline, artifacts, outputKeys(request), requiredUpdatedOutputKeys(request, baseline));
       await onEvent("runner.completed", { mode: "fake", simulated: true, phaseId: request.phase.id });
       return { exitCode: 0, artifacts };
     }
@@ -306,7 +337,7 @@ export class CodexTerminalRunner {
     assertFigmaWriteAttempted(request, figmaCalls);
     const figmaWriteEvidence = assertFigmaDesignWriteCompleted(request, figmaCalls);
     const artifacts = await this.collectArtifacts(request);
-    assertOutputsUpdated(baseline, artifacts, outputKeys(request));
+    assertOutputsUpdated(baseline, artifacts, outputKeys(request), requiredUpdatedOutputKeys(request, baseline));
     assertFigmaExecutionEvidence(request, figmaWriteEvidence, artifacts);
     await onEvent("runner.completed", { exitCode });
     return { exitCode, artifacts };
@@ -314,14 +345,26 @@ export class CodexTerminalRunner {
 
   private async createFakeOutputs(request: CodexRunRequest): Promise<void> {
     const outputs = configuredOutputs(request);
+    let rulebookDigest = "0".repeat(64);
+    if (request.phase.id === "architecture") {
+      const configuredRulebook = await loadArchitectureRulebookContext(request.project.rootPath);
+      if (configuredRulebook.source) {
+        rulebookDigest = calculateArchitectureRulebookDigest(configuredRulebook.source);
+      }
+    }
     for (const artifact of outputs) {
       await assertRuntimePath(request.project.rootPath, artifact.absolutePath);
       const extension = path.extname(artifact.absolutePath);
       const target = extension
         ? artifact.absolutePath
-        : path.join(artifact.absolutePath, `${artifact.id}.md`);
+        : path.join(
+            artifact.absolutePath,
+            artifact.id === "architecture-adrs" ? "00-selection.md" : `${artifact.id}.md`,
+          );
       await mkdir(path.dirname(target), { recursive: true });
       await assertRuntimePath(request.project.rootPath, target);
+      const architectureContent = fakeArchitectureArtifactContent(artifact.id, request, rulebookDigest);
+      const architectureSelectionMarker = fakeArchitectureSelectionMarker(artifact.id, request);
       const content = artifact.id === "design-prototype"
         ? [
             "<!doctype html>",
@@ -334,7 +377,8 @@ export class CodexTerminalRunner {
             "</html>",
             ""
           ].join("\n")
-        : [
+        : architectureContent ?? [
+            ...(architectureSelectionMarker ? [architectureSelectionMarker, ""] : []),
             `# ${artifact.id}`,
             "",
             `Deterministic fake artifact for ${request.run.title}.`,
@@ -405,6 +449,194 @@ export class CodexTerminalRunner {
     return hashes;
   }
 
+}
+
+function fakeArchitectureArtifactContent(
+  artifactId: string,
+  request: CodexRunRequest,
+  catalogDigest: string,
+): string | undefined {
+  const applicableRuleIds: Record<string, string[]> = {
+    api: ["API-001", "API-002", "API-003"],
+    frontend: ["FE-001", "FE-002", "FE-003", "FE-004"],
+  };
+  const packs = architectureRulePackIdsForFake().map((id) => {
+    const applicable = id in applicableRuleIds;
+    return {
+      id,
+      status: applicable ? "applicable" : "not_applicable",
+      triggerEvidenceRefs: [applicable
+        ? `Deterministic fake fixture exercises the ${id} rule path.`
+        : `Deterministic fake run has no confirmed ${id} scope.`],
+      affectedScopeIds: applicable ? ["deterministic-fake"] : [],
+      loadedPath: applicable ? `rules/${id}.md` : null,
+      blockerOwner: null,
+    };
+  });
+  const optionRules = Object.values(applicableRuleIds).flat().map((ruleId) => {
+    const notTriggered = ruleId === "API-003" || ruleId === "FE-004";
+    return {
+      ruleId,
+      state: notTriggered ? "not_triggered" : "constrains",
+      affectedOptionIds: notTriggered ? [] : ["A", "B", "C"],
+      evidenceRefs: [`Deterministic fake option evidence for ${ruleId}`],
+    };
+  });
+  if (artifactId === "architecture-discovery-context") {
+    return [
+      `# Architecture Discovery Context: ${request.run.title}`,
+      "",
+      "## Project Mode",
+      "",
+      "| Affected Scope | Mode | Evidence | Compatibility Effect | Status |",
+      "|---|---|---|---|---|",
+      "| deterministic-fake | Greenfield | Fake runner fixture | No production compatibility claim | Confirmed |",
+      "",
+      "## Rule Pack Applicability",
+      "",
+      ...packs.map((pack) => `- ${pack.id}: Not applicable — ${pack.triggerEvidenceRefs[0]}`),
+      "",
+      fakeRulebookContract({
+        schemaVersion: 1,
+        document: "discovery",
+        catalogDigest,
+        scopes: [{
+          id: "deterministic-fake",
+          mode: "greenfield",
+          boundary: "new",
+          evidenceRefs: ["Deterministic fake runner fixture"],
+        }],
+        packs,
+      }),
+      "",
+      `- Run: ${request.run.id}`,
+      `- Execution: ${request.executionId}`,
+      "",
+    ].join("\n");
+  }
+  if (artifactId === "architecture-options") {
+    return [
+      `# Architecture Options: ${request.run.title}`,
+      "",
+      "**Status:** Awaiting human selection",
+      "",
+      "## Rule Constraints",
+      "",
+      "The deterministic fixture exercises API and Frontend conditional packs.",
+      "",
+      "## Option A: Modular baseline",
+      "",
+      "- Deterministic fake option A.",
+      "",
+      "## Option B: Service split",
+      "",
+      "- Deterministic fake option B.",
+      "",
+      "## Option C: Event-driven split",
+      "",
+      "- Deterministic fake option C.",
+      "",
+      fakeRulebookContract({ schemaVersion: 1, document: "options", catalogDigest, rules: optionRules }),
+      "",
+      `- Run: ${request.run.id}`,
+      `- Execution: ${request.executionId}`,
+      "",
+    ].join("\n");
+  }
+  if (artifactId === "architecture") {
+    return [
+      `# Architecture Pack: ${request.run.title}`,
+      "",
+      `**Status:** ${request.architectureSelection ? "Ready for human acceptance" : "Awaiting human selection"}`,
+      "",
+      "## Rulebook Conformance",
+      "",
+      ...packs.map((pack) => `- ${pack.id}: Not applicable`),
+      "",
+      fakeRulebookContract({
+        schemaVersion: 1,
+        document: "architecture",
+        catalogDigest,
+        state: request.architectureSelection ? "ready_for_human_acceptance" : "awaiting_selection",
+        selection: request.architectureSelection ?? null,
+        packs: packs.map((pack) => ({
+          id: pack.id,
+          status: pack.status,
+          ruleIds: applicableRuleIds[pack.id] ?? [],
+          justifiedDeviationRuleIds: [],
+          exceptionRuleIds: [],
+          blockedRuleIds: [],
+        })),
+      }),
+      "",
+      `- Run: ${request.run.id}`,
+      `- Execution: ${request.executionId}`,
+      "",
+    ].join("\n");
+  }
+  if (artifactId === "architecture-patterns") {
+    return [
+      `# Architecture Pattern Decisions: ${request.run.title}`,
+      "",
+      "The deterministic fixture closes every API and Frontend rule for its Greenfield scope.",
+      "",
+      fakeRulebookContract({
+        schemaVersion: 1,
+        document: "patterns",
+        catalogDigest,
+        selection: request.architectureSelection,
+        dispositions: optionRules.map((rule) => ({
+          ruleId: rule.ruleId,
+          scopeId: "deterministic-fake",
+          state: rule.state === "not_triggered" ? "not_triggered" : "satisfied",
+          evidenceRefs: [`Deterministic fake final evidence for ${rule.ruleId}`],
+          decisionRef: null,
+        })),
+      }),
+      "",
+      `- Run: ${request.run.id}`,
+      `- Execution: ${request.executionId}`,
+      "",
+    ].join("\n");
+  }
+  return undefined;
+}
+
+function architectureRulePackIdsForFake(): string[] {
+  return ["api", "data", "integration", "security", "observability", "frontend"];
+}
+
+function fakeArchitectureSelectionMarker(
+  artifactId: string,
+  request: CodexRunRequest,
+): string | undefined {
+  if (!request.architectureSelection) return undefined;
+  const markdownArtifacts = new Set([
+    "architecture-adrs",
+    "architecture-nfrs",
+    "architecture-adversarial",
+  ]);
+  const mermaidArtifacts = new Set([
+    "architecture-c4-context",
+    "architecture-c4-containers",
+  ]);
+  const json = JSON.stringify(request.architectureSelection);
+  if (markdownArtifacts.has(artifactId)) {
+    return `<!-- ai-sdlc:architecture-selection:v1 ${json} -->`;
+  }
+  if (mermaidArtifacts.has(artifactId)) {
+    return `%% ai-sdlc:architecture-selection:v1 ${json}`;
+  }
+  return undefined;
+}
+
+function fakeRulebookContract(value: unknown): string {
+  return [
+    "<!-- ai-sdlc:architecture-rulebook:v1 -->",
+    "```json",
+    JSON.stringify(value, null, 2),
+    "```",
+  ].join("\n");
 }
 
 function readFigmaToolCallEvidence(event: unknown): FigmaToolCallEvidence | undefined {
@@ -872,7 +1104,8 @@ function uniqueStrings(values: string[]): string[] {
 function assertOutputsUpdated(
   baseline: Map<string, string>,
   artifacts: ArtifactRecordInput[],
-  selectedOutputKeys: string[]
+  selectedOutputKeys: string[],
+  requiredUpdatedKeys: string[],
 ): void {
   const currentHashes = new Map(
     artifacts.map((artifact) => [artifact.artifactKey, artifact.contentHash]),
@@ -888,6 +1121,17 @@ function assertOutputsUpdated(
       { unchanged: unchangedOptional }
     );
   }
+  const unchangedRequired = requiredUpdatedKeys.filter(
+    (key) => baseline.get(key) === currentHashes.get(key),
+  );
+  if (unchangedRequired.length > 0) {
+    throw new AppError(
+      `本次执行必须实际更新这些已选择产物：${unchangedRequired.join(", ")}`,
+      422,
+      "SELECTED_OUTPUTS_UNCHANGED",
+      { unchanged: unchangedRequired },
+    );
+  }
   if (artifacts.some((artifact) => baseline.get(artifact.artifactKey) !== artifact.contentHash)) return;
   throw new AppError(
     "本次执行没有更新任何注册产物，旧文件不会被冒充为新 revision",
@@ -896,12 +1140,52 @@ function assertOutputsUpdated(
   );
 }
 
+function requiredUpdatedOutputKeys(
+  request: CodexRunRequest,
+  baseline: Map<string, string>,
+): string[] {
+  const selected = outputKeys(request);
+  if (request.requireEverySelectedOutputUpdated) return selected;
+  const currentOutputKeys = new Set(
+    (request.currentArtifacts ?? []).map((artifact) => artifact.artifactKey),
+  );
+  return selected.filter(
+    (key) => baseline.has(key) && !currentOutputKeys.has(key),
+  );
+}
+
 export function buildTaskEnvelope(request: CodexRunRequest): string {
   const roleFile = resolveRoleFile(request.project.rootPath, request.definition, request.phase.owner);
   const outputs = configuredOutputs(request)
     .map((artifact) => `- ${artifact.id}: ${artifact.relativePath}`)
     .join("\n");
+  const outputMaterializationContract = buildOutputMaterializationContract(request);
   const selectedOutputKeys = outputKeys(request);
+  const architectureSelectionContract = request.architectureSelection
+    ? [
+        `- Selected option: ${request.architectureSelection.optionId}`,
+        `- Selection review id: ${request.architectureSelection.reviewId}`,
+        `- Reviewed options artifact id: ${request.architectureSelection.optionsArtifactId}`,
+        `- Selected at: ${request.architectureSelection.selectedAt}`,
+        "- 这是本次执行唯一有效的架构选型。若普通反馈中出现其他 Option、旧选择或建议，以本区块为准。",
+      ].join("\n")
+    : "- 无经过平台验证的架构选型；不得自行激活任何选型后架构。";
+  const changeContract = request.run.changeContract
+    ? [
+        "```json",
+        JSON.stringify(request.run.changeContract, null, 2),
+        "```",
+        "- 这是本 Run 不可变的任务边界与验收合同；不得在阶段产物中暗自扩大范围。",
+      ].join("\n")
+    : "- 旧 Run 没有结构化 Change Contract；以任务目标和已批准输入为边界，不得自行补造范围。";
+  const phaseResolutionContract = request.phaseResolution
+    ? [
+        "```json",
+        JSON.stringify(request.phaseResolution, null, 2),
+        "```",
+        "- 这是平台已确认的阶段处置。partial 时只能修改 affectedOutputKeys；其他继承产物必须保持不变。",
+      ].join("\n")
+    : "- 无额外阶段处置；按本次人工选定的输入与输出合同执行。";
   const figmaTargetContract = selectedOutputKeys.includes("figma-handoff")
     ? buildFigmaTargetContract(request.figmaTarget)
     : "";
@@ -958,6 +1242,14 @@ export function buildTaskEnvelope(request: CodexRunRequest): string {
 
 先读取并遵守项目内的 ai-native.yaml 和角色文件 ${roleFile}。只执行当前阶段，不要推进、批准或执行其他角色。
 
+## 不可变 Change Contract
+
+${changeContract}
+
+## 当前阶段 Impact / Route 决议
+
+${phaseResolutionContract}
+
 ## 已由人工批准并明确选择的输入
 
 以下快照是本次执行的权威输入。不要自行选择未列出的其他阶段产物：
@@ -974,13 +1266,21 @@ ${currentArtifacts}
 
 ${revisionFeedback}
 
+## 平台验证的架构选型
+
+${architectureSelectionContract}
+
 ## 本次由人工选择的预期输出
 
 在项目内生成或更新以下注册路径：
 
 ${outputs}
 
-上面的输出列表是平台解析并经人工选择后的本次权威合同；即使旧项目的 ai-native.yaml 尚未列出平台兼容加入的可选设计产物，本次执行也必须以该列表和明确路径为准。
+上面的输出列表是平台解析并经人工选择后的本次权威合同；即使旧项目的 ai-native.yaml 尚未列出平台兼容补齐的输出，本次执行也必须以该列表和明确路径为准。
+
+## 输出落盘与暂停语义
+
+${outputMaterializationContract}
 
 这是一次严格限定输出范围的执行。只能写上面列出的注册输出；任何未选中的注册产物（包括上游输入和其他阶段产物）都必须保持字节不变，平台会在所有退出路径校验并还原越界修改。
 
@@ -989,6 +1289,38 @@ ${figmaTargetContract ? `## 已由人工选定的 Figma 目标\n\n${figmaTargetC
 
 路径必须保持在项目目录内。不得提交、推送、发布、删除项目数据或修改工作流状态。完成产物后停止；平台会独立采集产物并进入人工审核。
 `;
+}
+
+function buildOutputMaterializationContract(request: CodexRunRequest): string {
+  const currentOutputKeys = new Set(
+    (request.currentArtifacts ?? []).map((artifact) => artifact.artifactKey),
+  );
+  const uncommittedWorkspaceOutputs = configuredOutputs(request)
+    .filter((artifact) => !currentOutputKeys.has(artifact.id) && existsSync(artifact.absolutePath))
+    .map((artifact) => artifact.id);
+  const rules = [
+    "- 成功退出前，上面列出的每一个输出路径都必须存在且包含非空白内容；目录型产物必须至少包含一个非空的普通文件。平台会逐项校验，缺失或空产物会让本次执行失败。",
+    "- 角色工作流中的 stop、pause、等待人工决定或类似控制点，只表示停止依赖该决定的实质工作；它们不允许省略本次已选择的输出路径。",
+    "- 如果缺少证据或人工决定，不能编造结论。应在仍被选中的输出路径写入真实的 Pending/Blocked 状态、阻塞原因、决策 owner 和下一步，再停止。若某输出的专门证据合同明确禁止在证据缺失时创建（例如 figma-handoff），则遵守该专门合同，绝不能用占位内容伪造证据。",
+  ];
+  if (request.phase.owner === "architect") {
+    rules.push(
+      "- Architect 特例：没有人类选项选择证据时，仍须完成被选中的 architecture、discovery context 和 options；并为本次列出的其余架构产物落盘非空的 pending scaffold，然后才可停止。",
+      "- 被选中的 C4 `.mmd` 在等待选择时只写可渲染的 Mermaid pending notice，不得画成已选架构；被选中的 ADR 目录至少写入 `README.md`，明确它只是等待选择的状态文件而不是 ADR；被选中的 patterns、NFR 和 adversarial Markdown 写明 Pending、阻塞原因、owner 与下一步。",
+      "- architecture 索引必须链接这些 scaffold 并把它们标为 Pending。Pending scaffold 不是有效的 C4、ADR、pattern、NFR 或对抗审查，不得把架构阶段标为可实施或已接受。",
+    );
+  }
+  if (request.requireEverySelectedOutputUpdated) {
+    rules.push(
+      "- 本次执行发生在有效人工选型之后。每一个 selected 输出都必须基于该选型实际更新；任一文件或目录聚合内容与执行前完全相同，平台都会拒绝整次执行并回滚。",
+    );
+  }
+  if (uncommittedWorkspaceOutputs.length > 0) {
+    rules.push(
+      `- 以下 selected 路径已存在于工作区，但平台没有对应的当前 artifact revision，可能是上次失败留下的未提交内容：${uncommittedWorkspaceOutputs.join(", ")}。必须基于本次权威输入重新核对并实际重写，不能原样保留后冒充本次结果。`,
+    );
+  }
+  return rules.join("\n");
 }
 
 function buildFigmaTargetContract(target: ResolvedFigmaTarget | undefined): string {

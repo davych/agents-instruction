@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   prepareArtifactRevision,
   readArtifactContent,
+  withArtifactPathsRollbackOnError,
   withProtectedArtifactPaths,
 } from "../src/services/artifact-workspace.ts";
 
@@ -143,6 +144,54 @@ test("a failed partial rerun restores both changed and newly created unselected 
   );
   assert.equal(await readFile(existing, "utf8"), "baseline");
   await assert.rejects(() => readFile(absent, "utf8"), /ENOENT/u);
+});
+
+test("a failed runner restores changed and newly created selected outputs", async () => {
+  const root = await temporaryProject();
+  const existing = path.join(root, "docs", "architecture.md");
+  const absent = path.join(root, "docs", "01-context.mmd");
+  await mkdir(path.dirname(existing), { recursive: true });
+  await writeFile(existing, "before", "utf8");
+  const originalError = new Error("missing contracted outputs");
+
+  await assert.rejects(
+    () => withArtifactPathsRollbackOnError(
+      root,
+      [
+        { id: "architecture", absolutePath: existing },
+        { id: "architecture-c4-context", absolutePath: absent },
+      ],
+      2_000_000,
+      async () => {
+        await writeFile(existing, "after", "utf8");
+        await writeFile(absent, "flowchart LR", "utf8");
+        throw originalError;
+      },
+    ),
+    (error: unknown) => error === originalError,
+  );
+  assert.equal(await readFile(existing, "utf8"), "before");
+  await assert.rejects(() => readFile(absent, "utf8"), /ENOENT/u);
+});
+
+test("a successful runner keeps selected output changes", async () => {
+  const root = await temporaryProject();
+  const target = path.join(root, "docs", "architecture.md");
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "before", "utf8");
+
+  const result = await withArtifactPathsRollbackOnError(
+    root,
+    [{ id: "architecture", absolutePath: target }],
+    2_000_000,
+    async () => {
+      await writeFile(target, "after", "utf8");
+      return "committed";
+    },
+  );
+
+  assert.equal(result, "committed");
+  assert.equal(await readFile(target, "utf8"), "after");
 });
 
 async function temporaryProject(): Promise<string> {

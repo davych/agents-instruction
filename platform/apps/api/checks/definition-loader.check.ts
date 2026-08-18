@@ -24,6 +24,70 @@ test("adds selectable design outputs to an older project without rewriting its Y
   );
 });
 
+test("injects the Change Contract graph into a legacy definition without rewriting YAML", async () => {
+  const root = await oldProject();
+  const yamlPath = path.join(root, "ai-native.yaml");
+  const yamlBefore = await readFile(yamlPath, "utf8");
+
+  const definition = await loadDefinition(root);
+  const changeContract = definition.artifacts.find((artifact) => artifact.id === "change-contract");
+  assert.deepEqual(
+    [changeContract?.owner, changeContract?.relativePath],
+    ["pm-ba", "docs/change-contract.md"],
+  );
+  assert.deepEqual(
+    definition.phases.find((phase) => phase.id === "discovery")?.outputs,
+    ["change-contract", "prd", "user-stories"],
+  );
+  for (const phaseId of ["design", "architecture", "implementation", "verification"] as const) {
+    const inputs = definition.phases.find((phase) => phase.id === phaseId)?.inputs ?? [];
+    assert.equal(inputs[0], "change-contract", `${phaseId} should read the Change Contract first`);
+    assert.equal(inputs.filter((input) => input === "change-contract").length, 1);
+  }
+  assert.equal(
+    definition.phases.find((phase) => phase.id === "release")?.inputs.includes("change-contract"),
+    false,
+  );
+  assert.equal(await readFile(yamlPath, "utf8"), yamlBefore);
+});
+
+test("preserves a modern Change Contract registration without duplicating graph entries", async () => {
+  const root = await oldProject();
+  const config = oldConfig();
+  config.artifacts.unshift({ id: "change-contract", owner: "pm-ba", path: "run-contract.md" });
+  const discovery = config.workflow.phases.find((phase) => phase.id === "discovery")!;
+  discovery.outputs.unshift("change-contract");
+  for (const phaseId of ["design", "architecture", "implementation", "verification"]) {
+    config.workflow.phases.find((phase) => phase.id === phaseId)!.inputs.unshift("change-contract");
+  }
+  const yamlPath = path.join(root, "ai-native.yaml");
+  await writeFile(yamlPath, YAML.stringify(config), "utf8");
+  const yamlBefore = await readFile(yamlPath, "utf8");
+
+  const definition = await loadDefinition(root);
+  assert.equal(
+    definition.artifacts.filter((artifact) => artifact.id === "change-contract").length,
+    1,
+  );
+  assert.equal(
+    definition.artifacts.find((artifact) => artifact.id === "change-contract")?.relativePath,
+    "docs/run-contract.md",
+  );
+  for (const phase of definition.phases) {
+    const occurrences = [
+      ...(phase.outputs ?? []),
+      ...(phase.inputs ?? []),
+    ].filter((artifactKey) => artifactKey === "change-contract");
+    assert.equal(
+      occurrences.length,
+      ["discovery", "design", "architecture", "implementation", "verification"]
+        .includes(phase.id) ? 1 : 0,
+      `${phase.id} should contain the expected number of Change Contract references`,
+    );
+  }
+  assert.equal(await readFile(yamlPath, "utf8"), yamlBefore);
+});
+
 test("reloads an older project after its injected prototype output is created without rewriting files", async () => {
   const root = await oldProject();
   const yamlPath = path.join(root, "ai-native.yaml");
@@ -43,6 +107,42 @@ test("reloads an older project after its injected prototype output is created wi
   );
   assert.equal(await readFile(yamlPath, "utf8"), yamlBefore);
   assert.equal(await readFile(path.join(root, "docs", "prototype.html"), "utf8"), existingContent);
+});
+
+test("adds the canonical architecture pack to an older project without rewriting its YAML", async () => {
+  const root = await oldProject();
+  await mkdir(path.join(root, ".ai-sdlc", "roles", "architect"), { recursive: true });
+  await writeFile(
+    path.join(root, ".ai-sdlc", "roles", "architect", "config.yaml"),
+    YAML.stringify({ output: { subdirectory: "ai-native/architecture" } }),
+    "utf8",
+  );
+  const yamlPath = path.join(root, "ai-native.yaml");
+  const yamlBefore = await readFile(yamlPath, "utf8");
+
+  const definition = await loadDefinition(root);
+  const architecture = definition.phases.find((phase) => phase.id === "architecture");
+  const expected = [
+    ["architecture", "docs/ai-native/architecture/architecture.md"],
+    ["architecture-discovery-context", "docs/ai-native/architecture/00-discovery-context.md"],
+    ["architecture-options", "docs/ai-native/architecture/00-options.md"],
+    ["architecture-c4-context", "docs/ai-native/architecture/01-context.mmd"],
+    ["architecture-c4-containers", "docs/ai-native/architecture/02-containers.mmd"],
+    ["architecture-adrs", "docs/ai-native/architecture/04-adrs"],
+    ["architecture-patterns", "docs/ai-native/architecture/05-patterns.md"],
+    ["architecture-nfrs", "docs/ai-native/architecture/06-nfrs.md"],
+    ["architecture-adversarial", "docs/ai-native/architecture/07-adversarial.md"],
+  ];
+
+  assert.deepEqual(architecture?.outputs, expected.map(([id]) => id));
+  assert.deepEqual(
+    expected.map(([id]) => {
+      const artifact = definition.artifacts.find((candidate) => candidate.id === id);
+      return [artifact?.id, artifact?.owner, artifact?.relativePath];
+    }),
+    expected.map(([id, relativePath]) => [id, "architect", relativePath]),
+  );
+  assert.equal(await readFile(yamlPath, "utf8"), yamlBefore);
 });
 
 test("rejects two registered artifacts that resolve to the same path", async () => {

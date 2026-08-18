@@ -1,12 +1,14 @@
 # Architecture NFR Budgets: {topic}
 
+<!-- ai-sdlc:architecture-selection:v1 {"optionId":"{platform-selected option ID}","reviewId":"{selection review UUID}","optionsArtifactId":"{reviewed options artifact UUID}","selectedAt":"{selection timestamp}"} -->
+
 **Status:** Draft for human review
 **Selected option:** {option link}
 **C4 container view:** {relative link}
 
-| ID | Family | Responsible Container or Relationship | Target or Gate | Window and Condition | Test Method | Evidence | Failure Signal | Status |
-|----|--------|---------------------------------------|----------------|----------------------|-------------|----------|----------------|--------|
-| NFR-01 | {family} | {C4 alias} | {number or binary gate} | {window and load condition} | {repeatable method} | {source} | {observable breach} | {Proposed / Confirmed / Blocked} |
+| ID | Source Rule IDs | Family | Responsible Container or Relationship | Target or Gate | Window and Condition | Test Method | Evidence | Failure Signal | Status |
+|----|-----------------|--------|---------------------------------------|----------------|----------------------|-------------|----------|----------------|--------|
+| NFR-01 | {rule IDs or None} | {family} | {C4 alias} | {number or binary gate} | {window and load condition} | {repeatable method} | {source} | {observable breach} | {Proposed / Confirmed / Blocked} |
 
 ## Violating Design Behaviors
 

@@ -1,5 +1,7 @@
 # Independent Architecture Premortem: {topic}
 
+<!-- ai-sdlc:architecture-selection:v1 {"optionId":"{platform-selected option ID}","reviewId":"{selection review UUID}","optionsArtifactId":"{reviewed options artifact UUID}","selectedAt":"{selection timestamp}"} -->
+
 **Status:** {Pending independent review / Complete}
 **Reviewed pack revision:** {revision or date}
 **Reviewer or session:** {independent reviewer or fresh-session reference}

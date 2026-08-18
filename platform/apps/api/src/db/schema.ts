@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   title text NOT NULL,
   objective text NOT NULL,
+  change_contract jsonb,
   status text NOT NULL CHECK (status IN ('active', 'completed')),
   artifact_paths jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 
 ALTER TABLE workflow_runs
   ADD COLUMN IF NOT EXISTS artifact_paths jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS change_contract jsonb;
 
 CREATE TABLE IF NOT EXISTS phase_runs (
   id uuid PRIMARY KEY,
@@ -31,11 +33,16 @@ CREATE TABLE IF NOT EXISTS phase_runs (
   status text NOT NULL CHECK (status IN (
     'pending', 'ready', 'running', 'awaiting_review', 'approved', 'changes_requested', 'failed'
   )),
+  architecture_impact jsonb,
+  phase_resolution jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (workflow_run_id, phase_id),
   UNIQUE (workflow_run_id, position)
 );
+
+ALTER TABLE phase_runs ADD COLUMN IF NOT EXISTS architecture_impact jsonb;
+ALTER TABLE phase_runs ADD COLUMN IF NOT EXISTS phase_resolution jsonb;
 
 CREATE TABLE IF NOT EXISTS executions (
   id uuid PRIMARY KEY,

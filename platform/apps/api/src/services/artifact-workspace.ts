@@ -122,6 +122,78 @@ export async function withProtectedArtifactPaths<T>(
 }
 
 /**
+ * Keeps selected output writes only when the wrapped runner operation and its
+ * workspace validations succeed. This covers runner-level exit and validation
+ * failures; database persistence is coordinated separately by the caller.
+ */
+export async function withArtifactPathsRollbackOnError<T>(
+  projectRoot: string,
+  artifacts: ProtectedArtifactPath[],
+  maxBytes: number,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (artifacts.length === 0) return operation();
+  assertNonOverlappingPaths(artifacts);
+
+  const backupRoot = await mkdtemp(path.join(tmpdir(), "ai-sdlc-selected-artifacts-"));
+  const snapshots: ArtifactPathSnapshot[] = [];
+  try {
+    for (const [index, artifact] of artifacts.entries()) {
+      await assertRuntimePath(projectRoot, artifact.absolutePath);
+      const stateHash = await hashArtifactTree(artifact.absolutePath, maxBytes);
+      const backupPath = path.join(backupRoot, String(index));
+      if (stateHash !== null) {
+        await cp(artifact.absolutePath, backupPath, {
+          recursive: true,
+          force: false,
+          errorOnExist: true,
+          dereference: false,
+          preserveTimestamps: true,
+        });
+      }
+      snapshots.push({ ...artifact, backupPath, stateHash });
+    }
+
+    try {
+      return await operation();
+    } catch (operationError) {
+      const changed: string[] = [];
+      let restoreError: unknown;
+      for (const snapshot of snapshots) {
+        let currentHash: string | null;
+        try {
+          currentHash = await hashArtifactTree(snapshot.absolutePath, maxBytes);
+        } catch {
+          currentHash = "unsafe-or-unreadable";
+        }
+        if (currentHash === snapshot.stateHash) continue;
+        changed.push(snapshot.id);
+        try {
+          await restoreArtifactSnapshot(projectRoot, snapshot);
+        } catch (error) {
+          restoreError ??= error;
+        }
+      }
+      if (restoreError) {
+        throw new AppError(
+          "Codex 执行失败，且平台无法完整还原本次已选产物",
+          500,
+          "SELECTED_OUTPUTS_RESTORE_FAILED",
+          {
+            changed,
+            restoreError: restoreError instanceof Error ? restoreError.message : String(restoreError),
+            operationError: operationError instanceof Error ? operationError.message : String(operationError),
+          },
+        );
+      }
+      throw operationError;
+    }
+  } finally {
+    await rm(backupRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/**
  * Atomically swaps a human-edited revision into the registered workspace path.
  * The caller commits the DB revision and then calls commit(), or calls
  * rollback() if the DB transaction fails.

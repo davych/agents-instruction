@@ -105,15 +105,16 @@ Codex TOML is generated from the same six canonical Markdown sources during init
 
 The PM / BA, Designer, and Architect have extra role packs because they need longer procedures, role-specific inputs, references, or validation rules. Their `workflow.md` files are ordinary Markdown read explicitly by the canonical Agent; they are not client-native Skills. Software Engineer, Tester, and DevOps keep their shorter procedures in the Agent file.
 
-The initializer does not create product deliverables under `docs/`. The Agents create those artifacts later, following `ai-native.yaml`.
+The initializer does not create product deliverables under `docs/`. In the platform, creating a Run creates its immutable Change Contract; selected Agents create only the artifacts required by the Run's impact dispositions. For a non-platform local workflow, a human starts `.ai-sdlc/templates/change-contract.md` before invoking a role.
 
 ## Start the first task
 
 1. Open `ai-native.yaml` and confirm the project summary, output root, role list, phase order, and artifact registry.
 2. Add product source documents to `.ai-sdlc/roles/pm-ba/config.yaml` under `inputs.markdown` when they exist.
-3. Confirm that the PM / BA Agent exists under `paths.agents` in `ai-native.yaml`.
-4. Select or invoke the PM / BA Agent in your AI client, then give it the task and supplied source files.
-5. Run the discovery phase. Review the PRD and stories before allowing the design phase to start.
+3. Create the Run Change Contract in the platform, or fill `.ai-sdlc/templates/change-contract.md` for a local workflow.
+4. Record Product Impact as `direct`, `reuse`, `partial`, or `full`.
+5. Invoke PM / BA only for `partial` or `full`, using the selected `prd` and/or `user-stories` outputs.
+6. Review the Product clearance before moving to Design Impact. Do not create an empty PRD or story set for `direct`.
 
 A simple first prompt is:
 
@@ -124,10 +125,13 @@ Read ai-native.yaml, .ai-sdlc/workflows/default.md,
 .ai-sdlc/roles/pm-ba/config.yaml, and
 .ai-sdlc/roles/pm-ba/workflow.md.
 
-Act as PM / BA for this task: [describe the opportunity or feature].
+The immutable Change Contract is: [resolved path].
+The Product disposition is [partial or full].
+The selected outputs are [prd and/or user-stories].
 Use these business sources: [paths or "none provided"].
-Create or update the registered PRD and user-story artifacts. Show assumptions,
-open human decisions, and whether the discovery gate is ready.
+Create or update only the selected artifacts. Do not edit the Change Contract or
+rewrite unaffected baseline content. Show assumptions, open human decisions,
+regression obligations, and whether the discovery gate is ready.
 ```
 
 ## Continue through the workflow
@@ -135,7 +139,7 @@ open human decisions, and whether the discovery gate is ready.
 After each phase:
 
 1. review the output artifacts;
-2. check the phase gate in `ai-native.yaml`;
+2. review the recorded impact disposition and check the phase gate in `ai-native.yaml`;
 3. resolve open human decisions;
 4. pass the registered artifacts to the next role;
 5. keep evidence in the artifacts or active task file.
