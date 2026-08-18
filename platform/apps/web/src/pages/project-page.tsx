@@ -9,6 +9,7 @@ import {
   Circle,
   FolderGit2,
   GitBranch,
+  Link2,
   Plus,
   Sparkles,
 } from "lucide-react";
@@ -16,16 +17,16 @@ import {
 import { EmptyState, ErrorState, Field, PageSkeleton } from "@/components/states";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import {
-  changeContractMissingFields,
-  changeContractObjective,
   EMPTY_CHANGE_CONTRACT_DRAFT,
-  materializeChangeContract,
+  isLinkedWorkType,
+  linkedChangeMissingFields,
   WORK_TYPE_OPTIONS,
   type ChangeContractDraft,
 } from "@/lib/change-contract";
@@ -172,6 +173,7 @@ export function ProjectPage({
 
       <CreateRunDialog
         projectId={projectId}
+        runs={runs}
         open={createRunOpen}
         onOpenChange={setCreateRunOpen}
         onCreated={(run) => onOpenRun(run.id)}
@@ -221,11 +223,13 @@ function RunCard({ run, onOpen }: { run: WorkflowRun; onOpen: () => void }) {
 
 function CreateRunDialog({
   projectId,
+  runs,
   open,
   onOpenChange,
   onCreated,
 }: {
   projectId: string;
+  runs: WorkflowRun[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: (run: WorkflowRun) => void;
@@ -234,13 +238,16 @@ function CreateRunDialog({
   const [title, setTitle] = useState("");
   const [draft, setDraft] = useState<ChangeContractDraft>({ ...EMPTY_CHANGE_CONTRACT_DRAFT });
   const [error, setError] = useState<string>();
+  const resetForm = () => {
+    setTitle("");
+    setDraft({ ...EMPTY_CHANGE_CONTRACT_DRAFT, sourceRunIds: [] });
+    setError(undefined);
+  };
   const mutation = useMutation({
     mutationFn: (input: CreateRunInput) => api.createRun(projectId, input),
     onSuccess: async (run) => {
       await queryClient.invalidateQueries({ queryKey: ["runs", projectId] });
-      setTitle("");
-      setDraft({ ...EMPTY_CHANGE_CONTRACT_DRAFT });
-      setError(undefined);
+      resetForm();
       onOpenChange(false);
       onCreated(run);
     },
@@ -250,32 +257,45 @@ function CreateRunDialog({
   const updateDraft = <K extends keyof ChangeContractDraft>(
     field: K,
     value: ChangeContractDraft[K],
-  ) => setDraft((current) => ({ ...current, [field]: value }));
+  ) => {
+    setDraft((current) => ({ ...current, [field]: value }));
+    setError(undefined);
+  };
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const changeContract = materializeChangeContract(draft);
-    const missing = changeContractMissingFields(changeContract);
     if (!title.trim()) {
       setError("请填写任务名称。");
       return;
     }
-    if (missing.length > 0) {
-      setError(`Change Contract 尚未完整：${missing.join("、")}。`);
+    if (isLinkedWorkType(draft.workType)) {
+      const missing = linkedChangeMissingFields(draft);
+      if (missing.length > 0) {
+        setError(`请完成：${missing.join("、")}。`);
+        return;
+      }
+      mutation.mutate({
+        title: title.trim(),
+        workType: draft.workType,
+        sourceRunIds: draft.sourceRunIds,
+        expectedBehavior: draft.expectedBehavior.trim(),
+      });
       return;
     }
     mutation.mutate({
       title: title.trim(),
-      objective: changeContractObjective(changeContract),
-      changeContract,
+      objective: title.trim(),
     });
   };
 
   return (
     <Dialog
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) resetForm();
+        onOpenChange(nextOpen);
+      }}
       title="创建交付任务"
-      description="Change Contract 是每个角色共同使用的不可跳过输入；角色本身可以在影响检查后复用或跳过。"
+      description="新功能只需填写任务名称；局部变更、功能缺陷和技术变更需关联原始任务并填写期望行为。"
       className="h-[calc(100dvh-2rem)] max-h-[58rem] max-w-4xl"
     >
       <form onSubmit={submit} className="min-h-0 overflow-y-auto p-6">
@@ -286,7 +306,10 @@ function CreateRunDialog({
               maxLength={200}
               placeholder="例如：修复订单重复提交"
               value={title}
-              onChange={(event) => setTitle(event.target.value)}
+              onChange={(event) => {
+                setTitle(event.target.value);
+                setError(undefined);
+              }}
             />
           </Field>
 
@@ -323,84 +346,28 @@ function CreateRunDialog({
             </div>
           </fieldset>
 
-          <Field label="变更摘要" hint="本 Run 的 objective" required>
-            <Textarea
-              maxLength={2_000}
-              className="min-h-24"
-              placeholder="用一小段话说明为什么做、为谁解决什么问题，以及希望交付什么结果。"
-              value={draft.summary}
-              onChange={(event) => updateDraft("summary", event.target.value)}
-            />
-          </Field>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field label="当前行为" required>
-              <Textarea
-                maxLength={5_000}
-                className="min-h-28"
-                placeholder="目前用户或系统实际发生什么；新功能可写“目前没有该能力”。"
-                value={draft.currentBehavior}
-                onChange={(event) => updateDraft("currentBehavior", event.target.value)}
+          {isLinkedWorkType(draft.workType) ? (
+            <>
+              <OriginalTaskSelector
+                runs={runs}
+                selectedIds={draft.sourceRunIds}
+                onChange={(sourceRunIds) => updateDraft("sourceRunIds", sourceRunIds)}
               />
-            </Field>
-            <Field label="期望行为" required>
-              <Textarea
-                maxLength={5_000}
-                className="min-h-28"
-                placeholder="完成后可观察到的目标行为，不写技术实现方案。"
-                value={draft.expectedBehavior}
-                onChange={(event) => updateDraft("expectedBehavior", event.target.value)}
-              />
-            </Field>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <LineListField
-              label="范围内事项"
-              required
-              value={draft.inScope}
-              placeholder="每行一项，例如：\n订单创建接口\n客户端超时重试"
-              onChange={(value) => updateDraft("inScope", value)}
-            />
-            <LineListField
-              label="范围外事项"
-              value={draft.outOfScope}
-              placeholder="每行一项；没有已确认排除项可留空。"
-              onChange={(value) => updateDraft("outOfScope", value)}
-            />
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <LineListField
-              label="验收标准"
-              required
-              value={draft.acceptanceCriteria}
-              placeholder="每行一条可观察、可验证的结果。"
-              onChange={(value) => updateDraft("acceptanceCriteria", value)}
-            />
-            <LineListField
-              label="回归范围"
-              required
-              value={draft.regressionScope}
-              placeholder="每行一个必须保持正确的已有流程或边界。"
-              onChange={(value) => updateDraft("regressionScope", value)}
-            />
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <LineListField
-              label="风险标记"
-              value={draft.riskFlags}
-              placeholder="可选；例如：支付、权限、隐私、数据迁移。"
-              onChange={(value) => updateDraft("riskFlags", value)}
-            />
-            <LineListField
-              label="证据引用"
-              value={draft.evidenceRefs}
-              placeholder="可选；每行一个 Issue、日志、截图或文档引用。"
-              onChange={(value) => updateDraft("evidenceRefs", value)}
-            />
-          </div>
+              <Field
+                label="期望行为"
+                hint="原始任务已提供其余上下文"
+                required
+              >
+                <Textarea
+                  maxLength={2_000}
+                  className="min-h-32"
+                  placeholder="完成后可观察、可验证的目标行为，不写技术实现方案。"
+                  value={draft.expectedBehavior}
+                  onChange={(event) => updateDraft("expectedBehavior", event.target.value)}
+                />
+              </Field>
+            </>
+          ) : null}
 
           <div className="rounded-xl border border-teal-100 bg-teal-50/70 p-4">
             <div className="flex gap-3">
@@ -417,7 +384,14 @@ function CreateRunDialog({
           ) : null}
         </div>
         <div className="mt-7 flex justify-end gap-3 border-t border-slate-100 pt-5">
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              resetForm();
+              onOpenChange(false);
+            }}
+          >
             取消
           </Button>
           <Button type="submit" variant="primary" loading={mutation.isPending}>
@@ -430,27 +404,57 @@ function CreateRunDialog({
   );
 }
 
-function LineListField({
-  label,
-  value,
-  placeholder,
-  required = false,
+function OriginalTaskSelector({
+  runs,
+  selectedIds,
   onChange,
 }: {
-  label: string;
-  value: string;
-  placeholder: string;
-  required?: boolean;
-  onChange: (value: string) => void;
+  runs: WorkflowRun[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
 }) {
+  const selected = new Set(selectedIds);
   return (
-    <Field label={label} hint="每行一项" required={required}>
-      <Textarea
-        className="min-h-28"
-        placeholder={placeholder}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
+    <Field label="原始任务" hint={`已选 ${selectedIds.length}/20，可多选`} required>
+      {runs.length > 0 ? (
+        <div className="max-h-64 space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/60 p-2">
+          {runs.map((run) => (
+            <label
+              key={run.id}
+              className={cn(
+                "flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 transition",
+                selected.has(run.id)
+                  ? "border-teal-300 bg-white shadow-sm"
+                  : "border-transparent hover:border-slate-200 hover:bg-white",
+              )}
+            >
+              <Checkbox
+                checked={selected.has(run.id)}
+                disabled={!selected.has(run.id) && selectedIds.length >= 20}
+                onCheckedChange={(checked) => onChange(
+                  checked
+                    ? [...selectedIds, run.id]
+                    : selectedIds.filter((id) => id !== run.id),
+                )}
+                aria-label={`选择原始任务 ${run.title}`}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                  <Link2 className="h-3.5 w-3.5 shrink-0 text-teal-600" aria-hidden />
+                  <span className="truncate">{run.title}</span>
+                </span>
+                <span className="mt-1 block truncate text-xs text-slate-500">
+                  {run.changeContract?.expectedBehavior || run.objective || "未记录期望行为"}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+          当前项目还没有可关联的原始任务，请先创建一个新功能任务。
+        </div>
+      )}
     </Field>
   );
 }

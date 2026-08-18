@@ -40,6 +40,7 @@ import {
   CHANGE_CONTRACT_ARTIFACT_KEY,
   effectiveRequiredInputKeys,
   legacyChangeContract,
+  linkedChangeContract,
   renderChangeContract,
   validatePhaseResolutionArtifactMutation,
   validatePhaseResolutionExecution,
@@ -142,9 +143,31 @@ export class WorkflowService {
     if (!designSpec) {
       throw new AppError("项目没有注册 design-spec 产物", 400, "CONFIG_INVALID");
     }
-    const changeContract = input.changeContract
-      ?? legacyChangeContract(input.title, input.objective);
-    const runObjective = input.changeContract ? changeContract.summary : input.objective;
+    let changeContract: ChangeContractDto;
+    let runObjective: string;
+    if ("sourceRunIds" in input) {
+      const sourceRuns = await this.requireProjectSourceRuns(projectId, input.sourceRunIds);
+      changeContract = linkedChangeContract(
+        input.workType,
+        input.expectedBehavior,
+        sourceRuns,
+      );
+      runObjective = input.expectedBehavior;
+    } else {
+      changeContract = input.changeContract
+        ?? legacyChangeContract(input.title, input.objective);
+      if (changeContract.sourceRunIds?.length) {
+        if (changeContract.workType === "feature") {
+          throw new AppError(
+            "新功能不能关联原始任务",
+            400,
+            "SOURCE_RUN_NOT_ALLOWED",
+          );
+        }
+        await this.requireProjectSourceRuns(projectId, changeContract.sourceRunIds);
+      }
+      runObjective = input.changeContract ? changeContract.summary : input.objective;
+    }
     const changeContractArtifact = resolved.artifacts.find(
       (artifact) => artifact.id === CHANGE_CONTRACT_ARTIFACT_KEY,
     );
@@ -181,6 +204,21 @@ export class WorkflowService {
       }
       throw error;
     }
+  }
+
+  private async requireProjectSourceRuns(projectId: string, sourceRunIds: string[]) {
+    const projectRuns = await this.store.listRuns(projectId);
+    const runsById = new Map(projectRuns.map((run) => [run.id, run]));
+    const missingSourceRunIds = sourceRunIds.filter((id) => !runsById.has(id));
+    if (missingSourceRunIds.length > 0) {
+      throw new AppError(
+        "原始任务不存在或不属于当前项目",
+        400,
+        "SOURCE_RUN_INVALID",
+        { sourceRunIds: missingSourceRunIds },
+      );
+    }
+    return sourceRunIds.map((id) => runsById.get(id)!);
   }
 
   async getRun(runId: string) {
