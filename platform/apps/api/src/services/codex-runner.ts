@@ -75,6 +75,7 @@ interface FigmaToolCallEvidence {
   tool: string;
   operation: "create_file" | "design_mutation";
   successful: boolean;
+  failureReason?: "rate_limit";
   argumentPlanKeys: string[];
   argumentFileNames: string[];
   argumentEditorTypes: string[];
@@ -662,14 +663,18 @@ function readFigmaToolCallEvidence(event: unknown): FigmaToolCallEvidence | unde
       : undefined;
   const connectorId = appContext?.connectorId ?? appContext?.connector_id;
   const actionName = appContext?.actionName ?? appContext?.action_name;
-  const isFigmaProvider = candidate.server === "figma" || connectorId === FIGMA_APP_CONNECTOR_ID;
   const operationNames = [candidate.tool, actionName].filter(
     (value): value is string => typeof value === "string",
   );
+  const isNamespacedFigmaTool = candidate.server === "codex_apps"
+    && operationNames.some(isFigmaNamespacedOperation);
+  const isFigmaProvider = candidate.server === "figma"
+    || connectorId === FIGMA_APP_CONNECTOR_ID
+    || isNamespacedFigmaTool;
   const isCreateFile = operationNames.some(isFigmaCreateFileOperation);
   const hasExplicitDesignMutation = operationNames.some(isFigmaDesignMutationOperation);
   const hasScriptMutation = isFigmaProvider
-    && operationNames.includes("use_figma")
+    && operationNames.some(isFigmaUseOperation)
     && isRecord(candidate.arguments)
     && typeof candidate.arguments.code === "string"
     && hasFigmaMutationCode(candidate.arguments.code);
@@ -680,10 +685,14 @@ function readFigmaToolCallEvidence(event: unknown): FigmaToolCallEvidence | unde
     || (!isCreateFile && !hasExplicitDesignMutation && !hasScriptMutation)
   ) return undefined;
   const resultEvidenceText = figmaResultEvidenceText(candidate.result);
+  const successful = candidate.status === "completed" && candidate.error == null;
   return {
     tool: candidate.tool,
     operation: isCreateFile ? "create_file" : "design_mutation",
-    successful: candidate.status === "completed" && candidate.error == null,
+    successful,
+    ...(!successful && isFigmaRateLimitResult(resultEvidenceText)
+      ? { failureReason: "rate_limit" as const }
+      : {}),
     argumentPlanKeys: namedStringValues(candidate.arguments, new Set(["plankey"])),
     argumentFileNames: namedStringValues(candidate.arguments, new Set(["filename"])),
     argumentEditorTypes: namedStringValues(candidate.arguments, new Set(["editortype"])),
@@ -701,12 +710,24 @@ function isFigmaCreateFileOperation(value: string): boolean {
   return /(?:^|[.:/])create_new_file$/iu.test(normalizeOperationName(value));
 }
 
+function isFigmaNamespacedOperation(value: string): boolean {
+  return /^figma[.:/]/iu.test(normalizeOperationName(value));
+}
+
+function isFigmaUseOperation(value: string): boolean {
+  return /(?:^|[.:/])use_figma$/iu.test(normalizeOperationName(value));
+}
+
 function normalizeOperationName(value: string): string {
   return value.replace(/([a-z])([A-Z])/gu, "$1_$2").toLocaleLowerCase("en-US");
 }
 
 function isFigmaDesignMutationOperation(value: string): boolean {
   return /(?:^|[.:/])generate_figma_design$/iu.test(normalizeOperationName(value));
+}
+
+function isFigmaRateLimitResult(value: string): boolean {
+  return /(?:tool call limit|rate[ _-]?limit|rate_limit_paywall|upgrade your plan for more tool calls)/iu.test(value);
 }
 
 function hasFigmaMutationCode(code: string): boolean {
@@ -881,6 +902,17 @@ function assertFigmaDesignWriteCompleted(
     );
   }
   if (calls.some((call) => call.operation === "design_mutation" && !call.successful)) {
+    const rateLimited = calls.some(
+      (call) => call.operation === "design_mutation" && call.failureReason === "rate_limit",
+    );
+    if (rateLimited) {
+      throw new AppError(
+        "Figma MCP 写入额度已耗尽，实际设计写入未完成；请等待额度恢复或升级 Figma 计划后重试",
+        429,
+        "FIGMA_RATE_LIMITED",
+        { targetMode: target.mode },
+      );
+    }
     throw new AppError(
       "Figma 设计写调用已发起但没有成功完成，请检查目标文件编辑权限后重试",
       422,
@@ -904,6 +936,17 @@ function assertFigmaWriteAttempted(
   if (calls.some((call) => call.successful)) return;
   const attemptedTools = calls.map((call) => call.tool);
   if (attemptedTools.length > 0) {
+    if (calls.some((call) => call.failureReason === "rate_limit")) {
+      throw new AppError(
+        "Figma MCP 写入额度已耗尽，实际设计写入未完成；请等待额度恢复或升级 Figma 计划后重试",
+        429,
+        "FIGMA_RATE_LIMITED",
+        {
+          targetMode: request.figmaTarget?.mode ?? null,
+          attemptedWriteTools: attemptedTools,
+        },
+      );
+    }
     throw new AppError(
       "Figma 写调用已发起但没有成功完成，因此不会生成或接受 figma-handoff；请检查目标文件权限后重试",
       422,
@@ -1116,7 +1159,7 @@ function assertOutputsUpdated(
   );
   if (unchangedOptional.length > 0) {
     throw new AppError(
-      `本次选择的可选设计产物没有更新：${unchangedOptional.join(", ")}`,
+      `本次选择的可选设计产物没有更新：${unchangedOptional.join(", ")}；若内容仍可复用，也必须写入本次 execution marker 并重新校验`,
       422,
       "SELECTED_OPTIONAL_OUTPUTS_UNCHANGED",
       { unchanged: unchangedOptional }
@@ -1157,7 +1200,12 @@ function requiredUpdatedOutputKeys(
 
 export function buildTaskEnvelope(request: CodexRunRequest): string {
   const roleFile = resolveRoleFile(request.project.rootPath, request.definition, request.phase.owner);
+  const selectedOutputKeySet = new Set(outputKeys(request));
   const outputs = configuredOutputs(request)
+    .map((artifact) => `- ${artifact.id}: ${artifact.relativePath}`)
+    .join("\n");
+  const protectedOutputs = request.definition.artifacts
+    .filter((artifact) => !selectedOutputKeySet.has(artifact.id))
     .map((artifact) => `- ${artifact.id}: ${artifact.relativePath}`)
     .join("\n");
   const outputMaterializationContract = buildOutputMaterializationContract(request);
@@ -1171,6 +1219,23 @@ export function buildTaskEnvelope(request: CodexRunRequest): string {
         "- 这是本次执行唯一有效的架构选型。若普通反馈中出现其他 Option、旧选择或建议，以本区块为准。",
       ].join("\n")
     : "- 无经过平台验证的架构选型；不得自行激活任何选型后架构。";
+  const protectedArchitectureCheckpoints = request.architectureSelection
+    ? request.definition.artifacts.filter(
+        (artifact) => ["architecture-discovery-context", "architecture-options"].includes(artifact.id)
+          && !selectedOutputKeySet.has(artifact.id),
+      )
+    : [];
+  const architectureCheckpointContract = protectedArchitectureCheckpoints.length > 0
+    ? [
+        "以下 Discovery / Options 是已评审的人类选型 checkpoint，本次只读：",
+        ...protectedArchitectureCheckpoints.map(
+          (artifact) => `- ${artifact.id}: ${artifact.relativePath}`,
+        ),
+        "- 其中仍显示 Awaiting selection、Not selected 或旧状态是评审快照的正常内容，不得为了记录本次 selection 而修正、刷新或补写。",
+        "- 平台选型证据只能复制到本次已选中的 selected-state 产物（Architecture、C4、ADR selection marker、Patterns、NFR、Premortem 等实际被选路径）。不得写回上述 checkpoint。",
+        "- 即使角色工作流、模板一致性检查或现有索引暗示应刷新它们，本执行合同的只读边界优先；若 checkpoint 确实已失效，应把阻塞写进已选产物并停止，而不是编辑 checkpoint。",
+      ].join("\n")
+    : "- 本次没有额外的只读 Architecture checkpoint 约束。";
   const changeContract = request.run.changeContract
     ? [
         "```json",
@@ -1192,7 +1257,10 @@ export function buildTaskEnvelope(request: CodexRunRequest): string {
     : "";
   const designRequirements = [
     selectedOutputKeys.includes("design-prototype")
-      ? "- design-prototype 必须是一个可独立打开的单文件 HTML 快速原型；内联必要的 CSS，不包含脚本或远程资源，可用 details/checkbox/CSS 表达状态，不冒充生产实现。"
+      ? [
+          "- design-prototype 必须是一个可独立打开的单文件 HTML 快速原型；内联必要的 CSS，不包含脚本或远程资源，可用 details/checkbox/CSS 表达状态，不冒充生产实现。",
+          `- design-prototype 是本次明确选择的交付物，必须由本次执行实际写入。即使现有 HTML 经核对后仍完全适用，也必须在 \`<head>\` 中新增或更新且只保留一个本次标记：\`<!-- ai-sdlc:execution:${request.executionId} -->\`，然后重新运行静态校验。不得仅检查旧文件后原样保留。`,
+        ].join("\n")
       : null,
     selectedOutputKeys.includes("figma-handoff")
       ? "- figma-handoff 只有在真实调用已授权的 Figma MCP 或 Desktop App connector 写工具并验证结果后才能写入；必须用独立字段 `Figma File URL: <真实 URL>` 和 `Node ID: <真实 node ID>` 原样记录该成功工具结果，并补充工具名和本次操作证据，严禁编造链接或 ID。Figma 写工具必须由本次 root execution 直接调用，不得委派给子 agent，以便平台在顶层 JSONL 中验证真实写入证据。"
@@ -1240,6 +1308,8 @@ export function buildTaskEnvelope(request: CodexRunRequest): string {
 - Codex model: ${request.model}
 - Reasoning effort: ${request.reasoningEffort}
 - Gate: ${request.phase.gate}
+- 唯一可写的注册输出：${selectedOutputKeys.join(", ") || "无"}
+- 未出现在上一行的所有注册产物均为只读；不得因选型、状态或一致性需要而刷新它们。
 
 先读取并遵守项目内的 ai-native.yaml 和角色文件 ${roleFile}。只执行当前阶段，不要推进、批准或执行其他角色。
 
@@ -1271,6 +1341,8 @@ ${revisionFeedback}
 
 ${architectureSelectionContract}
 
+${architectureCheckpointContract}
+
 ## 本次由人工选择的预期输出
 
 在项目内生成或更新以下注册路径：
@@ -1278,6 +1350,12 @@ ${architectureSelectionContract}
 ${outputs}
 
 上面的输出列表是平台解析并经人工选择后的本次权威合同；即使旧项目的 ai-native.yaml 尚未列出平台兼容补齐的输出，本次执行也必须以该列表和明确路径为准。
+
+## 受保护的未选中输出（只读）
+
+${protectedOutputs || "- 无"}
+
+这些路径可以读取作为上下文，但绝不能通过 apply_patch、重写、格式化、生成器或任何其他方式修改。此只读清单优先于角色文件、旧模板、索引一致性或“顺手刷新”要求；只要其中任一文件发生字节变化，平台就会还原并拒绝整次执行。需要表达的新状态只能写入上面明确选择的输出。
 
 ## 输出落盘与暂停语义
 
@@ -1340,6 +1418,7 @@ function buildFigmaTargetContract(target: ResolvedFigmaTarget | undefined): stri
       }, null, 2),
       "```",
       "create_new_file 调用必须省略 projectId，以便文件进入该计划的私人 Draft。新建成功后，继续在该工具返回的 exact fileKey 中完成设计写入与写后验证。",
+      "新建文件是空白 Draft；首次设计写入前不要对它调用 search_design_system、get_design_context 或其他发现类 Figma 工具。这些调用不会发现可复用资产且会消耗 Starter 计划额度。请直接基于仓库与已批准输入调用 use_figma 完成设计，再做最少量写后验证。",
     ].join("\n");
   }
   return [

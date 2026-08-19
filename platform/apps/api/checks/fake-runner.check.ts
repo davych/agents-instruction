@@ -112,8 +112,18 @@ test("fake Codex runner creates deterministic registered artifacts", async () =>
     ...executionConfig,
     selectedOutputKeys: ["design-prototype"]
   };
+  const prototypeExecutionId = crypto.randomUUID();
+  const prototypePrompt = buildTaskEnvelope({
+    ...prototypeRequest,
+    executionId: prototypeExecutionId,
+  });
+  assert.match(
+    prototypePrompt,
+    new RegExp(`<!-- ai-sdlc:execution:${prototypeExecutionId} -->`, "u"),
+  );
+  assert.match(prototypePrompt, /不得仅检查旧文件后原样保留/u);
   const prototype = await new CodexTerminalRunner({ fake: true }).run(
-    { ...prototypeRequest, executionId: crypto.randomUUID() },
+    { ...prototypeRequest, executionId: prototypeExecutionId },
     async () => undefined
   );
   assert.match(prototype.artifacts[0]?.content ?? "", /<!doctype html>/u);
@@ -359,15 +369,24 @@ test("the architect envelope reconciles pause points with selected output materi
     }),
     /有效人工选型之后[\s\S]*每一个 selected 输出都必须[\s\S]*完全相同[\s\S]*拒绝整次执行并回滚/u,
   );
+  const selectedStatePrompt = buildTaskEnvelope({
+    ...request,
+    selectedOutputKeys: ["architecture"],
+    currentArtifacts,
+    revisionFeedback: ["Selected option: A", "consider another change"],
+    architectureSelection,
+  });
   assert.match(
-    buildTaskEnvelope({
-      ...request,
-      selectedOutputKeys: ["architecture"],
-      currentArtifacts,
-      revisionFeedback: ["Selected option: A", "consider another change"],
-      architectureSelection,
-    }),
+    selectedStatePrompt,
     /平台验证的架构选型[\s\S]*Selected option: B[\s\S]*review-newest[\s\S]*options-v1[\s\S]*若普通反馈中出现其他 Option[\s\S]*以本区块为准/u,
+  );
+  assert.match(
+    selectedStatePrompt,
+    /Discovery \/ Options 是已评审的人类选型 checkpoint[\s\S]*architecture-discovery-context: docs\/ai-native\/architecture\/00-discovery-context\.md[\s\S]*architecture-options: docs\/ai-native\/architecture\/00-options\.md[\s\S]*不得为了记录本次 selection 而修正、刷新或补写/u,
+  );
+  assert.match(
+    selectedStatePrompt,
+    /受保护的未选中输出（只读）[\s\S]*architecture-discovery-context: docs\/ai-native\/architecture\/00-discovery-context\.md[\s\S]*architecture-options: docs\/ai-native\/architecture\/00-options\.md[\s\S]*只读清单优先于角色文件/u,
   );
   await assert.rejects(
     () => new CodexTerminalRunner({ binary: strictStub, fake: false }).run(
@@ -564,7 +583,7 @@ test("real Codex runner spawns the configured binary and consumes JSONL output",
   assert.equal(runner.mode(), "real");
   assert.equal(
     runner.commandLabel(executionConfig),
-    'codex-stub.mjs --ask-for-approval never exec --model gpt-5.6-sol --config model_reasoning_effort="high" --json --color never --sandbox workspace-write'
+    'codex-stub.mjs --dangerously-bypass-approvals-and-sandbox exec --model gpt-5.6-sol --config model_reasoning_effort="high" --json --color never'
   );
   const result = await runner.run(
     {
@@ -600,8 +619,7 @@ test("real Codex runner spawns the configured binary and consumes JSONL output",
   assert.deepEqual(
     JSON.parse(await readFile(path.join(root, "stub-args.json"), "utf8")),
     [
-      "--ask-for-approval",
-      "never",
+      "--dangerously-bypass-approvals-and-sandbox",
       "exec",
       "--model",
       "gpt-5.6-sol",
@@ -610,8 +628,6 @@ test("real Codex runner spawns the configured binary and consumes JSONL output",
       "--json",
       "--color",
       "never",
-      "--sandbox",
-      "workspace-write",
       "--skip-git-repo-check",
       "-C",
       root,
@@ -1079,6 +1095,11 @@ test("real Figma output requires a successful matching MCP or Desktop connector 
           actionName: "use_figma"
         }
       }
+    },
+    {
+      name: "cli-namespaced",
+      tool: "figma.use_figma",
+      context: {}
     }
   ] as const;
 
@@ -1444,8 +1465,8 @@ test("real Figma output requires a successful matching MCP or Desktop connector 
       'import path from "node:path";',
       'mkdirSync(path.join(process.cwd(), "docs"), { recursive: true });',
       `writeFileSync(path.join(process.cwd(), "docs", "figma-handoff.md"), ${JSON.stringify(`# Figma handoff\n\n- URL: ${privateDraftUrl}\n- Node ID: 9:10\n- Evidence: created and populated private Draft\n`)}, "utf8");`,
-      `process.stdout.write(JSON.stringify({ type: "item.completed", item: { type: "mcp_tool_call", server: "figma", tool: "create_new_file", status: "completed", error: null, arguments: { planKey: "team::100", fileName: "AI SDLC private draft", editorType: "design" }, result: { url: ${JSON.stringify(privateDraftUrl)}, fileKey: "new-file-456" } } }) + "\\n");`,
-      `process.stdout.write(JSON.stringify({ type: "item.completed", item: { type: "mcp_tool_call", server: "figma", tool: "use_figma", status: "completed", error: null, arguments: { fileKey: "new-file-456", code: "const frame = figma.createFrame(); frame.name = 'Private Draft'; return frame.id;" }, result: { url: ${JSON.stringify(privateDraftUrl)}, fileKey: "new-file-456", nodeIds: ["9:10"] } } }) + "\\n");`,
+      `process.stdout.write(JSON.stringify({ type: "item.completed", item: { type: "mcp_tool_call", server: "codex_apps", tool: "figma.create_new_file", status: "completed", error: null, arguments: { planKey: "team::100", fileName: "AI SDLC private draft", editorType: "design" }, result: { url: ${JSON.stringify(privateDraftUrl)}, fileKey: "new-file-456" } } }) + "\\n");`,
+      `process.stdout.write(JSON.stringify({ type: "item.completed", item: { type: "mcp_tool_call", server: "codex_apps", tool: "figma.use_figma", status: "completed", error: null, arguments: { fileKey: "new-file-456", code: "const frame = figma.createFrame(); frame.name = 'Private Draft'; return frame.id;" }, result: { url: ${JSON.stringify(privateDraftUrl)}, fileKey: "new-file-456", nodeIds: ["9:10"] } } }) + "\\n");`,
       ""
     ].join("\n"),
     "utf8"
@@ -1481,6 +1502,29 @@ test("real Figma output requires a successful matching MCP or Desktop connector 
     (error: unknown) => {
       assert.equal((error as { code?: string }).code, "FIGMA_HANDOFF_MISSING");
       assert.doesNotMatch((error as Error).message, /Codex 未生成所有必需产物/u);
+      return true;
+    }
+  );
+
+  const rateLimitedWriteStub = path.join(root, "codex-with-rate-limited-figma-write.mjs");
+  await writeFile(
+    rateLimitedWriteStub,
+    [
+      "#!/usr/bin/env node",
+      'process.stdout.write(JSON.stringify({ type: "item.completed", item: { type: "mcp_tool_call", server: "codex_apps", tool: "figma.use_figma", status: "failed", error: null, arguments: { fileKey: "file-123", code: "const frame = figma.createFrame(); return frame.id;" }, result: { content: [{ type: "text", text: "You have reached the Figma MCP tool call limit on the Starter plan. Upgrade your plan for more tool calls." }], isError: true } } }) + "\\n");',
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await chmod(rateLimitedWriteStub, 0o755);
+  await assert.rejects(
+    () => new CodexTerminalRunner({ binary: rateLimitedWriteStub, fake: false }).run(
+      { ...request, executionId: crypto.randomUUID() },
+      async () => undefined
+    ),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, "FIGMA_RATE_LIMITED");
+      assert.match((error as Error).message, /额度已耗尽/u);
       return true;
     }
   );
