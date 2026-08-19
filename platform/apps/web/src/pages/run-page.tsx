@@ -137,6 +137,9 @@ const MarkdownPreview = lazy(() =>
 const HtmlPreview = lazy(() =>
   import("@/components/html-preview").then((module) => ({ default: module.HtmlPreview })),
 );
+const MermaidPreview = lazy(() =>
+  import("@/components/mermaid-preview").then((module) => ({ default: module.MermaidPreview })),
+);
 
 const FIGMA_SETUP_URL =
   "https://developers.figma.com/docs/figma-mcp-server/remote-server-installation/#codex";
@@ -2853,6 +2856,10 @@ function ReviewDialog({
   const artifactPath = artifact?.filePath || artifact?.path || "";
   const isHtmlArtifact =
     artifactKey === "design-prototype" || /\.(?:html?|xhtml)$/iu.test(artifactPath);
+  const isMermaidArtifact =
+    ["architecture-c4-context", "architecture-c4-containers"].includes(artifactKey)
+    || /\.(?:mmd|mermaid)$/iu.test(artifactPath);
+  const artifactFormat = isHtmlArtifact ? "HTML" : isMermaidArtifact ? "Mermaid" : "Markdown";
   const isSuperseded = artifact?.superseded || artifact?.reviewStatus === "superseded";
   const isImpactReadOnly = artifactKey === "change-contract" || (phase.resolution
     ? !isResolutionOutputMutable(phase.resolution, artifactKey)
@@ -3230,11 +3237,11 @@ function ReviewDialog({
                 {isSuperseded ? <Badge variant="muted">已被替代</Badge> : null}
               </div>
               <div className="mt-0.5 truncate font-mono text-[10px] text-slate-400">
-                {artifactPath || (isHtmlArtifact ? "HTML preview" : "Markdown preview")}
+                {artifactPath || `${artifactFormat} preview`}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline">{isHtmlArtifact ? "HTML" : "Markdown"}</Badge>
+              <Badge variant="outline">{artifactFormat}</Badge>
               {canEdit && artifactView === "preview" ? (
                 <Button size="sm" variant="outline" onClick={() => setArtifactView("edit")}>
                   <Pencil className="h-3.5 w-3.5" aria-hidden />
@@ -3265,7 +3272,11 @@ function ReviewDialog({
               <div>
                 <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
                   保存会创建新的人工 revision，不会覆盖当前历史版本。
-                  {isHtmlArtifact ? " HTML 将在保存后继续通过隔离沙箱预览。" : ""}
+                  {isHtmlArtifact
+                    ? " HTML 将在保存后继续通过隔离沙箱预览。"
+                    : isMermaidArtifact
+                      ? " Mermaid 将在保存后直接于浏览器中重新渲染。"
+                      : ""}
                 </div>
                 <Textarea
                   autoFocus
@@ -3312,12 +3323,14 @@ function ReviewDialog({
                 fallback={
                   <div className="flex h-52 items-center justify-center gap-2 text-sm text-slate-400">
                     <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
-                    正在渲染{isHtmlArtifact ? " HTML 原型" : " Markdown"}…
+                    正在渲染 {artifactFormat}…
                   </div>
                 }
               >
                 {isHtmlArtifact ? (
                   <HtmlPreview content={content} />
+                ) : isMermaidArtifact ? (
+                  <MermaidPreview content={content} />
                 ) : (
                   <MarkdownPreview content={content} />
                 )}

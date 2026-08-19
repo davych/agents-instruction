@@ -553,7 +553,7 @@ export class FigmaMcpIntegration {
       let timedOut = false;
       let outputExceeded = false;
       let protocolFailed = false;
-      let stage: "initialize" | "thread" | "tool" | "done" = "initialize";
+      let stage: "initialize" | "thread" | "await-server" | "tool" | "done" = "initialize";
       let timeout: NodeJS.Timeout | undefined;
       let shutdownTimeout: NodeJS.Timeout | undefined;
       let threadId: string | undefined;
@@ -626,18 +626,31 @@ export class FigmaMcpIntegration {
             failProtocol();
             return;
           }
-          stage = "tool";
+          stage = "await-server";
           threadId = message.result.thread.id;
-          writeMessage({
-            id: 3,
-            method: "mcpServer/tool/call",
-            params: {
-              threadId,
-              server: CODEX_APPS_SERVER_NAME,
-              tool: FIGMA_WHOAMI_TOOL,
-              arguments: {},
-            },
-          });
+          return;
+        }
+        if (
+          stage === "await-server" &&
+          message.method === "mcpServer/startupStatus/updated" &&
+          isObject(message.params) &&
+          message.params.name === CODEX_APPS_SERVER_NAME
+        ) {
+          if (message.params.status === "ready") {
+            stage = "tool";
+            writeMessage({
+              id: 3,
+              method: "mcpServer/tool/call",
+              params: {
+                threadId,
+                server: CODEX_APPS_SERVER_NAME,
+                tool: FIGMA_WHOAMI_TOOL,
+                arguments: {},
+              },
+            });
+          } else if (message.params.status === "failed") {
+            failProtocol();
+          }
           return;
         }
         if (message.id !== 3) {
