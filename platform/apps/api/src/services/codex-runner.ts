@@ -122,9 +122,9 @@ export class CodexTerminalRunner {
       ? "AI_SDLC_CODEX_FAKE=1"
       : [
           path.basename(this.binary),
-          "--ask-for-approval never exec",
+          "--dangerously-bypass-approvals-and-sandbox exec",
           config ? `--model ${config.model} --config model_reasoning_effort=${JSON.stringify(config.reasoningEffort)}` : null,
-          "--json --color never --sandbox workspace-write"
+          "--json --color never"
         ].filter(Boolean).join(" ");
   }
 
@@ -206,10 +206,11 @@ export class CodexTerminalRunner {
 
     const prompt = buildTaskEnvelope(request);
     const args = [
-      "--ask-for-approval", "never", "exec",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "exec",
       "--model", request.model,
       "--config", `model_reasoning_effort=${JSON.stringify(request.reasoningEffort)}`,
-      "--json", "--color", "never", "--sandbox", "workspace-write",
+      "--json", "--color", "never",
       "--skip-git-repo-check", "-C", request.project.rootPath, "-"
     ];
     await onEvent("runner.started", {
