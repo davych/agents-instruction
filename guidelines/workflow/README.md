@@ -34,7 +34,7 @@ flowchart TD
   ArchReuse --> Engineer["Software Engineer"]
   ArchPartial --> Engineer
   ArchFull --> Engineer
-  Engineer --> Tester["Tester: acceptance + regression evidence"]
+  Engineer --> Tester["Tester: engineering evidence + independent verification"]
   Tester --> DevOps["DevOps"]
   DevOps --> ReleaseDecision{"Human release decision"}
 ```
@@ -48,9 +48,9 @@ Rectangles are roles or work products. Diamonds are gates or human decisions. A 
 3. **Design Impact** — Choose `skip`, `reuse`, `partial`, or `full`. Designer runs only for `partial` or `full`; a project baseline is reused while a design spec belongs to one task.
 4. **Architecture Impact** — Choose `skip`, `reuse`, `partial`, or `full`. Architect runs only for partial/full; Full retains its human selection checkpoint.
 5. **Clearances to Software Engineer** — Product, design, and architecture provide complementary conditional contracts: what must change, which experience evidence applies, and which technical constraints remain active.
-6. **Software Engineer to Tester** — Implementation notes identify changed scope, checks, known limits, and risks. Tester verifies Change Contract criteria and targeted regression obligations.
-7. **Tester and Architecture to DevOps** — DevOps uses accepted decisions, NFRs, risks, and test evidence to prepare a runbook.
-8. **DevOps to human release decision** — The runbook makes release, observation, and rollback repeatable. A human still decides whether and when to release.
+6. **Software Engineer to Tester** — A Run-scoped evidence pack links the plan, task ledger, implementation, independent-test evidence, seven-lens review, provenance, known limits, and risks. Tester consumes its index, test evidence, review, and the applicable design spec while independently verifying the Change Contract criteria, targeted regressions, and every post-implementation deferred design validation.
+7. **Tester and Architecture to DevOps** — DevOps uses accepted decisions, NFRs, risks, the Run-scoped test report, and Tester's real command/report contract to prepare the runbook and authorized CI required check.
+8. **DevOps to human release decision** — The runbook and current required checks make release, observation, and rollback repeatable. A human still decides merge and release timing.
 
 ## Phase contract
 
@@ -59,11 +59,70 @@ Rectangles are roles or work products. Diamonds are gates or human decisions. A 
 | Discovery | PM / BA | Human request and configured business Markdown | Immutable `change-contract`; optional current-Run `prd` and `user-stories` heads | Product disposition has sufficient scope, acceptance, source, and regression evidence. |
 | Design | Designer | Change Contract plus applicable product evidence | Design clearance; optional baseline, task spec, prototype, and Figma handoff | Skip/reuse is evidence-backed, or selected design outputs are traceable, validated, ready, and unblocked. |
 | Architecture | Architect | Change Contract plus applicable product/design evidence | Architecture clearance and applicable indexed pack | Skip/reuse/partial evidence is valid, or full selection and acceptance evidence is complete. |
-| Implementation | Software Engineer | Change Contract plus active product, design, and architecture clearances | `implementation-notes` | The agreed implementation and necessary tests are complete. |
-| Verification | Tester | Change Contract, applicable acceptance/NFR evidence, and implementation notes | `test-report` | Acceptance criteria, regression obligations, and main risks have real verification evidence. |
-| Release | DevOps | Accepted architecture and test evidence | `release-runbook` | Release, monitoring, and rollback guidance is prepared. |
+| Implementation | Software Engineer | Change Contract plus active product, design, and architecture clearances | Seven Run-scoped outputs: `implementation-notes`, `implementation-plan`, `implementation-tasks`, `engineering-session-log`, `engineering-test-evidence`, `engineering-review`, and `engineering-provenance` | The confirmed implementation and necessary tests are complete; criterion coverage, independent-test evidence, seven-lens/adversarial review, and provenance have no unresolved blocker. |
+| Verification | Tester | Change Contract, applicable `design-spec` and acceptance/NFR evidence, `implementation-notes`, `engineering-test-evidence`, and `engineering-review` | Run-scoped `test-report`; transient exploration notes and repository-test links are supporting evidence | Acceptance criteria, regression obligations, main risks, and every deferred design validation have current execution evidence; MCP exploration alone cannot satisfy repeatable E2E/CI evidence. |
+| Release | DevOps | Accepted architecture, test evidence, and Tester command/report contract | `release-runbook`; authorized CI required-check configuration | Release, monitoring, rollback, and repeatable CI guidance are prepared. |
 
 The artifact lists in `ai-native.yaml` describe the complete evidence vocabulary. In a platform-managed Run, the persisted disposition and active execution contract resolve which input alternative is required. This avoids fake PRDs or design specs while keeping old initialized project definitions compatible. The CLI itself does not inspect or approve a gate.
+
+## After Software Engineer: the human operating sequence
+
+The seven Markdown outputs are one evidence pack. The normal review is:
+
+1. Read `implementation-notes` for status, actual scope, risks, and links.
+2. Inspect the real source/test diff; documents do not substitute for code.
+3. Read `engineering-test-evidence` and `engineering-review` for AC coverage, real commands, isolation, open findings, and adversarial results.
+4. Use plan, tasks, session log, and provenance for deeper audit or recovery.
+5. Return any `Failed`, `Blocked`, stale, contradicted, unrun, or unresolved result to its owner. Approve only a complete current implementation; this unlocks Tester but does not merge or release.
+
+The root [complete workflow and node table](../../README.md#complete-workflow-and-e2e-lifecycle) shows every owner, input, output, gate, and feedback edge.
+
+## Tester E2E evidence lifecycle
+
+```mermaid
+flowchart LR
+  Intake["Approved implementation + authoritative spec"] --> Map["Risk and AC map"]
+  Map --> Discover{"Interactive discovery useful?"}
+  Discover -->|"yes"| Explore["E2E Stage 1 · Playwright MCP exploration<br/>transient, non-gating"]
+  Discover -->|"no"| Need{"E2E disposition?"}
+  Explore --> Need
+  Need -->|"missing/changed"| Fresh["E2E Stage 2 · Fresh Tier A/B session<br/>freeze intent from spec"]
+  Fresh --> Engineer["Software Engineer integrates *.spec.ts<br/>refreshes evidence"]
+  Engineer --> Reapprove["Human reapproves Implementation"]
+  Reapprove --> Execute["Execute mapped verification<br/>E2E Stage 3 uses standalone Playwright"]
+  Need -->|"valid"| Execute
+  Need -->|"not applicable"| Execute
+  Execute --> Report["Run-scoped test-report"]
+  Report --> Gate{"Verification gate"}
+  Gate -->|"pass"| DevOps["DevOps required-check/runbook handoff"]
+  Gate -->|"fail/blocked"| Owner["Classify and return to owning role"]
+```
+
+- **Exploration** validates feasibility and finds observable selector candidates. Its “ran through” result is a diagnostic draft, although a real browser run/screenshot may supplement a specifically declared manual/deferred observation.
+- **Crystallization** starts from frozen authoritative intent in a fresh independent context. It must not copy the implementation or MCP action/transcript. A new test file changes the repository, so Software Engineer integrates it and refreshes the evidence pack before Tester resumes.
+- **Execution** runs every mapped applicable check. When E2E applies, Stage 3 uses the repository's real `playwright test` command or wrapper; otherwise the selected unit, integration, contract, or declared observation evidence still has to execute. CI contains no MCP dependency. Tester records actual local/CI evidence; DevOps or an authorized owner configures the required PR check.
+
+This is a feedback subflow across the existing Implementation and Verification boundary, not a seventh phase and not a role-ownership transfer. See the [Tester guide](../roles/tester/README.md) for selector, isolation, data, reporting, and failure-routing rules.
+
+## Software Engineer mini-cycle and evidence gates
+
+Software Engineer follows the project architecture rather than creating a parallel engineering system. The selected client's native Agent is generated from the one canonical Markdown source. It explicitly reads `.ai-sdlc/roles/software-engineer/workflow.md` and the ordinary Markdown references under that role pack; those files are neither client-native Skills nor duplicate Agents.
+
+For each smallest complete vertical slice, the engineering loop is:
+
+```text
+requirement → plan/context → code → independent tests → review → evidence
+```
+
+1. **Requirement** — Treat the immutable Change Contract and active Product evidence as the specification authority. Do not create a competing `spec.md` or rewrite an acceptance criterion.
+2. **Plan and context** — Load only relevant hot rules (`AGENTS.md` or `CLAUDE.md`), warm stack/testing references, and cold gap/history records. `implementation-plan` owns strategy and the vertical-slice boundary; `implementation-tasks` separately owns atomic status, repository targets, dependencies, and criterion mappings.
+3. **Greenfield, Brownfield, or Hybrid** — Greenfield work still follows accepted project and architecture constraints. Brownfield work records preserved behaviour plus ADDED, MODIFIED, REMOVED, and an honest removal audit. Hybrid work applies preservation rules to existing boundaries and Greenfield rules only to the confirmed new boundary.
+4. **Code** — Change the real repository source, configuration, and tests. Markdown evidence explains the change; it never substitutes for implementation. Newly discovered Product, Design, or Architecture impact invalidates that clearance and returns to its owner.
+5. **Independent tests** — Design tests from the external contract without implementation visibility, freeze the intent, then run them against the real change. Tier A (fresh model and session) and Tier B (fresh session, possibly the same model) may pass the normal gate. Tier C (same session instructed to ignore prior implementation) and Limited (independence cannot be established) remain blocked unless a human records a scoped verification-gate exception and compensating evidence.
+6. **Review** — Complete all seven lenses: behaviour preservation, hidden assumptions, spec/architecture drift, confirmation without evidence, test independence, security surface, and over-engineering. Then run both adversarial passes: pre-mortem and edge-case-hunter. Each lens records a finding or `none found`.
+7. **Evidence** — `implementation-notes` indexes the six companion outputs. `engineering-provenance` links the entire chain and may contain PR-ready text, but Software Engineer does not publish or merge a PR, deploy, approve risk, or claim release approval.
+
+The Web platform resolves all seven registered outputs to stable paths scoped to the current task and Run. A rerun updates only outputs selected by its execution contract; unselected registered artifacts remain unchanged.
 
 ## Product Impact Check
 
@@ -87,7 +146,7 @@ The artifact lists in `ai-native.yaml` describe the complete evidence vocabulary
 
 Unknown UI impact cannot be classified as `skip`. Any change to visible behavior, copy, interaction, responsiveness, or accessibility needs at least reuse evidence or Designer work. Prototype and Figma handoff remain optional selected evidence, never automatic requirements.
 
-In a platform-managed run, Architecture uses two executions around its human selection checkpoint. The first requires the index, discovery context, and options. The reviewer records a single documented choice in a `request_changes` review with an independent `Selected option: <ID>` line against the current options revision. The next execution refreshes the index and completes the C4 views, ADRs, patterns, NFRs, and adversarial review. The platform rejects selected-state execution before that evidence, and rejects final approval if an output is missing or a selected-state revision predates the selection.
+In a platform-managed run, Architecture uses two executions around its human selection checkpoint, plus a bounded blocker-resolution rerun only when the checkpoint exposes a concrete unresolved rule or dependency. First answer each concrete decision card; do not rerun Architect without an answer. The bootstrap execution then produces the index, discovery context, and options. The reviewer selects one current A/B/C card; the page records the strict `Selected option: <ID>` review line against the current options revision. The selected-state execution refreshes the index and completes the C4 views, ADRs, patterns, NFRs, and adversarial review. Selecting is not approving: the completed pack still receives a final human review. The platform rejects selection while a machine rule is blocked, rejects selected-state execution before current-revision selection evidence, and rejects final approval if an output is missing or predates the selection.
 
 That full two-execution path is not required for every later requirement. When the project already has a complete approved Architecture pack, a new Run starts with an Architecture Impact Check:
 
@@ -134,11 +193,20 @@ flowchart TD
   Product --> Engineer
   Design --> Engineer
   Architecture --> Engineer
-  Engineer --> Notes["implementation-notes"]
+  Engineer --> Notes["implementation-notes<br/>pack index"]
+  Engineer --> Plan["implementation-plan"]
+  Engineer --> Tasks["implementation-tasks"]
+  Engineer --> Session["engineering-session-log"]
+  Engineer --> TestEvidence["engineering-test-evidence"]
+  Engineer --> Review["engineering-review"]
+  Engineer --> Provenance["engineering-provenance"]
   CC --> Tester["Tester"]
   Product --> Tester
+  DS --> Tester
   Architecture --> Tester
   Notes --> Tester
+  TestEvidence --> Tester
+  Review --> Tester
   Tester --> Report["test-report"]
   Architecture --> DevOps["DevOps"]
   Report --> DevOps
@@ -155,10 +223,14 @@ AI roles prepare evidence and recommendations. Humans retain:
 - material design decisions that change scope, safety, privacy, or accessibility;
 - architecture option selection and final architecture acceptance;
 - trust-boundary placement, irreversible migration, vendor lock-in, and risk acceptance;
+- Tier C or Limited verification exceptions and other verification-gate waivers;
+- PR publication and merge decisions;
 - exceptions to failed or blocked verification;
 - final release approval and timing.
 
 An Agent should stop or mark its artifact blocked when one of these decisions changes the work materially.
+
+In the Web platform, these stops are surfaced in the Run-level **Decisions and follow-ups** inbox instead of requiring a human to search every Markdown file. The inbox identifies the source artifact, owner, next action, and destination phase. A human answers only true decision items; role-owned work is returned to that role, and upstream dependencies navigate back to Product or Design. Saving an answer records it in review history and reopens the owning phase so the Agent must update the formal artifact. An answer in review history alone does not silently clear the gate.
 
 ## Feedback and rework
 
@@ -168,6 +240,9 @@ The workflow is ordered, but it is not one-way.
 - Missing interface behavior returns to Designer.
 - A rejected option or incomplete quality target returns to Architect.
 - An implementation defect returns to Software Engineer.
+- A missing or changed repository E2E test returns to Software Engineer for integration, real checks, engineering-evidence refresh, and Implementation reapproval before Tester executes it.
+- A Playwright MCP exploration success never bypasses the standalone runner or CI evidence contract.
+- Missing or invalid engineering test evidence, review findings, or provenance returns to Software Engineer; Tester still owns the independent Verification conclusion.
 - Missing deployment evidence returns to DevOps or the authorized operator.
 
 When an upstream artifact changes, downstream roles should re-read it, record the new revision or date, and re-check affected gates. Do not assume an old approval covers changed content.

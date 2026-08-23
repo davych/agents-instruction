@@ -158,6 +158,34 @@ test("design output selection keeps required deliverables and validates optional
   );
 });
 
+test("AC-ENG-003/007: implementation requires the full evidence pack before first approval", () => {
+  const outputs = [
+    "implementation-notes",
+    "implementation-plan",
+    "implementation-tasks",
+    "engineering-session-log",
+    "engineering-test-evidence",
+    "engineering-review",
+    "engineering-provenance",
+  ];
+
+  assert.deepEqual(resolveOutputSelection("implementation", outputs), outputs);
+  assert.throws(
+    () => resolveOutputSelection("implementation", outputs, outputs.slice(0, -1)),
+    /首次执行必须生成全部注册输出/u,
+  );
+  assert.deepEqual(
+    resolveOutputSelection(
+      "implementation",
+      outputs,
+      ["engineering-test-evidence", "engineering-review"],
+      outputs,
+    ),
+    ["engineering-test-evidence", "engineering-review"],
+  );
+  assert.deepEqual(requiredApprovalOutputKeys("implementation", outputs), outputs);
+});
+
 test("architecture uses a three-artifact selection checkpoint before the full pack", () => {
   const outputs = [
     "architecture",
@@ -258,6 +286,18 @@ test("architecture selection markers are strict and must name a documented optio
   ].join("\n");
 
   assert.deepEqual(architectureOptionIds(options), ["A", "B-2"]);
+  assert.deepEqual(
+    architectureOptionIds("### Option A — Existing view\n\n### Option B - Feature session\n"),
+    ["A", "B"],
+    "initialized projects may contain Architect-authored H3/dash headings",
+  );
+  assert.equal(
+    validateArchitectureSelectionComment(
+      "Selected option: B",
+      "### Option A — Existing view\n\n### Option B — Feature session\n",
+    ),
+    "B",
+  );
   assert.equal(parseArchitectureSelectionId("We should compare Option A and B-2"), undefined);
   assert.equal(parseArchitectureSelectionId("Selected option: B-2\nCondition: load test"), "B-2");
   assert.equal(parseArchitectureSelectionId("选择方案：Option A"), "A");

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -58,7 +59,9 @@ test("fake Codex runner creates deterministic registered artifacts", async () =>
     phaseId: "discovery",
     selectedOutputKeys: ["prd", "user-stories"],
     model: null,
-    reasoningEffort: null
+    reasoningEffort: null,
+    workspaceRevisionToken: null,
+    verificationGitState: null,
   });
 
   const rerun = await new CodexTerminalRunner({ fake: true }).run(
@@ -529,6 +532,7 @@ test("real Codex runner spawns the configured binary and consumes JSONL output",
       'writeFileSync(path.join(process.cwd(), "docs", "prd.md"), "# Stub PRD\\n\\nGenerated without a real model.\\n", "utf8");',
       'process.stdout.write(`${JSON.stringify({ type: "thread.started", thread_id: "stub-thread" })}\\n`);',
       `process.stdout.write(JSON.stringify({ type: ${JSON.stringify(`Bearer ${eventSecret}`)}, item: { type: "mcp_tool_call", server: "figma", tool: "generate_figma_design", status: "completed", arguments: { authorization: ${JSON.stringify(`Bearer ${eventSecret}`)} }, result: { url: ${JSON.stringify(eventSignedUrl)} } } }) + "\\n");`,
+      'process.stdout.write(`${JSON.stringify({ type: "item.completed", item: { type: "command_execution", status: "completed", command: "node --test", exit_code: 0 } })}\\n`);',
       'process.stdout.write(`${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "stub completed" } })}\\n`);',
       ""
     ].join("\n"),
@@ -653,6 +657,7 @@ test("real Codex runner spawns the configured binary and consumes JSONL output",
     "thread.started",
     "codex.event",
     "item.completed",
+    "item.completed",
     "runner.completed"
   ]);
   assert.deepEqual(events[0]?.payload, {
@@ -664,6 +669,8 @@ test("real Codex runner spawns the configured binary and consumes JSONL output",
     model: "gpt-5.6-sol",
     reasoningEffort: "high",
     figmaTargetMode: null,
+    workspaceRevisionToken: null,
+    verificationGitState: null,
   });
   assert.deepEqual(events[1]?.payload, { type: "thread.started" });
   assert.deepEqual(events[2]?.payload, {
@@ -678,6 +685,16 @@ test("real Codex runner spawns the configured binary and consumes JSONL output",
     }
   });
   assert.deepEqual(events[3]?.payload, {
+    type: "item.completed",
+    item: {
+      type: "command_execution",
+      status: "completed",
+      exit_code: 0,
+      commandRedacted: true,
+      commandHash: createHash("sha256").update("node --test").digest("hex"),
+    },
+  });
+  assert.deepEqual(events[4]?.payload, {
     type: "item.completed",
     item: { type: "agent_message", textBytes: 14 }
   });

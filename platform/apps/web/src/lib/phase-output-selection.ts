@@ -30,6 +30,16 @@ export interface ArchitectureOutputFreshnessArtifact {
 }
 
 const ARCHITECTURE_SELECTION_PATTERN = /^\s*(?:Selected option|选择方案|选定方案)\s*[:：]\s*(?:Option\s+)?([A-Za-z0-9][A-Za-z0-9._-]{0,159})\s*$/gimu;
+const ARCHITECTURE_OPTION_HEADING_PATTERN = /^#{2,3}\s+Option\s+([A-Za-z0-9][A-Za-z0-9._-]{0,159})\s*(?::|：|—|–|\s-\s)\s*(.+?)\s*$/gimu;
+
+export interface ArchitectureOptionSummary {
+  id: string;
+  title: string;
+  summary: string;
+  optimizes?: string;
+  givesUp?: string;
+  recommended: boolean;
+}
 
 export interface ArchitectureSelectionReviewLike {
   id?: string;
@@ -58,6 +68,42 @@ export function parseArchitectureSelectionId(comment: string): string | undefine
   ARCHITECTURE_SELECTION_PATTERN.lastIndex = 0;
   const matches = [...comment.matchAll(ARCHITECTURE_SELECTION_PATTERN)];
   return matches.length === 1 ? matches[0]?.[1] : undefined;
+}
+
+export function architectureOptionSummaries(content: string): ArchitectureOptionSummary[] {
+  ARCHITECTURE_OPTION_HEADING_PATTERN.lastIndex = 0;
+  const matches = [...content.matchAll(ARCHITECTURE_OPTION_HEADING_PATTERN)];
+  const recommendationText = content.replace(/\*\*/gu, "");
+  return matches.map((match, index) => {
+    const bodyStart = (match.index ?? 0) + match[0].length;
+    const bodyEnd = matches[index + 1]?.index ?? content.length;
+    const body = content.slice(bodyStart, bodyEnd);
+    const summary = body.split(/\r?\n/u)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0 && !/^(?:#|[-*]\s|\|)/u.test(line)) ?? "";
+    return {
+      id: match[1]!,
+      title: cleanArchitectureOptionText(match[2] ?? ""),
+      summary: cleanArchitectureOptionText(summary),
+      optimizes: architectureOptionField(body, "Optimizes"),
+      givesUp: architectureOptionField(body, "Gives up"),
+      recommended: new RegExp(
+        `(?:Recommend|推荐)\\s+(?:选择\\s*)?Option\\s+${match[1]!.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?=[\\s.,;:!?。；：！？]|$)`,
+        "iu",
+      ).test(recommendationText),
+    };
+  });
+}
+
+function architectureOptionField(content: string, field: string): string | undefined {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const value = new RegExp(`^\\s*[-*]\\s+\\*\\*${escaped}:\\*\\*\\s*(.+?)\\s*$`, "imu")
+    .exec(content)?.[1];
+  return value ? cleanArchitectureOptionText(value) : undefined;
+}
+
+function cleanArchitectureOptionText(content: string): string {
+  return content.replace(/\*\*|`/gu, "").trim();
 }
 
 export function architectureSelectionFromReviews(
@@ -215,6 +261,14 @@ export function initialPhaseOutputKeys({
     (initialOutputKeys ?? []).filter((key) => available.has(key)),
   );
 
+  if (hasExistingArtifacts && existingOutputKeys !== undefined && phaseId !== "architecture") {
+    const existing = new Set(existingOutputKeys);
+    const required = phaseId === "design"
+      ? REQUIRED_DESIGN_OUTPUT_KEYS.filter((key) => available.has(key))
+      : executableOutputKeys;
+    const missing = required.filter((key) => !existing.has(key));
+    if (missing.length > 0) return unique([...requested, ...missing]);
+  }
   if (hasExistingArtifacts && requested.length > 0) {
     if (phaseId !== "architecture" || architectureSelectionRecorded) return requested;
     const bootstrap = new Set<string>(REQUIRED_ARCHITECTURE_BOOTSTRAP_OUTPUT_KEYS);
@@ -295,7 +349,14 @@ export function isPhaseOutputSelectionComplete({
     if (selectedOutputKeys.every((key) => existing.has(key))) return true;
     return availableOutputKeys.every((key) => existing.has(key) || selected.has(key));
   }
-  if (hasExistingArtifacts) return true;
+  if (hasExistingArtifacts) {
+    if (existingOutputKeys === undefined) return true;
+    const existing = new Set(existingOutputKeys);
+    const required = phaseId === "design"
+      ? REQUIRED_DESIGN_OUTPUT_KEYS.filter((key) => executable.has(key))
+      : executableOutputKeys;
+    return required.every((key) => existing.has(key) || selected.has(key));
+  }
   if (phaseId === "design") {
     return REQUIRED_DESIGN_OUTPUT_KEYS.every((key) => selected.has(key));
   }

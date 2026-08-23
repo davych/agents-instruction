@@ -23,7 +23,8 @@
   ],
   "assumptions": [],
   "open_questions": [],
-  "blockers": []
+  "blockers": [],
+  "deferred_validations": []
 }
 ```
 
@@ -86,6 +87,10 @@ The JSON `status` is the handoff status. Use `ready-for-engineering` only when `
 ### Validation evidence
 
 - <Validator result, component evidence, viewport check, screenshot, Figma node, or other real evidence>
+
+### Deferred verification
+
+- <Obligation ID, runnable prerequisite, targets, checks, pass criteria, supported evidence types, and the explicit on-fail/on-missing Verification block, or None>
 
 ### Open decisions and blockers
 

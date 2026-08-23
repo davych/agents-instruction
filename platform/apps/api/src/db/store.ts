@@ -14,6 +14,7 @@ import {
   type ExecutionDto,
   type ExecutionEventDto,
   type PhaseId,
+  type PhaseStatus,
   type PhaseResolutionDto,
   type PhaseRunDto,
   type ProjectDto,
@@ -67,7 +68,16 @@ export interface ArtifactSnapshotRecord {
   content: string;
 }
 
-export type CurrentArtifactSnapshot = ArtifactDto & { content: string };
+/**
+ * The current snapshot keeps the execution that materialized this exact head.
+ * Human revisions intentionally have a null execution id.  The field is
+ * optional only for backward-compatible store doubles in existing checks;
+ * security-sensitive gates must fail closed when it is absent.
+ */
+export type CurrentArtifactSnapshot = ArtifactDto & {
+  content: string;
+  executionId?: string | null;
+};
 
 export interface ArtifactWorkspace {
   rootPath: string;
@@ -1018,7 +1028,8 @@ export class PgWorkflowStore {
     );
     return rows.map((row) => ({
       ...mapArtifact(row, phase.status),
-      content: row.content_snapshot
+      content: row.content_snapshot,
+      executionId: row.execution_id ?? null,
     }));
   }
 
@@ -1309,6 +1320,7 @@ export class PgWorkflowStore {
       minimumRevision?: number;
       indexKey?: string;
     },
+    allowedPhaseStatuses: PhaseStatus[] = ["awaiting_review"],
   ): Promise<ReviewDto> {
     const client = await this.pool.connect();
     try {
@@ -1319,7 +1331,16 @@ export class PgWorkflowStore {
       );
       const phase = phaseResult.rows[0];
       if (!phase) throw notFound("阶段");
-      assertPhaseReviewable(phase.status);
+      if (allowedPhaseStatuses.length === 1 && allowedPhaseStatuses[0] === "awaiting_review") {
+        assertPhaseReviewable(phase.status);
+      } else if (!allowedPhaseStatuses.includes(phase.status)) {
+        throw new AppError(
+          `当前阶段状态 ${phase.status} 不允许记录这次审核`,
+          409,
+          "PHASE_NOT_REVIEWABLE",
+          { allowedStatuses: allowedPhaseStatuses },
+        );
+      }
       const headResult = await client.query(
         `SELECT a.id, a.artifact_key, a.created_at, a.revision, a.execution_id,
                 a.parent_artifact_id
@@ -1483,6 +1504,9 @@ export class PgWorkflowStore {
           currentArtifactIds
         ]
       );
+      if (decision === "request_changes") {
+        await this.resetDownstreamPhases(client, runId, Number(phase.position));
+      }
       if (decision === "approve") {
         if (phase.phase_id === "discovery") {
           await client.query(

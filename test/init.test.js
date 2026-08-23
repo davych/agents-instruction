@@ -10,6 +10,24 @@ import { run } from "../bin/cli.js";
 
 const temporaryDirectories = [];
 const roleIds = ["pm-ba", "designer", "architect", "software-engineer", "tester", "devops"];
+const engineeringEvidenceKeys = [
+  "implementation-notes",
+  "implementation-plan",
+  "implementation-tasks",
+  "engineering-session-log",
+  "engineering-test-evidence",
+  "engineering-review",
+  "engineering-provenance"
+];
+const engineeringEvidenceBasenames = {
+  "implementation-notes": "implementation-notes.md",
+  "implementation-plan": "implementation-plan.md",
+  "implementation-tasks": "implementation-tasks.md",
+  "engineering-session-log": "session-log.md",
+  "engineering-test-evidence": "independent-test-evidence.md",
+  "engineering-review": "review.md",
+  "engineering-provenance": "pr-provenance.md"
+};
 
 test.after(async () => {
   await Promise.all(temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })));
@@ -44,12 +62,25 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assert.match(config, /owner: architect\n      inputs: \[change-contract, prd, user-stories, design-spec\]/u);
   assert.match(config, /outputs: \[architecture, architecture-discovery-context, architecture-options, architecture-c4-context, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs, architecture-adversarial\]/u);
   assert.match(config, /owner: software-engineer\n      inputs: \[change-contract, prd, user-stories, design-baseline, design-spec, architecture, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs\]/u);
-  assert.match(config, /owner: tester\n      inputs: \[change-contract, prd, user-stories, architecture, architecture-nfrs, implementation-notes\]/u);
+  assert.match(
+    config,
+    new RegExp(`owner: software-engineer\\n      inputs: \\[change-contract[^\\n]+\\]\\n      outputs: \\[${engineeringEvidenceKeys.join(", ")}\\]`, "u")
+  );
+  assert.match(config, /owner: tester\n      inputs: \[change-contract, prd, user-stories, design-spec, architecture, architecture-nfrs, implementation-notes, engineering-test-evidence, engineering-review\]/u);
   assert.match(config, /owner: devops\n      inputs: \[architecture, architecture-adrs, architecture-nfrs, architecture-adversarial, test-report\]/u);
   assert.match(config, /id: design-baseline, owner: designer, path: DESIGN_BASELINE\.md/u);
   assert.match(config, /id: design-spec, owner: designer, path: design-spec\.md/u);
   assert.match(config, /id: architecture, owner: architect, path: architecture\.md/u);
   assert.match(config, /id: architecture-adrs, owner: architect, path: 04-adrs/u);
+  for (const artifactKey of engineeringEvidenceKeys) {
+    assert.match(
+      config,
+      new RegExp(
+        `id: ${artifactKey}, owner: software-engineer, path: ${engineeringEvidenceBasenames[artifactKey].replace(".", "\\.")}`,
+        "u"
+      )
+    );
+  }
 
   for (const roleId of roleIds) {
     const agent = await readFile(path.join(target, `.github/agents/${roleId}.agent.md`), "utf8");
@@ -95,7 +126,14 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
       "change-contract.md",
       "design-baseline.md",
       "design-spec.md",
+      "engineering-provenance.md",
+      "engineering-replay-packet.md",
+      "engineering-review.md",
+      "engineering-session-log.md",
+      "engineering-test-evidence.md",
       "implementation-notes.md",
+      "implementation-plan.md",
+      "implementation-tasks.md",
       "prd.md",
       "release-runbook.md",
       "story.md",
@@ -144,14 +182,18 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assert.match(architectWorkflow, /rulebook-digest\.mjs[\s\S]*old checkpoint and selection are stale/u);
   assert.match(architectWorkflow, /Create or update the resolved `architecture` artifact[\s\S]*Check for human selection evidence[\s\S]*materialize the awaiting-selection scaffolds[\s\S]*`Awaiting human selection`/u);
   assert.match(architectWorkflow, /review-feedback line `Selected option: <ID>`[\s\S]*current options revision/u);
+  assert.match(architectWorkflow, /`## Option <ID>: <name>`[\s\S]*captured human decision[\s\S]*do not ask for the same answer again/u);
   assert.match(architectWorkflow, /C4 `\.mmd` artifact[\s\S]*`README\.md`[\s\S]*not an ADR[\s\S]*Pending document/u);
   assert.match(architectWorkflow, /Every output selected by the active execution contract exists and is non-empty/u);
   assert.match(architectWorkflow, /explicit `Must` and `Do not` rules/u);
   assert.match(architectWorkflow, /fresh session or independent reviewer/u);
+  assert.match(architectWorkflow, /deferred_validations[\s\S]*Tester-owned Verification obligations/u);
   assert.doesNotMatch(architectWorkflow, /^---/u);
   assert.equal(existsSync(path.join(target, ".ai-sdlc/roles/architect/SKILL.md")), false);
   const architectAgent = await readFile(path.join(target, ".github/agents/architect.agent.md"), "utf8");
   assert.match(architectAgent, /## Architecture disposition contract[\s\S]*`skip`[\s\S]*`reuse`[\s\S]*`partial`[\s\S]*`full`/u);
+  assert.match(architectAgent, /deferred_validations[\s\S]*Verification obligation[\s\S]*not an open Design decision/iu);
+  assert.match(architectAgent, /`## Option <ID>: <name>`[\s\S]*ARCH-OBS-002[\s\S]*do not repeat/u);
   const architectRuleIndex = await readFile(
     path.join(target, ".ai-sdlc/roles/architect/references/architecture-rules.md"),
     "utf8"
@@ -203,6 +245,7 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assertCanonicalRulebookBlock(architectureDiscovery, "discovery");
   const architectureOptions = await readFile(path.join(target, ".ai-sdlc/templates/architecture-options.md"), "utf8");
   assert.match(architectureOptions, /## Rule Constraints[\s\S]*Rule fit or exceptions[\s\S]*Rule Conflict or Rejecting Constraint/u);
+  assert.match(architectureOptions, /exact machine-readable heading[\s\S]*## Option <ID>: <name>/u);
   assertCanonicalRulebookBlock(architectureOptions, "options");
   const architectureAdr = await readFile(path.join(target, ".ai-sdlc/templates/architecture-adr.md"), "utf8");
   assert.match(architectureAdr, /Related architecture rules:[\s\S]*Related scopes:[\s\S]*Rule effect:[\s\S]*does not silently waive/u);
@@ -235,19 +278,90 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assert.match(designerAgent, /Software Engineer[\s\S]*ready-for-engineering/u);
   assert.match(designerAgent, /## Design disposition contract[\s\S]*`skip`[\s\S]*`reuse`[\s\S]*`partial`[\s\S]*`full`/u);
   assert.match(designerAgent, /baseline is project-level|project-wide rules/u);
+  assert.match(designerAgent, /deferred_validations[\s\S]*Tester[\s\S]*Verification/u);
   const designerWorkflow = await readFile(path.join(target, ".ai-sdlc/roles/designer/workflow.md"), "utf8");
   assert.match(designerWorkflow, /Handoff to Software Engineer[\s\S]*ready-for-engineering/u);
   assert.match(designerWorkflow, /`skip`[\s\S]*`reuse`[\s\S]*`partial`[\s\S]*`full`/u);
   assert.match(designerWorkflow, /Downstream implementation consumes the active product, design, and architecture clearances/u);
+  assert.match(designerWorkflow, /Retry-loop guard[\s\S]*B-04[\s\S]*deferred_validations/u);
   assert.doesNotMatch(designerWorkflow, /^---/u);
   assert.equal(existsSync(path.join(target, ".ai-sdlc/roles/designer/SKILL.md")), false);
   const designSpecTemplate = await readFile(path.join(target, ".ai-sdlc/templates/design-spec.md"), "utf8");
   assert.match(designSpecTemplate, /"blockers": \[\][\s\S]*## Handoff to Software Engineer/u);
+  assert.match(designSpecTemplate, /"deferred_validations": \[\][\s\S]*### Deferred verification/u);
   assert.match(designSpecTemplate, /artifact:change-contract/u);
   const engineerAgent = await readFile(path.join(target, ".github/agents/software-engineer.agent.md"), "utf8");
-  assert.match(engineerAgent, /immutable Change Contract[\s\S]*Design `skip`[\s\S]*for `reuse`[\s\S]*all three gates/u);
+  assert.match(engineerAgent, /immutable `change-contract`[\s\S]*Product, Design, and Architecture/iu);
+  assert.match(engineerAgent, /current-Run clearance[\s\S]*`direct`, `skip`, and `reuse`/u);
+  // AC-ENG-001, AC-ENG-002, AC-ENG-011, AC-ENG-012: the canonical Agent is
+  // only the policy entry point; the project-native role pack owns procedure.
+  assert.match(engineerAgent, /config\.yaml[\s\S]*workflow\.md/u);
+  assert.match(engineerAgent, /architecture[\s-]sensitive|architecture decision/iu);
+  assert.match(engineerAgent, /## Human-owned decisions[\s\S]*Product scope/iu);
+  assert.match(engineerAgent, /security[\s-]sensitive/iu);
+  assert.match(engineerAgent, /DDL/iu);
+  assert.match(engineerAgent, /merge/iu);
+  assert.match(engineerAgent, /release/iu);
+
+  const engineerRoleRoot = path.join(target, ".ai-sdlc/roles/software-engineer");
+  assert.deepEqual(
+    (await readdir(engineerRoleRoot)).sort(),
+    ["config.yaml", "references", "workflow.md"]
+  );
+  assert.deepEqual(
+    (await readdir(path.join(engineerRoleRoot, "references"))).sort(),
+    [
+      "ci-enforcement.md",
+      "independent-verification.md",
+      "mini-cycle.md",
+      "provenance.md",
+      "replay-packet.md",
+      "seven-lens-review.md",
+      "spec-driven-development.md"
+    ]
+  );
+  assert.equal(existsSync(path.join(engineerRoleRoot, "SKILL.md")), false);
+  assert.equal(existsSync(path.join(target, ".github/skills/software-engineer/SKILL.md")), false);
+  assert.equal(existsSync(path.join(target, ".claude/skills/software-engineer/SKILL.md")), false);
+  assert.equal(existsSync(path.join(target, ".codex/skills/software-engineer/SKILL.md")), false);
+
+  const engineerConfig = await readFile(path.join(engineerRoleRoot, "config.yaml"), "utf8");
+  assert.match(engineerConfig, /role: "\.github\/agents\/software-engineer\.agent\.md"/u);
+  assert.match(engineerConfig, /output:\n  subdirectory: ai-native\/engineering/u);
+  assert.match(engineerConfig, /registered_artifacts:[\s\S]*implementation-plan[\s\S]*engineering-provenance/u);
+  assert.match(engineerConfig, /passing_isolation_tiers: \[A, B\][\s\S]*minimum_review_lenses: 7/u);
+
+  const engineerWorkflow = await readFile(path.join(engineerRoleRoot, "workflow.md"), "utf8");
+  assert.match(engineerWorkflow, /Change Contract[\s\S]*Product[\s\S]*Design[\s\S]*Architecture/iu);
+  assert.match(engineerWorkflow, /ADDED[\s\S]*MODIFIED[\s\S]*REMOVED[\s\S]*REMOVED audit[\s\S]*risk/iu);
+  assert.match(engineerWorkflow, /Tier A[\s\S]*Tier B[\s\S]*Tier C[\s\S]*Limited/u);
+  assert.match(engineerWorkflow, /seven[- ]lens[\s\S]*adversarial/iu);
+  assert.match(engineerWorkflow, /security-sensitive[\s\S]*human/iu);
+  assert.match(engineerWorkflow, /PR(?:-ready)? provenance/iu);
+  assert.doesNotMatch(engineerWorkflow, /^---/u);
+
+  for (const artifactKey of engineeringEvidenceKeys) {
+    const template = await readFile(
+      path.join(target, `.ai-sdlc/templates/${artifactKey}.md`),
+      "utf8"
+    );
+    assert.match(template, /\S/u, `${artifactKey} template should be non-empty`);
+  }
+  const replayTemplate = await readFile(
+    path.join(target, ".ai-sdlc/templates/engineering-replay-packet.md"),
+    "utf8"
+  );
+  assert.match(replayTemplate, /conditional|replay/iu);
+  assert.doesNotMatch(
+    config,
+    /id: engineering-replay-packet/u,
+    "the conditional replay packet is not a registered phase output"
+  );
   const testerAgent = await readFile(path.join(target, ".github/agents/tester.agent.md"), "utf8");
   assert.match(testerAgent, /change-contract[\s\S]*不会省略测试[\s\S]*目标回归结果/u);
+  assert.match(testerAgent, /implementation-notes[\s\S]*engineering-test-evidence[\s\S]*engineering-review/u);
+  assert.match(testerAgent, /design-spec[\s\S]*deferred_validations[\s\S]*test-report/u);
+  assert.match(config, /id: verification[\s\S]*inputs: \[change-contract, prd, user-stories, design-spec,/u);
   const implementationNotes = await readFile(
     path.join(target, ".ai-sdlc/templates/implementation-notes.md"),
     "utf8"
@@ -255,6 +369,7 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assert.match(implementationNotes, /## Contract and active clearances[\s\S]*Change Contract[\s\S]*## Impact-check deviations[\s\S]*Targeted regression obligations/u);
   const testReport = await readFile(path.join(target, ".ai-sdlc/templates/test-report.md"), "utf8");
   assert.match(testReport, /## Contract, scope, and environment[\s\S]*## Acceptance and regression results[\s\S]*pre-fix reproduction[\s\S]*## Coverage gaps/u);
+  assert.match(testReport, /## Deferred design verification[\s\S]*Obligation ID[\s\S]*blocked[\s\S]*untested/u);
   const componentQuery = await readFile(
     path.join(target, ".ai-sdlc/roles/designer/scripts/component-query.mjs"),
     "utf8"
@@ -294,6 +409,63 @@ export async function loadComponentCatalog() {
     specPath
   ], { cwd: target, encoding: "utf8" });
   assert.equal(validation.status, 0, validation.stdout + validation.stderr);
+
+  const deferredSpecPath = path.join(target, "deferred-design-spec.md");
+  const deferredContract = `{
+      "id": "B-04",
+      "owner": "tester",
+      "phase": "verification",
+      "prerequisite": "实现完成且页面可运行后执行浏览器验证",
+      "targets": ["320x568", "1280x800"],
+      "checks": ["keyboard", "focus"],
+      "pass_criteria": "关键操作无裁切且焦点顺序正确",
+      "evidence_required": "Playwright output and screenshot",
+      "evidence_types": ["browser-run", "screenshot"],
+      "on_fail": "block_verification",
+      "on_missing": "block_verification",
+      "status": "deferred",
+      "release_impact": "Missing or failed evidence blocks Verification approval"
+    }`;
+  await writeFile(
+    deferredSpecPath,
+    validSpec()
+      .replace('"deferred_validations": []', `"deferred_validations": [${deferredContract}]`)
+      .replace(
+        "### Deferred verification\n\n- None.",
+        "### Deferred verification\n\n- B-04 — after the runnable implementation; 320x568 and 1280x800; keyboard and focus; Playwright output and screenshot; missing or failed evidence blocks Verification."
+      ),
+    "utf8"
+  );
+  const deferredValidation = spawnSync(process.execPath, [
+    path.join(target, ".ai-sdlc/roles/designer/scripts/validate-spec.mjs"),
+    "--json",
+    deferredSpecPath
+  ], { cwd: target, encoding: "utf8" });
+  assert.equal(deferredValidation.status, 0, deferredValidation.stdout + deferredValidation.stderr);
+
+  const unsafeDeferredSpecPath = path.join(target, "unsafe-deferred-design-spec.md");
+  await writeFile(
+    unsafeDeferredSpecPath,
+    validSpec()
+      .replace(
+        '"deferred_validations": []',
+        `"deferred_validations": [${deferredContract
+          .replace('"targets": ["320x568", "1280x800"]', '"targets": ["???"]')
+          .replace('"on_fail": "block_verification"', '"on_fail": "allow_release"')}]`
+      )
+      .replace(
+        "### Deferred verification\n\n- None.",
+        "### Deferred verification\n\n- B-04 — invalid test fixture."
+      ),
+    "utf8"
+  );
+  const unsafeDeferredValidation = spawnSync(process.execPath, [
+    path.join(target, ".ai-sdlc/roles/designer/scripts/validate-spec.mjs"),
+    "--json",
+    unsafeDeferredSpecPath
+  ], { cwd: target, encoding: "utf8" });
+  assert.equal(unsafeDeferredValidation.status, 1, unsafeDeferredValidation.stderr);
+  assert.match(unsafeDeferredValidation.stdout, /non-empty targets|on_fail block_verification/u);
 
   const invalidSpecPath = path.join(target, "invalid-design-spec.md");
   await writeFile(invalidSpecPath, "```json\n{\"spec_version\":\"1.0\",\"screens\":{},\"components\":[null]}\n```\n", "utf8");
@@ -485,7 +657,8 @@ function validSpec() {
     "requirement": "A clear action",
     "design_response": "The main action is identifiable"
   }],
-  "blockers": []
+  "blockers": [],
+  "deferred_validations": []
 }
 \`\`\`
 
@@ -518,6 +691,10 @@ The design is ready for the Software Engineer. The required behavior is covered 
 ### Validation evidence
 
 - The configured project component matched and the SPEC validator passed.
+
+### Deferred verification
+
+- None.
 
 ### Open decisions and blockers
 

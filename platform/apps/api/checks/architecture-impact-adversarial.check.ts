@@ -224,6 +224,7 @@ test("inherited architecture selection stays bound to the current options clone 
     };
     const store = {
       getRun: async () => bundle,
+      currentArtifactSnapshotsForPhase: async () => currentArtifacts,
       getArtifact: async (id: string) => {
         const artifact = currentArtifacts.find((candidate) => candidate.id === id);
         assert.ok(artifact);

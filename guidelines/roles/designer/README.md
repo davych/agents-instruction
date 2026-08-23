@@ -70,7 +70,7 @@ The baseline records verified project-wide component and token sources, layout a
 
 ### Design spec
 
-The spec contains a machine-readable JSON contract plus concise Markdown. It records story and acceptance-criteria coverage, layouts, states, responsive behavior, accessibility, components, assets, content, validation evidence, assumptions, open questions, blockers, and the final engineering handoff.
+The spec contains a machine-readable JSON contract plus concise Markdown. It records story and acceptance-criteria coverage, layouts, states, responsive behavior, accessibility, components, assets, content, validation evidence, assumptions, open questions, blockers, post-implementation `deferred_validations`, and the final engineering handoff.
 
 ## Design Impact modes
 
@@ -127,7 +127,7 @@ flowchart TD
 8. **Write a task-scoped design** — Give every supplied Change Contract or story acceptance-criteria ID an observable design response.
 9. **Use Figma only when relevant** — Confirm the task, target, access, components, and viewports. Record real evidence and never invent a Figma change.
 10. **Validate the handoff** — Set final status and blockers, then run the included spec validator.
-11. **Hand off without inventing** — Use `ready-for-engineering` only when the selected spec is complete and blockers are empty.
+11. **Hand off without inventing** — Use `ready-for-engineering` only when the selected spec is complete and blockers are empty. A check that requires the runnable implementation goes into the Tester-owned `deferred_validations` ledger instead of causing a Designer retry loop.
 12. **Reassess changed impact** — Newly discovered UI behavior invalidates `skip`; a materially broader experience invalidates `partial`.
 
 ## Completion gate
@@ -155,7 +155,7 @@ The Software Engineer handoff must contain:
 - validation evidence;
 - remaining non-blocking risks.
 
-If a missing decision, behavior, component, asset, copy item, or validation result changes what must be built, Designer uses `blocked` and names the owner, impact, and next action.
+If a missing decision, behavior, component, asset, copy item, or validation result changes what must be built, Designer uses `blocked` and names the owner, impact, and next action. If the build contract and pass criteria are already explicit and only the final runnable environment is missing, Designer records a non-blocking deferred validation for Tester / Verification. Missing runtime evidence is then visible at Verification and does not send Design into a loop.
 
 ## Human-owned decisions and boundaries
 

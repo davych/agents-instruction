@@ -37,6 +37,7 @@ import type {
 } from "../src/db/store.ts";
 import { readArtifactContent } from "../src/services/artifact-workspace.ts";
 import { CodexTerminalRunner } from "../src/services/codex-runner.ts";
+import { engineeringEvidenceArtifactKeys } from "../src/services/engineering-evidence-validator.ts";
 import { loadDefinition } from "../src/services/definition-loader.ts";
 import { initializeCodexProject } from "../src/services/project-initializer.ts";
 import { ProjectPathPolicy } from "../src/services/project-paths.ts";
@@ -101,7 +102,7 @@ test("a Bug Change Contract can approve Product, skip Design and Architecture, t
     await fixture.service.waitForIdle();
     assert.equal(fixture.store.execution(execution.id).status, "completed");
     assert.deepEqual(execution.selectedArtifactIds, [contract.id]);
-    assert.deepEqual(execution.selectedOutputKeys, ["implementation-notes"]);
+    assert.deepEqual(execution.selectedOutputKeys, [...engineeringEvidenceArtifactKeys]);
     assert.equal(requiredPhase(bundle, "implementation").status, "awaiting_review");
   } finally {
     await fixture.dispose();
@@ -326,7 +327,16 @@ test("Design partial accepts a new optional revision-one output but still reject
     // the newly affected optional prototype.
     const inheritedSpec = requiredHead(bundle, "design", "design-spec");
     await fixture.service.createArtifactRevision(inheritedSpec.id, {
-      content: "# Revised design specification\n\nThe scoped correction behavior is now explicit.\n",
+      content: [
+        "# Revised design specification",
+        "",
+        "The scoped correction behavior is now explicit.",
+        "",
+        "```json",
+        '{"status":"ready-for-engineering","blockers":[],"open_questions":[],"deferred_validations":[]}',
+        "```",
+        "",
+      ].join("\n"),
       expectedContentHash: inheritedSpec.contentHash,
     });
     await assert.rejects(
@@ -459,6 +469,11 @@ class RoutingMemoryStore {
 
   setBaselines(phaseId: "discovery" | "design", baselines: PhaseBaselineRecord[]): void {
     this.baselines.set(phaseId, baselines);
+    for (const baseline of baselines) {
+      for (const artifact of baseline.artifacts) {
+        this.artifacts.set(artifact.id, artifact);
+      }
+    }
   }
 
   requiredBundle(): RunBundle {

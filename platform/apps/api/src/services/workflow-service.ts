@@ -11,6 +11,7 @@ import {
   type ArchitectureImpactDto,
   type AssessArchitectureImpactInput,
   type ChangeContractDto,
+  type CaptureHumanDecisionsInput,
   type CreateArtifactRevisionInput,
   type CreateProjectInput,
   type CreateRunInput,
@@ -19,6 +20,7 @@ import {
   type FigmaIntegrationStatusDto,
   type FigmaPlanCapabilitiesDto,
   type FigmaTarget,
+  type HumanDecisionPhaseId,
   type PhaseId,
   type PhaseBaselineDto,
   type PhaseResolutionDto,
@@ -31,11 +33,25 @@ import {
 import type {
   ApplyPhaseResolutionInput,
   ArchitectureBaselineRecord,
+  CurrentArtifactSnapshot,
   PhaseBaselineRecord,
   PgWorkflowStore,
   RunBundle,
 } from "../db/store.js";
 import { AppError } from "../domain/errors.js";
+import { deferredDesignValidationIds } from "../domain/design-deferred-validation.js";
+import { resolveEngineeringAcceptanceCriteria } from "../domain/engineering-acceptance-criteria.js";
+import {
+  assessPhaseHumanDecisionGate,
+  assertPhaseHumanDecisionGateReady,
+  humanDecisionSummary,
+  serializeHumanDecisionCapture,
+} from "../domain/human-decisions.js";
+import { assertImplementationReady } from "../domain/implementation-readiness.js";
+import {
+  findTesterE2eCrystallizationReview,
+  testerE2eCrystallizationRevisionFeedback,
+} from "../domain/tester-e2e-crystallization-feedback.js";
 import {
   CHANGE_CONTRACT_ARTIFACT_KEY,
   effectiveRequiredInputKeys,
@@ -48,6 +64,7 @@ import {
 import {
   pinExistingTaskArtifactPaths,
   resolveTaskArtifactPaths,
+  TASK_SCOPED_ARTIFACT_KEYS,
 } from "../domain/task-artifact-paths.js";
 import { parseUserStoryTickets } from "../domain/user-story-tickets.js";
 import {
@@ -80,10 +97,16 @@ import {
   architectureRulebookValidationRequired,
   validateArchitectureRulebookReview,
 } from "./architecture-rulebook-runtime.js";
+import { validateDeferredDesignVerificationGate } from "./deferred-design-verification-validator.js";
+import {
+  engineeringEvidenceRepairFeedback,
+  validateEngineeringEvidencePack,
+} from "./engineering-evidence-validator.js";
 import { loadDefinition, type LoadedDefinition } from "./definition-loader.js";
 import type { FigmaMcpIntegration } from "./figma-mcp-integration.js";
 import { initializeCodexProject } from "./project-initializer.js";
 import { ProjectPathPolicy } from "./project-paths.js";
+import { validateVerificationEvidenceProvenance } from "./verification-evidence-provenance.js";
 
 export class WorkflowService {
   private readonly tasks = new Set<Promise<void>>();
@@ -171,7 +194,14 @@ export class WorkflowService {
     const changeContractArtifact = resolved.artifacts.find(
       (artifact) => artifact.id === CHANGE_CONTRACT_ARTIFACT_KEY,
     );
-    const artifactPaths: Record<string, string> = { "design-spec": designSpec.relativePath };
+    const artifactPaths: Record<string, string> = Object.fromEntries(
+      resolved.artifacts
+        .filter((artifact) =>
+          TASK_SCOPED_ARTIFACT_KEYS.has(artifact.id)
+          && artifact.id !== CHANGE_CONTRACT_ARTIFACT_KEY
+        )
+        .map((artifact) => [artifact.id, artifact.relativePath]),
+    );
     let materializedChangeContractPath: string | undefined;
     try {
       let persistedChangeContractArtifact;
@@ -239,6 +269,89 @@ export class WorkflowService {
       designBaseline,
       architectureBaseline,
     };
+  }
+
+  async getHumanDecisions(runId: string) {
+    const bundle = await this.store.getRun(runId);
+    await this.assertProjectPath(bundle.project.rootPath);
+    const phaseIds: HumanDecisionPhaseId[] = ["discovery", "design", "architecture"];
+    const gates = await Promise.all(phaseIds.map(async (phaseId) => {
+      const phase = bundle.phases.find((candidate) => candidate.phaseId === phaseId);
+      if (!phase) throw new AppError("阶段运行不存在", 404, "PHASE_NOT_FOUND");
+      const artifacts = phase.artifacts.length > 0
+        ? await this.store.currentArtifactSnapshotsForPhase(runId, phaseId)
+        : [];
+      const requiredDeferredValidationIds = phaseId === "design"
+        ? await this.priorDeferredDesignValidationIds(
+          artifacts.find(({ artifactKey }) => artifactKey === "design-spec"),
+        )
+        : [];
+      return assessPhaseHumanDecisionGate({
+        phaseId,
+        phaseStatus: phase.status,
+        artifacts,
+        reviews: phase.reviews,
+        requiredDeferredValidationIds,
+      });
+    }));
+    return humanDecisionSummary(gates);
+  }
+
+  async captureHumanDecisions(
+    runId: string,
+    phaseId: HumanDecisionPhaseId,
+    input: CaptureHumanDecisionsInput,
+  ) {
+    const initial = await this.store.getRun(runId);
+    await this.assertProjectPath(initial.project.rootPath);
+    const releaseWorkspace = this.acquireWorkspaceMutation(initial.project.rootPath);
+    try {
+      const current = await this.store.getRun(runId);
+      const phase = current.phases.find((candidate) => candidate.phaseId === phaseId);
+      if (!phase) throw new AppError("阶段运行不存在", 404, "PHASE_NOT_FOUND");
+      if (!["ready", "awaiting_review", "approved", "changes_requested"].includes(phase.status)) {
+        throw new AppError(
+          `当前阶段状态 ${phase.status} 不能记录人工决定`,
+          409,
+          "HUMAN_DECISION_CAPTURE_NOT_ALLOWED",
+        );
+      }
+      const artifacts = await this.store.currentArtifactSnapshotsForPhase(runId, phaseId);
+      const gate = assessPhaseHumanDecisionGate({
+        phaseId,
+        phaseStatus: phase.status,
+        artifacts,
+        reviews: phase.reviews,
+      });
+      const actionableIds = new Set(gate.items
+        .filter((item) => item.blocking && item.actionPhaseId === phaseId)
+        .map(({ id }) => id));
+      const invalidIds = input.responses
+        .map(({ id }) => id)
+        .filter((id) => !actionableIds.has(id));
+      if (invalidIds.length > 0) {
+        throw new AppError(
+          `人工决定已变化或不属于当前角色：${invalidIds.join(", ")}`,
+          409,
+          "HUMAN_DECISION_STALE",
+          { invalidIds, actionableIds: [...actionableIds] },
+        );
+      }
+      const review = await this.store.reviewPhase(
+        runId,
+        phaseId,
+        "request_changes",
+        serializeHumanDecisionCapture({ phaseId, responses: input.responses }),
+        input.expectedArtifactIds,
+        [],
+        undefined,
+        ["ready", "awaiting_review", "approved", "changes_requested"],
+      );
+      const detail = await this.getRun(runId);
+      return { review, run: detail.run, phases: detail.phases };
+    } finally {
+      releaseWorkspace();
+    }
   }
 
   async assessArchitectureImpact(runId: string, input: AssessArchitectureImpactInput) {
@@ -818,6 +931,12 @@ export class WorkflowService {
     // physical workspace for all routes, including Full→Full chains, before
     // Codex can consume it.
     await this.validateArtifactWorkspaceSnapshots(bundle.project.rootPath, selected);
+    if (phaseId === "implementation") {
+      assertImplementationReady({
+        changeContractCriteria: bundle.run.changeContract?.acceptanceCriteria,
+        selectedArtifacts: selected,
+      });
+    }
     if (adoptedArchitecture && phasePosition(phaseId) > phasePosition("architecture")) {
       await this.validateCurrentArchitectureWorkspace(bundle.project.rootPath, runId);
     }
@@ -825,6 +944,39 @@ export class WorkflowService {
       await this.validateCurrentArchitectureWorkspace(bundle.project.rootPath, runId);
     }
     const currentArtifacts = await this.store.currentArtifactSnapshotsForPhase(runId, phaseId);
+    const verificationPhase = bundle.phases.find((phase) => phase.phaseId === "verification");
+    const testerCrystallizationReview = phaseId === "implementation"
+      && verificationPhase?.status === "changes_requested"
+      ? findTesterE2eCrystallizationReview(
+          verificationPhase.reviews,
+          bundle.run.changeContract,
+        )
+      : undefined;
+    const testerCrystallizationFeedback = testerCrystallizationReview
+      ? testerE2eCrystallizationRevisionFeedback({
+          review: testerCrystallizationReview,
+          artifacts: await this.store.currentArtifactSnapshotsForPhase(runId, "verification"),
+          changeContract: bundle.run.changeContract,
+        })
+      : undefined;
+    const engineeringRepairFeedback = phaseId === "implementation" && currentArtifacts.length > 0
+      ? engineeringEvidenceRepairFeedback({
+          artifacts: currentArtifacts,
+          acceptanceCriteria: resolveEngineeringAcceptanceCriteria({
+            changeContractCriteria: bundle.run.changeContract?.acceptanceCriteria,
+            selectedArtifacts: selected,
+          }),
+          selectedArtifactKeys: selectedOutputKeys,
+        })
+      : undefined;
+    const revisionFeedback = [
+      ...(testerCrystallizationFeedback ? [testerCrystallizationFeedback] : []),
+      ...(engineeringRepairFeedback ? [engineeringRepairFeedback] : []),
+      ...currentPhase.reviews
+        .filter((review) => review.decision === "request_changes")
+        .slice(0, 5)
+        .map((review) => review.comment),
+    ];
     const execution = await this.store.createExecution(
       runId,
       phaseId,
@@ -844,10 +996,7 @@ export class WorkflowService {
       definition,
       selectedArtifacts: selected,
       currentArtifacts,
-      revisionFeedback: currentPhase.reviews
-        .filter((review) => review.decision === "request_changes")
-        .slice(0, 5)
-        .map((review) => review.comment),
+      revisionFeedback,
       selectedOutputKeys,
       requireEverySelectedOutputUpdated: Boolean(architectureSelection || partialResolution),
       architectureSelection,
@@ -882,6 +1031,24 @@ export class WorkflowService {
     if (!phaseDefinition) throw new AppError("阶段不在工作流定义中", 404, "PHASE_NOT_FOUND");
     const currentPhase = current.phases.find((phase) => phase.phaseId === phaseId);
     if (!currentPhase) throw new AppError("阶段运行不存在", 404, "PHASE_NOT_FOUND");
+    if (
+      input.decision === "approve"
+      && (phaseId === "discovery" || phaseId === "design" || phaseId === "architecture")
+    ) {
+      const decisionArtifacts = await this.store.currentArtifactSnapshotsForPhase(runId, phaseId);
+      const requiredDeferredValidationIds = phaseId === "design"
+        ? await this.priorDeferredDesignValidationIds(
+          decisionArtifacts.find(({ artifactKey }) => artifactKey === "design-spec"),
+        )
+        : [];
+      assertPhaseHumanDecisionGateReady(assessPhaseHumanDecisionGate({
+        phaseId,
+        phaseStatus: currentPhase.status,
+        artifacts: decisionArtifacts,
+        reviews: currentPhase.reviews,
+        requiredDeferredValidationIds,
+      }));
+    }
     const adoptedArchitecture = current.phases.find(
       (phase) => phase.phaseId === "architecture" && phase.architectureImpact,
     );
@@ -895,15 +1062,17 @@ export class WorkflowService {
     const latestCompletedExecution = currentPhase.executions.find(
       (execution) => execution.status === "completed",
     );
-    if (
-      hasPriorRoutedPhase
+    const needsExecutionInputs = hasPriorRoutedPhase
+      || (phaseId === "implementation" && input.decision === "approve");
+    const executionInputs = needsExecutionInputs
       && latestCompletedExecution?.selectedArtifactIds.length
       && typeof this.store.selectionArtifacts === "function"
-    ) {
-      const executionInputs = await this.store.selectionArtifacts(
+      ? await this.store.selectionArtifacts(
         runId,
         latestCompletedExecution.selectedArtifactIds,
-      );
+      )
+      : [];
+    if (hasPriorRoutedPhase && executionInputs.length > 0) {
       await this.validateArtifactWorkspaceSnapshots(
         current.project.rootPath,
         executionInputs,
@@ -993,6 +1162,38 @@ export class WorkflowService {
             after: architectureSelection.selectedAt,
           }
       : undefined;
+    if (phaseId === "implementation" && input.decision === "approve") {
+      const engineeringArtifacts = await this.store.currentArtifactSnapshotsForPhase(
+        runId,
+        "implementation",
+      );
+      validateEngineeringEvidencePack({
+        artifacts: engineeringArtifacts,
+        acceptanceCriteria: resolveEngineeringAcceptanceCriteria({
+          changeContractCriteria: current.run.changeContract?.acceptanceCriteria,
+          selectedArtifacts: executionInputs,
+        }),
+        reviewComment: input.comment,
+      });
+    }
+    if (phaseId === "verification" && input.decision === "approve") {
+      const [designArtifacts, verificationArtifacts] = await Promise.all([
+        this.store.currentArtifactSnapshotsForPhase(runId, "design"),
+        this.store.currentArtifactSnapshotsForPhase(runId, "verification"),
+      ]);
+      validateDeferredDesignVerificationGate({
+        designArtifacts,
+        verificationArtifacts,
+      });
+      await validateVerificationEvidenceProvenance({
+        projectRoot: current.project.rootPath,
+        artifacts: verificationArtifacts,
+        phase: currentPhase,
+        acceptanceCriteria: current.run.changeContract?.acceptanceCriteria,
+        regressionScope: current.run.changeContract?.regressionScope,
+        riskFlags: current.run.changeContract?.riskFlags,
+      });
+    }
     const review = await this.store.reviewPhase(
       runId,
       phaseId,
@@ -1011,6 +1212,36 @@ export class WorkflowService {
 
   async getArtifact(artifactId: string) {
     return this.store.getArtifact(artifactId);
+  }
+
+  private async priorDeferredDesignValidationIds(
+    head: CurrentArtifactSnapshot | undefined,
+  ): Promise<string[]> {
+    if (!head?.parentArtifactId) return [];
+    const ids = new Set<string>();
+    const visited = new Set<string>();
+    let parentId: string | null = head.parentArtifactId;
+    for (let depth = 0; parentId && depth < 100; depth += 1) {
+      if (visited.has(parentId)) {
+        throw new AppError(
+          "design-spec 修订链包含循环，无法确认延期验证义务",
+          409,
+          "DESIGN_ARTIFACT_LINEAGE_INVALID",
+        );
+      }
+      visited.add(parentId);
+      const parent = await this.store.getArtifact(parentId);
+      for (const id of deferredDesignValidationIds(parent.content ?? "")) ids.add(id);
+      parentId = parent.parentArtifactId;
+    }
+    if (parentId) {
+      throw new AppError(
+        "design-spec 修订链超过安全上限，无法确认延期验证义务",
+        409,
+        "DESIGN_ARTIFACT_LINEAGE_INVALID",
+      );
+    }
+    return [...ids];
   }
 
   async createArtifactRevision(artifactId: string, input: CreateArtifactRevisionInput) {
@@ -1697,7 +1928,7 @@ function taskDefinition(bundle: RunBundle, definition: LoadedDefinition): Loaded
           outputs: phase.outputs.filter((key) => key !== CHANGE_CONTRACT_ARTIFACT_KEY),
         })),
       };
-  const persistedTaskArtifacts = [CHANGE_CONTRACT_ARTIFACT_KEY, "design-spec"]
+  const persistedTaskArtifacts = [...TASK_SCOPED_ARTIFACT_KEYS]
     .flatMap((artifactKey) => {
       const filePath = bundle.artifactPaths[artifactKey];
       return filePath ? [{ artifactKey, filePath }] : [];
@@ -1706,7 +1937,10 @@ function taskDefinition(bundle: RunBundle, definition: LoadedDefinition): Loaded
   return pinExistingTaskArtifactPaths(
     resolveTaskArtifactPaths(compatibleDefinition, bundle.run),
     bundle.project.rootPath,
-    persistedTaskArtifacts.length > 0 ? persistedTaskArtifacts : existingHeads,
+    [
+      ...existingHeads.filter((artifact) => TASK_SCOPED_ARTIFACT_KEYS.has(artifact.artifactKey)),
+      ...persistedTaskArtifacts,
+    ],
   );
 }
 

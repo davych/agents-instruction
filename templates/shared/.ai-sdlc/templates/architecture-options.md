@@ -22,6 +22,8 @@
 |-----------|--------|------------------------|
 | {criterion} | {%} | {source or assumption} |
 
+Use the exact machine-readable heading `## Option <ID>: <name>` below. Keep the heading at H2 and use a colon after the stable ID; do not replace it with `###`, an em dash, or a translated free-form label.
+
 ## Option A: {name}
 
 **Core idea**

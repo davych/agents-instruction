@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { existsSync, type Dirent } from "node:fs";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -22,11 +22,22 @@ import {
   readArtifactContent,
   withArtifactPathsRollbackOnError,
   withProtectedArtifactPaths,
+  type ProtectedArtifactPath,
 } from "./artifact-workspace.js";
 import { loadArchitectureRulebookContext } from "./architecture-rulebook-runtime.js";
 import { calculateArchitectureRulebookDigest } from "./architecture-rulebook-validator.js";
 import type { LoadedDefinition } from "./definition-loader.js";
+import {
+  captureVerificationGitState,
+  type VerificationGitState,
+} from "./verification-git-state.js";
 import { isWithin } from "./project-paths.js";
+import {
+  VERIFICATION_RUNTIME_EVIDENCE_PATHS,
+  VERIFICATION_SNAPSHOT_EXCLUDED_DIRECTORY_NAMES,
+  VERIFICATION_SNAPSHOT_EXCLUDED_RELATIVE_DIRECTORIES,
+  withVerificationWorkspaceProtected,
+} from "./verification-workspace.js";
 
 export interface CodexRunRequest {
   executionId: string;
@@ -44,6 +55,8 @@ export interface CodexRunRequest {
   model: string | null;
   reasoningEffort: CodexReasoningEffort | null;
   figmaTarget?: ResolvedFigmaTarget;
+  workspaceRevisionToken?: string;
+  verificationGitState?: VerificationGitState;
 }
 
 export type ResolvedFigmaTarget =
@@ -92,6 +105,72 @@ interface ResolvedFigmaWriteEvidence {
 }
 
 const FIGMA_APP_CONNECTOR_ID = "connector_68df038e0ba48191908c8434991bbac2";
+
+async function listRootEnvironmentPaths(projectRoot: string): Promise<string[]> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(projectRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  return entries
+    .map((entry) => entry.name)
+    .filter(isProtectedEnvironmentName)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function isProtectedEnvironmentName(name: string): boolean {
+  if (name === ".env") return true;
+  if (!name.startsWith(".env.")) return false;
+  return !/^\.env\.(?:example|sample|template)(?:\.|$)/iu.test(name);
+}
+
+async function withRootEnvironmentTopologyProtected<T>(
+  projectRoot: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const before = new Set(await listRootEnvironmentPaths(projectRoot));
+  let result: T | undefined;
+  let operationError: unknown;
+  try {
+    result = await operation();
+  } catch (error) {
+    operationError = error;
+  }
+
+  const after = new Set(await listRootEnvironmentPaths(projectRoot));
+  const added = [...after].filter((name) => !before.has(name));
+  const removed = [...before].filter((name) => !after.has(name));
+  let cleanupError: unknown;
+  await assertRuntimePath(projectRoot, projectRoot);
+  for (const name of added) {
+    const target = path.join(projectRoot, name);
+    try {
+      await rm(target, { recursive: true, force: true });
+    } catch (error) {
+      cleanupError ??= error;
+    }
+  }
+  if (cleanupError) {
+    throw new AppError(
+      "执行创建了未授权的环境文件，且平台无法完整还原工作区",
+      500,
+      "UNSELECTED_OUTPUTS_RESTORE_FAILED",
+      { added, removed, cause: cleanupError instanceof Error ? cleanupError.message : String(cleanupError) },
+    );
+  }
+  if (operationError) throw operationError;
+  if (added.length > 0 || removed.length > 0) {
+    throw new AppError(
+      `执行修改了受保护的环境文件集合，平台已还原：${[...added, ...removed].join(", ")}`,
+      422,
+      "UNSELECTED_OUTPUTS_CHANGED",
+      { added, removed, restored: true },
+    );
+  }
+  return result as T;
+}
 
 export class CodexTerminalRunner {
   private readonly binary: string;
@@ -142,7 +221,7 @@ export class CodexTerminalRunner {
     }
     const selected = new Set(outputKeys(request));
     assertNonOverlappingOutputPaths(request.definition.artifacts);
-    const protectedArtifacts = request.definition.artifacts
+    let protectedArtifacts: ProtectedArtifactPath[] = request.definition.artifacts
       .filter((artifact) => !selected.has(artifact.id))
       .map((artifact) => ({ id: artifact.id, absolutePath: artifact.absolutePath }));
     if (request.phase.id === "architecture") {
@@ -160,19 +239,88 @@ export class CodexTerminalRunner {
         },
       );
     }
+    if (request.phase.id === "implementation") {
+      const rolePacksRoot = path.join(request.project.rootPath, ".ai-sdlc", "roles");
+      const selectedAgentPath = path.join(
+        request.project.rootPath,
+        resolveRoleFile(request.project.rootPath, request.definition, request.phase.owner),
+      );
+      const clientAgentsRoot = path.dirname(selectedAgentPath);
+      const projectControlPaths = [
+        "ai-native.yaml",
+        "AGENTS.md",
+        "CLAUDE.md",
+        ...await listRootEnvironmentPaths(request.project.rootPath),
+      ];
+      const protectedResourceMaxBytes = Math.max(this.maxArtifactBytes, 64 * 1024 * 1024);
+      protectedArtifacts.push(
+        {
+          id: "client-native-agents",
+          absolutePath: clientAgentsRoot,
+          maxBytes: protectedResourceMaxBytes,
+        },
+        {
+          id: "role-packs",
+          absolutePath: rolePacksRoot,
+          maxBytes: protectedResourceMaxBytes,
+        },
+        {
+          id: "workflow-definitions",
+          absolutePath: path.join(request.project.rootPath, ".ai-sdlc", "workflows"),
+          maxBytes: protectedResourceMaxBytes,
+        },
+        {
+          id: "software-engineer-evidence-templates",
+          absolutePath: path.join(request.project.rootPath, ".ai-sdlc", "templates"),
+          maxBytes: protectedResourceMaxBytes,
+        },
+        ...projectControlPaths.map((relativePath) => ({
+          id: `software-engineer-control-${relativePath}`,
+          absolutePath: path.join(request.project.rootPath, relativePath),
+          maxBytes: protectedResourceMaxBytes,
+        })),
+      );
+    }
     const selectedArtifacts = request.definition.artifacts
       .filter((artifact) => selected.has(artifact.id))
       .map((artifact) => ({ id: artifact.id, absolutePath: artifact.absolutePath }));
+    const execute = (effectiveRequest: CodexRunRequest) => withProtectedArtifactPaths(
+      request.project.rootPath,
+      protectedArtifacts,
+      this.maxArtifactBytes,
+      () => ["implementation", "verification"].includes(request.phase.id)
+        ? withRootEnvironmentTopologyProtected(
+          request.project.rootPath,
+          () => this.runUnprotected(effectiveRequest, onEvent),
+        )
+        : this.runUnprotected(effectiveRequest, onEvent),
+    );
+    const executeVerification = async () => {
+      const verificationGitState = await captureVerificationGitState(request.project.rootPath);
+      const protectedGitMetadataPaths = verificationGitState.kind === "not_repository"
+        ? []
+        : [verificationGitState.gitDirectory, verificationGitState.gitCommonDirectory];
+      return withVerificationWorkspaceProtected(
+        {
+          projectRoot: request.project.rootPath,
+          selectedOutputPaths: selectedArtifacts.map((artifact) => artifact.absolutePath),
+          protectedGitMetadataPaths,
+          maxBytes: Math.max(this.maxArtifactBytes, 512 * 1024 * 1024),
+        },
+        async (revision) => execute({
+          ...request,
+          workspaceRevisionToken: revision.token,
+          verificationGitState,
+        }),
+      );
+    };
     return withArtifactPathsRollbackOnError(
       request.project.rootPath,
       selectedArtifacts,
       this.maxArtifactBytes,
-      () => withProtectedArtifactPaths(
-        request.project.rootPath,
-        protectedArtifacts,
-        this.maxArtifactBytes,
-        () => this.runUnprotected(request, onEvent),
-      ),
+      () => request.phase.id === "verification"
+        ? executeVerification()
+        : execute(request),
     );
   }
 
@@ -188,7 +336,9 @@ export class CodexTerminalRunner {
         phaseId: request.phase.id,
         selectedOutputKeys: outputKeys(request),
         model: null,
-        reasoningEffort: null
+        reasoningEffort: null,
+        workspaceRevisionToken: request.workspaceRevisionToken ?? null,
+        verificationGitState: request.verificationGitState ?? null,
       });
       await this.createFakeOutputs(request);
       const artifacts = await this.collectArtifacts(request);
@@ -222,13 +372,15 @@ export class CodexTerminalRunner {
       selectedOutputKeys: outputKeys(request),
       model: request.model,
       reasoningEffort: request.reasoningEffort,
-      figmaTargetMode: request.figmaTarget?.mode ?? null
+      figmaTargetMode: request.figmaTarget?.mode ?? null,
+      workspaceRevisionToken: request.workspaceRevisionToken ?? null,
+      verificationGitState: request.verificationGitState ?? null,
     });
 
     const child = spawn(this.binary, args, {
       cwd: request.project.rootPath,
       stdio: ["pipe", "pipe", "pipe"],
-      env: codexEnvironment(process.env)
+      env: codexEnvironment(process.env, request.phase.id === "verification")
     });
     child.stdin.end(prompt);
     const stderr: Buffer[] = [];
@@ -366,7 +518,25 @@ export class CodexTerminalRunner {
       await mkdir(path.dirname(target), { recursive: true });
       await assertRuntimePath(request.project.rootPath, target);
       const architectureContent = fakeArchitectureArtifactContent(artifact.id, request, rulebookDigest);
+      const engineeringContent = fakeEngineeringArtifactContent(artifact.id, request);
       const architectureSelectionMarker = fakeArchitectureSelectionMarker(artifact.id, request);
+      const designSpecContent = artifact.id === "design-spec"
+        ? [
+            "# Design specification",
+            "",
+            "```json",
+            JSON.stringify({
+              status: "ready-for-engineering",
+              blockers: [],
+              open_questions: [],
+              deferred_validations: [],
+            }, null, 2),
+            "```",
+            "",
+            `Deterministic fake artifact for ${request.run.title}.`,
+            "",
+          ].join("\n")
+        : null;
       const content = artifact.id === "design-prototype"
         ? [
             "<!doctype html>",
@@ -379,7 +549,7 @@ export class CodexTerminalRunner {
             "</html>",
             ""
           ].join("\n")
-        : architectureContent ?? [
+        : architectureContent ?? engineeringContent ?? designSpecContent ?? [
             ...(architectureSelectionMarker ? [architectureSelectionMarker, ""] : []),
             `# ${artifact.id}`,
             "",
@@ -451,6 +621,154 @@ export class CodexTerminalRunner {
     return hashes;
   }
 
+}
+
+function fakeEngineeringArtifactContent(
+  artifactId: string,
+  request: CodexRunRequest,
+): string | undefined {
+  if (request.phase.id !== "implementation") return undefined;
+  const acceptanceIds = (request.run.changeContract?.acceptanceCriteria ?? [request.run.objective])
+    .map((_, index) => `CC-AC-${String(index + 1).padStart(3, "0")}`);
+  const coverage = acceptanceIds.map((id) => `- ${id}: blocked; fake runner produced no code or test evidence.`);
+  const header = [
+    `- Run: ${request.run.id}`,
+    `- Execution: ${request.executionId}`,
+    "- Simulation: AI_SDLC_CODEX_FAKE=1",
+  ];
+
+  const documents: Record<string, string[]> = {
+    "implementation-notes": [
+      "# Implementation Notes",
+      "## Status",
+      "Status: Blocked",
+      "Fake mode did not implement or verify repository code.",
+      "## Evidence index",
+      "- implementation-plan",
+      "- implementation-tasks",
+      "- engineering-session-log",
+      "- engineering-test-evidence",
+      "- engineering-review",
+      "- engineering-provenance",
+      "## Contract and active clearances",
+      ...header,
+      "## Implemented scope",
+      "None; this is a deterministic UI simulation.",
+      "## Changes",
+      "No production or test files were changed.",
+      "## Impact-check deviations",
+      "None observed because implementation did not run.",
+      "## Verification, regression, and risks",
+      "Required checks and independent tests were not run; approval must remain blocked.",
+      "## Handoff",
+      "Run the implementation phase with the real Codex runner.",
+    ],
+    "implementation-plan": [
+      "# Engineering Implementation Plan",
+      ...header,
+      "## Change classification",
+      "Unclassified in fake mode.",
+      "## Preserved behaviour",
+      "Not assessed in fake mode.",
+      "## ADDED",
+      "None implemented.",
+      "## MODIFIED",
+      "None implemented.",
+      "## REMOVED",
+      "None implemented.",
+      "## REMOVED audit",
+      "No source mutation was attempted by the fake runner.",
+      "## Risk note",
+      "No implementation evidence exists.",
+      "## Acceptance coverage plan",
+      ...coverage,
+    ],
+    "implementation-tasks": [
+      "# Engineering Implementation Tasks",
+      ...header,
+      "## Task ledger",
+      "- ENG-TASK-001: blocked; rerun with real Codex.",
+      "## Acceptance coverage",
+      ...coverage,
+    ],
+    "engineering-session-log": [
+      "# Engineering Session Log",
+      "## Task contract",
+      ...header,
+      "## Context loaded",
+      "Only the deterministic fake request envelope was used.",
+      "## Ordered action log",
+      "1. Materialized honest blocked evidence for the UI simulation.",
+      "## Change inventory",
+      "ADDED: evidence-only fake documents. MODIFIED: none. REMOVED: none.",
+      "## Rejected alternatives",
+      "Claiming implementation or test success was rejected because no model or commands ran.",
+      "## Verification gates",
+      "Blocked: implementation, tests, checks, and review independence are unverified.",
+      "## Outcome",
+      "Blocked pending a real Codex execution.",
+    ],
+    "engineering-test-evidence": [
+      "# Independent Test Evidence",
+      ...header,
+      "## Isolation",
+      "Isolation tier: Tier Limited",
+      "No independent authoring session ran in fake mode.",
+      "## Acceptance coverage",
+      ...coverage,
+      "## Commands and results",
+      "None run.",
+      "## Failure classification",
+      "spec ambiguity: none assessed; implementation bug/test bug: not evaluated.",
+    ],
+    "engineering-review": [
+      "# Engineering Review",
+      ...header,
+      ...[
+        "Behaviour preservation",
+        "Hidden assumptions",
+        "Spec/architecture drift",
+        "Confirmation without evidence",
+        "Test independence",
+        "Security surface",
+        "Over-engineering",
+      ].flatMap((heading) => [
+        `## ${heading}`,
+        heading === "Security surface"
+          ? "Findings: none found; source code was not changed."
+          : "Finding: fake mode cannot review a real implementation.",
+      ]),
+      "## Adversarial pass",
+      "Finding: pre-mortem and edge-case-hunter require a real implementation.",
+    ],
+    "engineering-provenance": [
+      "# Engineering Provenance",
+      ...header,
+      "## Tool/model",
+      "Fake runner; no model invoked.",
+      "## Context loaded",
+      "Deterministic request envelope only.",
+      "## Verification gates",
+      "Blocked: no implementation or verification ran.",
+      "## Human decisions",
+      "None recorded.",
+      "## Known limitations",
+      "No code, tests, commands, or independent review.",
+      "## Session duration",
+      "Deterministic simulation; no model session ran.",
+      "## SDD approach",
+      "Not executed.",
+      "## Evidence links",
+      "- Spec: change-contract in the request envelope",
+      "- Session log: engineering-session-log",
+      "- Tests: engineering-test-evidence",
+      "- Review: engineering-review",
+      "## Publication boundary",
+      "PR publication: not performed.",
+    ],
+  };
+  const lines = documents[artifactId];
+  return lines ? [...lines, ""].join("\n") : undefined;
 }
 
 function fakeArchitectureArtifactContent(
@@ -774,7 +1092,16 @@ function sanitizeCodexEvent(event: unknown): Record<string, unknown> {
     if (typeof event.item.text === "string") {
       item.textBytes = Buffer.byteLength(event.item.text);
     }
-    if (event.item.command !== undefined) item.commandRedacted = true;
+    if (event.item.command !== undefined) {
+      item.commandRedacted = true;
+      if (typeof event.item.command === "string" && event.item.command.trim()) {
+        // Persist a one-way binding for approval-time verification without
+        // retaining command text that may contain credentials or private data.
+        item.commandHash = createHash("sha256")
+          .update(event.item.command.trim())
+          .digest("hex");
+      }
+    }
     if (event.item.arguments !== undefined) item.argumentsRedacted = true;
     if (event.item.result !== undefined) item.resultRedacted = true;
     if (event.item.error != null) item.hasError = true;
@@ -787,6 +1114,12 @@ function sanitizeCodexEvent(event: unknown): Record<string, unknown> {
 function safeEventIdentifier(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length === 0 || value.length > 160) return undefined;
   return /^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/u.test(value) ? value : undefined;
+}
+
+function verificationGitReportBinding(state: VerificationGitState): string {
+  if (state.kind === "head") return `git HEAD ${state.head}`;
+  if (state.kind === "unborn") return `git unborn ${state.symbolicHead}`;
+  return "git state:not-repository";
 }
 
 function codexOutputLimitError(
@@ -1295,6 +1628,26 @@ export function buildTaskEnvelope(request: CodexRunRequest): string {
   const revisionFeedback = (request.revisionFeedback ?? []).length === 0
     ? "- 无"
     : (request.revisionFeedback ?? []).map((comment) => `- ${comment}`).join("\n").slice(0, 20_000);
+  const verificationGitBinding = request.verificationGitState
+    ? verificationGitReportBinding(request.verificationGitState)
+    : "unavailable-in-envelope-preview";
+  const verificationWorkspaceContract = request.phase.id === "verification"
+    ? [
+        "## Verification 工作区 revision",
+        "",
+        `- workspaceRevisionToken: ${request.workspaceRevisionToken ?? "unavailable-in-envelope-preview"}`,
+        `- platformExecutionId: ${request.executionId}`,
+        `- verificationGitState: ${JSON.stringify(request.verificationGitState ?? null)}`,
+        "- 真实执行时，test-report 必须原样记录 `workspace sha256:<workspaceRevisionToken>; platform execution <platformExecutionId>`；该 token 与平台变更防护使用同一份执行前全工作区快照。",
+        `- Current revision 还必须原样记录平台预先捕获的 Git 绑定：\`${verificationGitBinding}\`。不得在执行后自行把失败的 Git 查询解释成非 Git；平台会把当前 Git 状态与这份执行前状态逐字段匹配。`,
+        `- 业务上唯一允许保留的写入：selected output，以及项目根目录下 ${VERIFICATION_RUNTIME_EVIDENCE_PATHS.join(", ")}。selected output 必须是独立的 .md 报告文件，不得与 Git 元数据、项目控制、Agent/角色目录、环境文件、运行证据目录或快照排除目录重叠。`,
+        "- 受支持 Git 仓库的 canonical top-level、git-dir 与 common-dir 必须全部落在已注册 project root 内；项目根 `.git` 目录属于受保护控制状态，不得删除、改写 HEAD/config/index/refs/hooks/logs。外部元数据 linked worktree（即使 pointer 文件本身受快照保护）和嵌套于父仓库的 project root 会在 runner 启动前 fail closed。Verification 的只读 Git 查询使用 `GIT_OPTIONAL_LOCKS=0`，不得借 Git discovery 刷新索引。",
+        `- 为避免复制依赖、缓存和构建产物，防护快照不会读取这些目录名（任意深度、精确且区分大小写）：${VERIFICATION_SNAPSHOT_EXCLUDED_DIRECTORY_NAMES.join(", ")}。它们属于容许变化但不作为审批证据的临时工作区。`,
+        `- 同类的额外相对目录排除：${VERIFICATION_SNAPSHOT_EXCLUDED_RELATIVE_DIRECTORIES.join(", ")}。不得把权威源码、测试或项目控制文件放入任何快照排除目录规避保护；平台不会把其中内容绑定到 workspace revision token。`,
+        "- 除上述精确排除外，项目内任意 tracked/untracked 文件及目录拓扑均只读；平台会还原并拒绝 runner 返回时结束扫描所观察到的变化，扫描或恢复失败会按 fail-closed 阻止 Verification。此机制是同步窗口的检测/回滚层，不是进程 sandbox，不能遏制逃逸后在结束扫描之后才写入的后台子进程。",
+        "- test-report 的本地执行单元格必须严格写成 `<一个直接 test runner 或仓库 test wrapper 命令>` from `<精确 project root>`（两项各自放在一对 Markdown 反引号内）。禁止 compound shell、注释、echo/printf、内联赋值、引号/替换、重定向或后台/分离执行；复杂 setup 请固化在仓库脚本中并单独说明，所有测试进程必须在 runner 返回前完成，并仅在 disposable 或可恢复的项目状态上执行。",
+      ].join("\n")
+    : "";
 
   return `你正在执行 AI SDLC 平台中的一个受控阶段。
 
@@ -1320,6 +1673,8 @@ ${changeContract}
 ## 当前阶段 Impact / Route 决议
 
 ${phaseResolutionContract}
+
+${verificationWorkspaceContract}
 
 ## 已由人工批准并明确选择的输入
 
@@ -1387,6 +1742,20 @@ function buildOutputMaterializationContract(request: CodexRunRequest): string {
       "- Architect 特例：没有人类选项选择证据时，仍须完成被选中的 architecture、discovery context 和 options；并为本次列出的其余架构产物落盘非空的 pending scaffold，然后才可停止。",
       "- 被选中的 C4 `.mmd` 在等待选择时只写可渲染的 Mermaid pending notice，不得画成已选架构；被选中的 ADR 目录至少写入 `README.md`，明确它只是等待选择的状态文件而不是 ADR；被选中的 patterns、NFR 和 adversarial Markdown 写明 Pending、阻塞原因、owner 与下一步。",
       "- architecture 索引必须链接这些 scaffold 并把它们标为 Pending。Pending scaffold 不是有效的 C4、ADR、pattern、NFR 或对抗审查，不得把架构阶段标为可实施或已接受。",
+    );
+  }
+  if (request.phase.owner === "software-engineer") {
+    rules.push(
+      "- Software Engineer 特例：当前 Change Contract 范围内的生产源码、非敏感实现配置和仓库惯例测试是实现本身，可以创建或修改；它们不是注册阶段产物，也不会替代下面的证据文档。其他角色的注册产物、ai-native.yaml、根级 Agent 指令、环境文件、Agent/角色配置、默认与角色工作流、参考规则和证据模板仍为只读。",
+      "- 独立验收测试必须由未见实现内容的新上下文根据 Change Contract、已批准规格和公开接口生成。记录真实 isolation tier 和方法；Tier C 或 Limited 必须把 pack 标为 Blocked，除非存在明确的人类 gate-exception 证据。",
+      "- implementation-notes 是 pack 索引。它必须链接本次注册的 plan、tasks、session log、test evidence、review 和 provenance；源码与测试继续留在仓库惯例路径，只在证据中引用。",
+    );
+  }
+  if (request.phase.owner === "tester") {
+    rules.push(
+      "- Tester 特例：Verification 是独立执行与取证阶段，不是实现或测试脚本编写阶段。除本次已选中的 Run-scoped test-report 和明确列出的运行证据目录外，整个项目中的 tracked/untracked 文件、生产源码、测试源码、仓库控制文件、Agent/角色配置和工作流资源全部只读；runner 同步窗口结束扫描观察到的变化会被平台还原并拒绝整次执行。不得启动后台或分离进程。",
+      "- Playwright MCP 探索只能帮助确认路径和诊断问题，探索动作或探索成功本身不能充当可复用 E2E/CI 证据。若缺少 durable E2E 脚本，必须在 test-report 中返回 crystallization 请求给 Software Engineer，不得在 Verification 中创建或修改 tests/e2e/*.spec.ts。",
+      "- 仅允许测试命令在项目根目录生成 test-results/、playwright-report/ 或 blob-report/ 运行证据；这些目录不是测试源码，也不能替代 test-report 中的命令、结果与可追溯引用。",
     );
   }
   if (request.requireEverySelectedOutputUpdated) {
@@ -1480,7 +1849,10 @@ function resolveRoleFile(projectRoot: string, definition: LoadedDefinition, role
   return path.posix.join(definition.agentDirectory, roleId);
 }
 
-function codexEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function codexEnvironment(
+  source: NodeJS.ProcessEnv,
+  verificationReadOnlyGit = false,
+): NodeJS.ProcessEnv {
   const allowed = [
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TEMP", "TMP",
     "LANG", "LC_ALL", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR",
@@ -1488,5 +1860,9 @@ function codexEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
     "SSL_CERT_FILE", "SSL_CERT_DIR"
   ];
-  return Object.fromEntries(allowed.flatMap((key) => source[key] === undefined ? [] : [[key, source[key]]])) as NodeJS.ProcessEnv;
+  const environment = Object.fromEntries(
+    allowed.flatMap((key) => source[key] === undefined ? [] : [[key, source[key]]]),
+  ) as NodeJS.ProcessEnv;
+  if (verificationReadOnlyGit) environment.GIT_OPTIONAL_LOCKS = "0";
+  return environment;
 }

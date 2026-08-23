@@ -253,6 +253,7 @@ async function buildEntries(
     entry.content = entry.content
       .replaceAll("{{PM_BA_ROLE_PATH}}", JSON.stringify(rolePaths["pm-ba"]))
       .replaceAll("{{ARCHITECT_ROLE_PATH}}", JSON.stringify(rolePaths.architect))
+      .replaceAll("{{SOFTWARE_ENGINEER_ROLE_PATH}}", JSON.stringify(rolePaths["software-engineer"]))
       .replaceAll("{{DESIGNER_INPUTS}}", designerInputConfig)
       .replaceAll("{{DESIGNER_ROLE_PATH}}", JSON.stringify(rolePaths.designer))
       .replaceAll(

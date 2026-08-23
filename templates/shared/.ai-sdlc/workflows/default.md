@@ -6,9 +6,9 @@ Use `ai-native.yaml` as the source of truth and work in this order:
 2. Product Impact records `direct`, `reuse`, `partial`, or `full`; PM / BA runs only for `partial` or `full` and does not rewrite the Change Contract.
 3. Design Impact records `skip`, `reuse`, `partial`, or `full`; Designer runs only for `partial` or `full` and keeps the design baseline project-wide and design specs task-scoped.
 4. Architecture Impact records `skip`, `reuse`, `partial`, or `full`; Architect runs only for `partial` or `full`.
-5. After all three clearances pass, Software Engineer implements the confirmed work and records implementation notes.
-6. Tester checks the Change Contract, applicable acceptance criteria, risks, and regression obligations, then creates the test report.
-7. DevOps prepares release, monitoring, and rollback guidance.
+5. After all three clearances pass, Software Engineer implements the confirmed work in the repository and delivers the complete seven-artifact engineering evidence pack: `implementation-notes`, `implementation-plan`, `implementation-tasks`, `engineering-session-log`, `engineering-test-evidence`, `engineering-review`, and `engineering-provenance`.
+6. Tester consumes the applicable `design-spec` (including every `deferred_validations` obligation), `implementation-notes`, `engineering-test-evidence`, and `engineering-review` alongside the Change Contract, acceptance criteria, risks, and regression obligations. Tester may use Playwright MCP for transient exploration, but repeatable E2E evidence comes from an independently authored repository script executed by the standalone runner. When a script is missing or must change, return it to Software Engineer for repository integration and engineering-evidence refresh before Verification resumes. Tester then creates the Run-scoped test report.
+7. DevOps prepares release, monitoring, rollback, and the authorized CI required-check configuration from Tester's command/report contract.
 
 Start artifacts from `.ai-sdlc/templates/`. Resolve every input and output artifact in this order:
 
@@ -17,7 +17,7 @@ Start artifacts from `.ai-sdlc/templates/`. Resolve every input and output artif
 3. If `.ai-sdlc/roles/<owner>/config.yaml` exists, append that role's `output.subdirectory`.
 4. Append the artifact `path`.
 
-For a platform-managed task, use the resolved paths in the active execution contract after applying the steps above. In particular, `change-contract` and `design-spec` receive task-scoped filenames derived from the task title and run ID; never replace them with their configured default basenames. The Change Contract is an immutable human artifact. A local re-run may select only part of a phase's outputs, so every unselected output must remain unchanged.
+For a platform-managed task, use the resolved paths in the active execution contract after applying the steps above. In particular, `change-contract`, `design-spec`, all seven registered engineering evidence artifacts, and `test-report` receive task-scoped filenames derived from the task title and run ID; never replace them with configured default basenames or a cross-Run “latest” file. The optional engineering replay packet and Tester exploration notes are not registered and are not part of the Web phase gate. The Change Contract is an immutable human artifact. A local re-run may select only part of a phase's outputs, so every unselected output must remain unchanged.
 
 The phase inputs in `ai-native.yaml` declare the complete evidence vocabulary. The platform's recorded disposition and active execution contract resolve the concrete input alternative for a Run. A valid `direct`, `skip`, or `reuse` clearance can therefore satisfy a phase without manufacturing empty PRDs, stories, design specs, or Agent executions. Older initialized projects that do not list `change-contract` are extended by the platform without rewriting their project-owned YAML.
 
@@ -45,6 +45,16 @@ Always use the artifact owner's config, not the active role's config. The global
 An artifact path may name one file or a directory. When it names a directory, read only the files required by that artifact's role contract. Start architecture work and every downstream architecture handoff at the `architecture` index, then follow its active links instead of scanning the whole output tree. Child architecture artifacts listed as phase inputs declare the exact evidence that role needs; they never override the index status or make a pending item active.
 
 Meet the phase gate in `ai-native.yaml` before moving forward. Record handoff evidence in the active task file.
+
+## E2E evidence lifecycle
+
+The three E2E stages are a Verification subflow, not three new global phases:
+
+1. **Exploration** — Tester may operate the runnable app with Playwright MCP to understand the path and diagnose selectors. The session is transient; “MCP ran through” cannot pass repeatable acceptance or CI evidence by itself.
+2. **Crystallization** — If durable coverage is missing, freeze AC-mapped intent in a fresh Tier A/B session using authoritative requirements without the implementation or exploration transcript. Return the resulting repository-test patch to Software Engineer for integration, real checks, refreshed evidence, and Implementation reapproval.
+3. **Execution** — After the refreshed implementation returns, Tester runs the integrated script with the repository's standalone `playwright test` command or its real wrapper. CI never depends on MCP. Tester records current local/CI evidence in `test-report`; DevOps or an authorized owner configures the required PR check.
+
+Read `.ai-sdlc/roles/tester/workflow.md` and its Playwright reference for selector policy, data safety, evidence fields, and failure routing.
 
 ## Bug fast path
 

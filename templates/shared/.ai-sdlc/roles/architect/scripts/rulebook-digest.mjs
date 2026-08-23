@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global process */
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";

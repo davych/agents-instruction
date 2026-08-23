@@ -34,7 +34,7 @@ Check project components before naming component props, events, slots, or tokens
 assumptions, checks, risks, and the next step.
 ```
 
-For a generated Software Engineer handoff, require the design SPEC to use status `ready-for-engineering` with an empty `blockers` list. The handoff must name the covered Change Contract/story criteria, required behavior, verified components and assets, responsive and accessibility constraints, validation evidence, and any design detail the developer must not infer. For `skip` or `reuse`, hand off the structured clearance and provenance instead of running this prompt.
+For a generated Software Engineer handoff, require the design SPEC to use status `ready-for-engineering` with an empty `blockers` list. The handoff must name the covered Change Contract/story criteria, required behavior, verified components and assets, responsive and accessibility constraints, validation evidence, and any design detail the developer must not infer. If a browser or accessibility check can run only after implementation, put its stable ID and complete Tester-owned contract in `deferred_validations`; do not keep rerunning Designer or leave it in `blockers`. For `skip` or `reuse`, hand off the structured clearance and provenance instead of running this prompt.
 
 ## GitHub Copilot
 

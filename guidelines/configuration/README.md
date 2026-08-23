@@ -78,28 +78,51 @@ docs + ai-native/design + design-spec.md
 = docs/ai-native/design/登录改版--550e8400-e29b-41d4-a716-446655440000-design-spec.md
 ```
 
-The logical artifact ID remains `design-spec`, so downstream dependencies do not depend on a filename. Every re-run of that task resolves the same path; another task, including one with the same title, resolves a different path because its run ID differs. The active execution contract is authoritative for both task-scoped artifacts.
+The logical artifact ID remains `design-spec`, so downstream dependencies do not depend on a filename. Every re-run of that task resolves the same path; another task, including one with the same title, resolves a different path because its run ID differs. The active execution contract is authoritative for every task-scoped artifact in that Run.
 
 The phase input arrays declare the full evidence vocabulary for compatible clients. In a platform-managed Run, Product, Design, and Architecture dispositions resolve the concrete alternatives. For example, Product `direct` does not require a fake PRD and Design `skip` does not require a fake design spec. The platform extends older initialized projects with `change-contract` support in memory rather than rewriting project-owned YAML.
 
-For the default Software Engineer notes, there is no role config:
+Software Engineer has a role config with `output.subdirectory: ai-native/engineering`. Its seven artifact paths are registered as basenames in `ai-native.yaml`, so normal owner-aware resolution produces paths such as:
 
 ```text
-docs + ai-native/engineering/implementation-notes.md
+docs + ai-native/engineering + implementation-notes.md
 = docs/ai-native/engineering/implementation-notes.md
 ```
+
+In a platform-managed Run, all seven engineering artifacts are task-scoped after that normal resolution. The platform derives a stable task-and-Run namespace without rewriting the project-owned registry:
+
+```text
+docs/ai-native/engineering/implementation-notes.md
++ current task "修复结算舍入" + run 550e8400-e29b-41d4-a716-446655440000
+= docs/ai-native/engineering/修复结算舍入--550e8400-e29b-41d4-a716-446655440000-implementation-notes.md
+```
+
+The same namespace applies to `implementation-plan`, `implementation-tasks`, `engineering-session-log`, `engineering-test-evidence`, `engineering-review`, and `engineering-provenance`. `implementation-notes` is the pack index. Tester consumes that index plus the independently reviewable `engineering-test-evidence` and `engineering-review` heads from the same Run.
+
+The platform also task-scopes `test-report` after its normal direct registry resolution, so different Runs do not overwrite one shared verification report:
+
+```text
+docs/ai-native/testing/test-report.md
++ current task "修复结算舍入" + run 550e8400-e29b-41d4-a716-446655440000
+= docs/ai-native/testing/修复结算舍入--550e8400-e29b-41d4-a716-446655440000-test-report.md
+```
+
+When a Run already has a persisted artifact revision, that stored path remains pinned across reruns even if the live project configuration later changes.
+
+Legacy compatibility is intentionally non-destructive: an older Run whose persisted `test-report` still uses the former shared basename keeps that path. If two pre-upgrade Runs already point to the same physical report, they remain shared until an authorized operator performs an explicit per-Run backfill. Do not rerun Verification for either shared Run, sequentially or concurrently: either order can overwrite evidence before the platform can prove Run ownership. Resume only after each Run has its own pinned report path; never assume the platform silently moved project-owned evidence. New Runs always receive distinct Run-scoped paths.
 
 An artifact path may name one file or one directory. For example, `user-stories` and `architecture-adrs` are directory artifacts.
 
 ## Role configs
 
-Three roles currently have their own config:
+Four roles have their own config:
 
 | Role | Config | What it may control |
 |---|---|---|
 | PM / BA | `.ai-sdlc/roles/pm-ba/config.yaml` | Business Markdown inputs and `output.subdirectory` |
 | Designer | `.ai-sdlc/roles/designer/config.yaml` | Role resources, upstream artifacts, extra Markdown, component query/validation paths, and `output.subdirectory` |
 | Architect | `.ai-sdlc/roles/architect/config.yaml` | Upstream artifacts, evidence Markdown, confirmed context, review floors, and `output.subdirectory` |
+| Software Engineer | `.ai-sdlc/roles/software-engineer/config.yaml` | Upstream artifact vocabulary, layered-context candidates, evidence IDs, quality floors, and `output.subdirectory` |
 
 A role config may:
 
@@ -116,7 +139,9 @@ A role config must not:
 - store credentials or private tokens;
 - make an unknown project fact look confirmed.
 
-Software Engineer, Tester, and DevOps currently have no role config. Their artifact paths are registered directly in `ai-native.yaml`.
+Tester and DevOps currently have no role config. Their artifact paths are registered directly in `ai-native.yaml`.
+
+The Software Engineer config does not redefine the role. The selected client's native Agent remains the one role definition, while `.ai-sdlc/roles/software-engineer/workflow.md` and its `references/*.md` files are ordinary supporting Markdown. They are not Skills or additional Agents. The config may declare Tier A/B as normally passing verification tiers and seven review lenses as a quality floor; it cannot let the Agent approve its own Tier C/Limited exception, architecture choice, risk acceptance, PR publication, or merge.
 
 ## Change the output root
 

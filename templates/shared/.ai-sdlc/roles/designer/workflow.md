@@ -19,7 +19,7 @@ Choose the smallest sufficient design path from the recorded Design Impact dispo
 9. When `design-spec` is selected, read [spec-schema.md](references/spec-schema.md), start from `.ai-sdlc/templates/design-spec.md` only when no applicable spec exists, and trace the spec to Change Contract or story acceptance criteria.
 10. When `design-prototype` is selected, create the registered `prototype.html` as a self-contained, non-production HTML/CSS prototype. Clearly label mock data; use only verified states and patterns; use native HTML/CSS states such as `details` or checkboxes instead of scripts; do not call production APIs, include credentials, send analytics, or load required runtime code from the network.
 11. When `figma-handoff` is selected, read [figma-workflow.md](references/figma-workflow.md) before accessing Figma. Confirm the current session has the required read or edit access before making claims. Create the registered handoff only from real, verified Figma evidence.
-12. When `design-spec` is selected, complete `Handoff to Software Engineer`. Use `blocked` when a missing decision, behavior, component, asset, copy item, or validation result changes what must be built. Use `ready-for-engineering` only when `blockers` is empty, then run `node .ai-sdlc/roles/designer/scripts/validate-spec.mjs <SPEC.md>`.
+12. When `design-spec` is selected, complete `Handoff to Software Engineer`. Use `blocked` when a missing decision, behavior, component, asset, copy item, or validation result changes what must be built. A check that explicitly requires the final runnable implementation is different: define its observable behavior and pass criteria now, move it to `deferred_validations` with owner `tester` and phase `verification`, and keep it out of `blockers`. Use `ready-for-engineering` only when active `blockers` is empty, then run `node .ai-sdlc/roles/designer/scripts/validate-spec.mjs <SPEC.md>`.
 13. Submit only selected outputs for human review. Downstream implementation consumes the active product, design, and architecture clearances rather than demanding fake files for a skipped phase.
 
 Resolve Designer output paths in this order:
@@ -38,6 +38,7 @@ The platform may then resolve `design-spec` to a task-scoped filename containing
 - Required states, responsive behavior, accessibility behavior, content, and assets are explicit.
 - Every named project or library component has current evidence; custom work has a reason and scope.
 - Validation evidence names the checks, viewports, references, and unresolved risks.
+- Every deferred validation has a stable ID, runnable prerequisite, targets, checks, pass criteria, supported `evidence_types`, release impact, exact `on_fail: block_verification` / `on_missing: block_verification` gates, and explicit Tester / Verification ownership. It is never duplicated in `blockers`.
 - A selected `design-spec` uses `ready-for-engineering` only when `blockers` is empty; otherwise it uses `draft` or `blocked`.
 - A selected `design-prototype` is one self-contained, script-free HTML file, visibly marked non-production, and has no production or external side effects.
 - A selected `figma-handoff` points only to Figma work accessed or changed in the current session and records real verification evidence.
@@ -45,3 +46,13 @@ The platform may then resolve `design-spec` to a task-scoped filename containing
 - A changed or newly discovered UI, interaction, content, responsive, or accessibility requirement invalidates `skip` and returns to Design Impact.
 
 Keep assumptions reversible and visible. Prefer the smallest complete artifact and do not ask the Software Engineer to infer a missing design decision.
+
+## Retry-loop guard
+
+When feedback says a B-04 or similar browser/accessibility check must happen only
+after the implementation is runnable, do not keep attempting the unavailable check
+inside Design. Preserve the obligation ID, remove it from `blockers`, add it to
+`deferred_validations`, make the handoff `ready-for-engineering` if no other blocker
+remains, and state that Tester will execute it in Verification. If the check can run
+against the current design prototype or existing product now, it remains Designer
+work and must not be deferred.

@@ -80,6 +80,7 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
   }
   registerPlatformChangeContract(config);
   registerPlatformDesignOutputs(config);
+  registerPlatformVerificationDesignInput(config);
   registerPlatformArchitectureOutputs(config);
 
   const phaseIds = config.workflow.phases.map((phase) => phase.id);
@@ -107,6 +108,10 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
   safeProjectPath(projectRoot, config.paths.agents);
   const outputRoot = safeProjectPath(projectRoot, config.paths.outputs);
   const subdirectories = await readRoleSubdirectories(projectRoot, roleIds);
+  registerPlatformEngineeringOutputs(
+    config,
+    subdirectories.has("software-engineer"),
+  );
   const artifactIds = new Set(config.artifacts.map((artifact) => artifact.id));
   if (artifactIds.size !== config.artifacts.length) {
     throw new AppError("artifacts 包含重复 id", 400, "CONFIG_INVALID");
@@ -244,6 +249,44 @@ const platformArchitectureArtifacts = [
   { id: "architecture-adversarial", owner: "architect", path: "07-adversarial.md" }
 ] as const;
 
+const platformEngineeringArtifacts = [
+  {
+    id: "implementation-notes",
+    owner: "software-engineer",
+    path: "ai-native/engineering/implementation-notes.md",
+  },
+  {
+    id: "implementation-plan",
+    owner: "software-engineer",
+    path: "ai-native/engineering/implementation-plan.md",
+  },
+  {
+    id: "implementation-tasks",
+    owner: "software-engineer",
+    path: "ai-native/engineering/implementation-tasks.md",
+  },
+  {
+    id: "engineering-session-log",
+    owner: "software-engineer",
+    path: "ai-native/engineering/session-log.md",
+  },
+  {
+    id: "engineering-test-evidence",
+    owner: "software-engineer",
+    path: "ai-native/engineering/independent-test-evidence.md",
+  },
+  {
+    id: "engineering-review",
+    owner: "software-engineer",
+    path: "ai-native/engineering/review.md",
+  },
+  {
+    id: "engineering-provenance",
+    owner: "software-engineer",
+    path: "ai-native/engineering/pr-provenance.md",
+  },
+] as const;
+
 /**
  * Older initialized projects predate selectable HTML/Figma design deliverables.
  * Treat these two platform capabilities as a backwards-compatible extension so
@@ -261,6 +304,27 @@ function registerPlatformDesignOutputs(config: RawConfig): void {
 }
 
 /**
+ * Older initialized projects did not route the approved design contract to
+ * Tester. Add it in memory so post-implementation responsive/accessibility
+ * obligations cannot disappear between Design and Verification.
+ */
+function registerPlatformVerificationDesignInput(config: RawConfig): void {
+  const verification = config.workflow.phases.find((phase) => phase.id === "verification");
+  const hasDesignSpec = config.artifacts.some((artifact) => artifact.id === "design-spec");
+  if (!verification || !hasDesignSpec || verification.inputs.includes("design-spec")) return;
+  const downstreamEvidenceIndex = verification.inputs.findIndex((input) =>
+    input.startsWith("architecture")
+    || input.startsWith("implementation")
+    || input.startsWith("engineering-")
+  );
+  verification.inputs.splice(
+    downstreamEvidenceIndex >= 0 ? downstreamEvidenceIndex : verification.inputs.length,
+    0,
+    "design-spec",
+  );
+}
+
+/**
  * Older initialized projects registered only the architecture pack index. The
  * platform now treats the complete architecture pack as one canonical contract,
  * while keeping the project-owned YAML immutable for backwards compatibility.
@@ -273,6 +337,41 @@ function registerPlatformArchitectureOutputs(config: RawConfig): void {
       config.artifacts.push({ ...artifact });
     }
     if (!architecture.outputs.includes(artifact.id)) architecture.outputs.push(artifact.id);
+  }
+}
+
+/**
+ * Older initialized projects registered only implementation-notes. Extend the
+ * live definition with the complete Web-reviewable engineering evidence pack.
+ * The explicit paths retain the legacy no-config layout; newly initialized
+ * projects declare basename paths beneath the role's output subdirectory.
+ */
+function registerPlatformEngineeringOutputs(
+  config: RawConfig,
+  hasRoleOutputSubdirectory: boolean,
+): void {
+  const implementation = config.workflow.phases.find((phase) => phase.id === "implementation");
+  if (!implementation) return;
+  for (const artifact of platformEngineeringArtifacts) {
+    const existing = config.artifacts.find((candidate) => candidate.id === artifact.id);
+    const legacyPath = `ai-native/engineering/${path.posix.basename(artifact.path)}`;
+    if (existing && hasRoleOutputSubdirectory && existing.path === legacyPath) {
+      existing.path = path.posix.basename(artifact.path);
+    }
+    if (!existing) {
+      config.artifacts.push({
+        ...artifact,
+        path: hasRoleOutputSubdirectory ? path.posix.basename(artifact.path) : artifact.path,
+      });
+    }
+    if (!implementation.outputs.includes(artifact.id)) implementation.outputs.push(artifact.id);
+  }
+
+  const verification = config.workflow.phases.find((phase) => phase.id === "verification");
+  for (const artifactId of ["engineering-test-evidence", "engineering-review"]) {
+    if (verification && !verification.inputs.includes(artifactId)) {
+      verification.inputs.push(artifactId);
+    }
   }
 }
 

@@ -6,6 +6,7 @@ import {
   assessArchitectureDispositionSchema,
   assessDesignImpactSchema,
   assessProductImpactSchema,
+  captureHumanDecisionsSchema,
   createArtifactRevisionSchema,
   createProjectSchema,
   createRunSchema,
@@ -44,6 +45,10 @@ export interface AppOptions {
 
 const idParamsSchema = z.object({ id: z.string().uuid() });
 const phaseParamsSchema = z.object({ id: z.string().uuid(), phaseId: phaseIdSchema });
+const humanDecisionParamsSchema = z.object({
+  id: z.string().uuid(),
+  phaseId: z.enum(["discovery", "design", "architecture"]),
+});
 const ticketParamsSchema = z.object({ id: z.string().uuid(), ticketId: z.string().uuid() });
 const figmaIntegrationQuerySchema = z.object({
   force: z.enum(["true", "false"]).optional()
@@ -134,6 +139,10 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     const { id } = idParamsSchema.parse(request.params);
     return service.getRun(id);
   });
+  app.get("/api/runs/:id/human-decisions", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.getHumanDecisions(id);
+  });
   app.get("/api/runs/:id/integrations/figma", async (request) => {
     const { id } = idParamsSchema.parse(request.params);
     const { force } = figmaIntegrationQuerySchema.parse(request.query);
@@ -190,6 +199,14 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   app.post("/api/runs/:id/phases/:phaseId/review", async (request) => {
     const { id, phaseId } = phaseParamsSchema.parse(request.params);
     return service.reviewPhase(id, phaseId, reviewPhaseSchema.parse(request.body));
+  });
+  app.post("/api/runs/:id/phases/:phaseId/human-decisions", async (request) => {
+    const { id, phaseId } = humanDecisionParamsSchema.parse(request.params);
+    return service.captureHumanDecisions(
+      id,
+      phaseId,
+      captureHumanDecisionsSchema.parse(request.body),
+    );
   });
 
   app.get("/api/artifacts/:id", async (request) => {

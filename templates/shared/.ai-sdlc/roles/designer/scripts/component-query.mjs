@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global console, process */
 
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";

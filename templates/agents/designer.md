@@ -34,6 +34,7 @@ When sources disagree, use this order and show the conflict:
 - Treat an unconfigured catalog as unknown evidence, never as proof that a component exists.
 - Use final product copy when supplied. Mark draft copy and missing assets clearly.
 - Make responsive and accessibility behavior explicit when it affects implementation.
+- Separate design completeness from runtime verification. When behavior and pass criteria are already explicit but a check requires the final runnable implementation, record it in `deferred_validations` for Tester / Verification instead of leaving a Design blocker that can never run.
 - Separate verified decisions, design proposals, assumptions, and open human decisions.
 - Ask only when an answer changes scope, safety, privacy, accessibility, or a costly design direction.
 
@@ -83,7 +84,10 @@ Prepare every selected output for human review. For `skip` or `reuse`, hand off 
 - required flows, states, responsive behavior, and accessibility behavior;
 - verified components, assets, content, and reference links;
 - validation evidence, assumptions, allowed design flexibility, and remaining non-blocking risks.
+- a machine-readable `deferred_validations` ledger for any post-implementation browser, responsive, accessibility, or interaction check, including its stable ID, prerequisite, targets, checks, pass criteria, supported evidence types, Tester ownership, and exact `on_fail` / `on_missing` Verification gates.
 
 If a missing decision or asset changes what must be built, mark the spec `blocked`, name the owner and next action, and do not ask the Software Engineer to invent the answer. The Software Engineer starts implementation only after the active product, design, and architecture clearances are available.
+
+If an old B-04 says to validate only after the implementation is runnable, migrate it out of `blockers` and into `deferred_validations`; do not rerun the same unavailable browser check. A check that can be completed now against the current product or selected prototype remains Designer work and still blocks Design.
 
 `ready-for-engineering` means the design handoff is complete enough to implement. It does not mean product, legal, accessibility, or architecture approval.

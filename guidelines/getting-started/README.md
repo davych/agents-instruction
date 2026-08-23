@@ -69,6 +69,10 @@ It stops when:
 
 It does not merge, overwrite, or partly initialize a conflicting project. Resolve the conflict, then run the command again.
 
+### Updating an already initialized project
+
+The initializer is create-only, not an in-place upgrader. Do not rerun it over an existing project or replace project-owned workflow files wholesale. To adopt this Tester lifecycle in an older initialized project, make one reviewed incremental backfill: merge the current canonical Tester responsibilities into that project's selected native Tester Agent, add `.ai-sdlc/roles/tester/workflow.md` and `.ai-sdlc/roles/tester/references/e2e-playwright.md`, and reconcile `.ai-sdlc/templates/test-report.md` plus `.ai-sdlc/workflows/default.md`. Keep the existing six phase IDs, owners, artifact IDs, and local project conventions. Diff each file, run the project's initializer/platform checks, and obtain human approval before using the updated gate.
+
 ## Generated project structure
 
 Every target project receives the shared workflow files:
@@ -86,6 +90,15 @@ ai-native.yaml
     architect/
       config.yaml
       workflow.md
+    software-engineer/
+      config.yaml
+      workflow.md
+      references/
+        *.md
+    tester/
+      workflow.md
+      references/
+        e2e-playwright.md
   workflows/
     default.md
   templates/
@@ -103,9 +116,43 @@ It also receives exactly one native Agent set:
 
 Codex TOML is generated from the same six canonical Markdown sources during initialization. The repository does not maintain a second Codex role source.
 
-The PM / BA, Designer, and Architect have extra role packs because they need longer procedures, role-specific inputs, references, or validation rules. Their `workflow.md` files are ordinary Markdown read explicitly by the canonical Agent; they are not client-native Skills. Software Engineer, Tester, and DevOps keep their shorter procedures in the Agent file.
+PM / BA, Designer, Architect, Software Engineer, and Tester have role packs because they need longer procedures, role-specific inputs, references, or validation rules. Their `workflow.md` and reference files are ordinary Markdown read explicitly by the canonical Agent. They are not client-native Skills or additional Agent definitions. DevOps keeps its shorter procedure in the canonical Agent file.
 
 The initializer does not create product deliverables under `docs/`. In the platform, creating a Run creates its immutable Change Contract; selected Agents create only the artifacts required by the Run's impact dispositions. For a non-platform local workflow, a human starts `.ai-sdlc/templates/change-contract.md` before invoking a role.
+
+## Software Engineer evidence pack
+
+After Product, Design, and Architecture are cleared, Software Engineer reads its canonical native Agent plus `.ai-sdlc/roles/software-engineer/workflow.md` and the ordinary Markdown references in that role pack. It loads relevant project context in layers: the nearest `AGENTS.md` or `CLAUDE.md` hot rules, stack and testing documents as warm context, and gap or history logs as cold context. Only files actually read may be claimed as context.
+
+The implementation phase produces real source and test changes and seven registered Web outputs for the current Run:
+
+| Artifact ID | Purpose |
+|---|---|
+| `implementation-notes` | Evidence-pack index and Tester handoff |
+| `implementation-plan` | Smallest complete vertical-slice strategy and Greenfield/Brownfield boundaries |
+| `implementation-tasks` | Atomic task status, repository targets, dependencies, and acceptance-criterion mappings |
+| `engineering-session-log` | Ordered actions, decisions, rejected alternatives, and actual command history |
+| `engineering-test-evidence` | Independent-test isolation, criterion coverage, failures, and results |
+| `engineering-review` | Seven required lenses plus adversarial findings |
+| `engineering-provenance` | Cold-audit links and PR-ready provenance content |
+
+The Web platform resolves all seven to stable Run-scoped paths, so one task cannot overwrite another task's engineering evidence. `implementation-notes` indexes the other six; it does not replace them or the real code and tests.
+
+Independent test design records an isolation tier. Tier A uses a fresh model and session; Tier B uses a fresh session and may use the same model. Both may satisfy the normal gate when the author cannot see the implementation. Tier C reuses the implementation session with an instruction to ignore prior details, while Limited cannot establish independence; either remains blocked unless a human records an explicit verification-gate exception and compensating evidence.
+
+Software Engineer also completes all seven review lenses and the adversarial pre-mortem and edge-case-hunter passes. It may generate PR-ready provenance, but it does not publish or merge a pull request, deploy, approve risk, or replace the independent Tester phase.
+
+## After the engineering evidence appears
+
+The seven files are one generated pack, not seven tasks for you to fill in.
+
+1. Open `implementation-notes` and confirm it says `Ready for verification`; `Failed` or `Blocked` means return the named gap.
+2. Inspect the real source/test diff. The evidence pack explains the change but does not replace it.
+3. Read `engineering-test-evidence`, then `engineering-review`. Confirm every AC/regression has real passing evidence, the isolation tier is credible, and no high/security or unresolved finding remains.
+4. Use plan, tasks, session log, and provenance when you need deeper audit. PR provenance is prepared text; it does not mean a PR was published, merged, or released.
+5. Approve Implementation only when the current code and all evidence agree. That unlocks Tester.
+
+Tester then follows `.ai-sdlc/roles/tester/workflow.md`: optionally explore the runnable UI with Playwright MCP, return any missing durable E2E script to Software Engineer for independent crystallization/integration and evidence refresh, run the integrated script with the standalone project runner, and write the Run-scoped `test-report`. DevOps or the authorized repository owner configures the required CI check; a human still owns merge and release.
 
 ## Start the first task
 
@@ -143,6 +190,8 @@ After each phase:
 3. resolve open human decisions;
 4. pass the registered artifacts to the next role;
 5. keep evidence in the artifacts or active task file.
+
+For the Implementation-to-Verification handoff, use the exact review order and feedback loop in [After the engineering evidence appears](#after-the-engineering-evidence-appears). A Tester-discovered repository-test change goes back through Software Engineer and Implementation reapproval; it never skips straight to CI with stale evidence.
 
 See [End-to-End Workflow](../workflow/README.md) for the complete sequence and [Role Relationships](../roles/README.md) for the handoff map.
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global console, process */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -7,6 +8,14 @@ import { loadComponentCatalog } from "./component-query.mjs";
 const args = process.argv.slice(2);
 const jsonMode = args.includes("--json");
 const fileArg = args.find((arg) => arg !== "--json");
+const deferredEvidenceTypes = new Set([
+  "browser-run",
+  "screenshot",
+  "keyboard-log",
+  "accessibility-report",
+  "contrast-report",
+  "motion-evidence",
+]);
 
 if (!fileArg) {
   console.error("Usage: validate-spec.mjs [--json] <SPEC.md>");
@@ -83,7 +92,144 @@ function validateSchema(value) {
   } else if (value.status === "blocked" && !value.blockers.length) {
     fail("SCHEMA", "blocked requires at least one blocker.", "blockers");
   }
+  validateDeferredValidations(value);
   if (!failures.some((item) => item.id === "SCHEMA")) pass("SCHEMA", "SPEC structure is valid.");
+}
+
+function validateDeferredValidations(value) {
+  if (!Array.isArray(value.deferred_validations)) {
+    fail("SCHEMA", "deferred_validations must be an array.", "deferred_validations");
+    return;
+  }
+  const blockerIds = new Set((Array.isArray(value.blockers) ? value.blockers : [])
+    .map((blocker) => {
+      if (blocker && typeof blocker === "object" && !Array.isArray(blocker)) {
+        return String(blocker.id ?? "").trim().toUpperCase();
+      }
+      return /^\s*([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+)\b/u.exec(String(blocker))?.[1]?.toUpperCase() ?? "";
+    })
+    .filter(Boolean));
+  const seen = new Set();
+  for (const validation of value.deferred_validations) {
+    if (!validation || typeof validation !== "object" || Array.isArray(validation)) {
+      fail("SCHEMA", "Every deferred validation must be an object.", "deferred_validations");
+      continue;
+    }
+    const id = String(validation.id ?? "").trim();
+    const normalizedId = id.toUpperCase();
+    if (!/^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$/u.test(normalizedId)) {
+      fail("SCHEMA", "Every deferred validation needs a stable ID such as B-04 or DES-VERIFY-01.", "deferred_validations");
+    } else if (seen.has(normalizedId)) {
+      fail("SCHEMA", `Duplicate deferred validation ${id}.`, id);
+    } else {
+      seen.add(normalizedId);
+    }
+    if (blockerIds.has(normalizedId)) {
+      fail("SCHEMA", `${id} cannot appear in both blockers and deferred_validations.`, id);
+    }
+    if (String(validation.owner ?? "").trim().toLowerCase() !== "tester") {
+      fail("SCHEMA", `${id || "Deferred validation"} must use owner tester.`, id || "deferred_validations");
+    }
+    if (String(validation.phase ?? "").trim().toLowerCase() !== "verification") {
+      fail("SCHEMA", `${id || "Deferred validation"} must use phase verification.`, id || "deferred_validations");
+    }
+    if (String(validation.status ?? "").trim().toLowerCase() !== "deferred") {
+      fail("SCHEMA", `${id || "Deferred validation"} must use status deferred.`, id || "deferred_validations");
+    }
+    if (String(validation.on_fail ?? "").trim().toLowerCase() !== "block_verification") {
+      fail("SCHEMA", `${id || "Deferred validation"} must use on_fail block_verification.`, id || "deferred_validations");
+    }
+    if (String(validation.on_missing ?? "").trim().toLowerCase() !== "block_verification") {
+      fail("SCHEMA", `${id || "Deferred validation"} must use on_missing block_verification.`, id || "deferred_validations");
+    }
+    for (const field of ["prerequisite", "pass_criteria", "evidence_required", "release_impact"]) {
+      if (!meaningfulContractText(validation[field])) {
+        fail("SCHEMA", `${id || "Deferred validation"} needs ${field}.`, id || "deferred_validations");
+      }
+    }
+    if (
+      meaningfulContractText(validation.release_impact)
+      && !meaningfulReleaseImpact(validation.release_impact)
+    ) {
+      fail("SCHEMA", `${id || "Deferred validation"} release_impact must state the Verification or Release consequence.`, id || "deferred_validations");
+    }
+    if (
+      meaningfulContractText(validation.prerequisite)
+      && (
+        negatesRunnableImplementationPrerequisite(validation.prerequisite)
+        || indicatesCurrentVerificationIsAvailable(validation.prerequisite)
+        || !/(?:实现|代码|开发|页面|应用|功能|构建)[^。；;\n]{0,32}(?:完成|落地|可运行|可用|就绪|部署)|\b(?:runnable|running|completed?|implemented|deployed|available|ready)\b[- ]?(?:implementation|code|application|app|page|feature|build)\b|\b(?:implementation|code|application|app|page|feature|build)\b[^.;\n]{0,24}\b(?:runnable|running|completed?|implemented|deployed|available|ready)\b|post[- ]implementation/iu.test(validation.prerequisite)
+      )
+    ) {
+      fail("SCHEMA", `${id || "Deferred validation"} prerequisite must explicitly require a runnable implementation.`, id || "deferred_validations");
+    }
+    for (const field of ["targets", "checks"]) {
+      if (
+        !Array.isArray(validation[field])
+        || !validation[field].length
+        || validation[field].some((entry) => !meaningfulContractText(entry))
+      ) {
+        fail("SCHEMA", `${id || "Deferred validation"} needs non-empty ${field}.`, id || "deferred_validations");
+      }
+    }
+    if (
+      !Array.isArray(validation.evidence_types)
+      || !validation.evidence_types.length
+      || new Set(validation.evidence_types).size !== validation.evidence_types.length
+      || validation.evidence_types.some((type) => !deferredEvidenceTypes.has(type))
+    ) {
+      fail("SCHEMA", `${id || "Deferred validation"} needs unique supported evidence_types.`, id || "deferred_validations");
+    }
+  }
+}
+
+function meaningfulContractText(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text.length >= 3
+    && /[\p{L}\p{N}]/u.test(text)
+    && !/^(?:n\/?a|none|tbd|todo|unknown|<.*>|\{\{.*\}\})[.!]?$/iu.test(text)
+    && !/\b(?:tbd|todo|placeholder|fill\s+in\s+later|evidence\s+pending)\b|(?:待补|占位|稍后补)/iu.test(text)
+    && !/^(?:not\s+applicable|none\s+needed|no\s+(?:target|check|pass\s+criteri(?:on|a)|evidence|result)s?\s+(?:is\s+|are\s+)?required|不适用|(?:无需|不需要)(?:目标|检查|通过标准|证据|结果)(?:要求)?)[.!。]?$/iu.test(text);
+}
+
+function negatesRunnableImplementationPrerequisite(value) {
+  return /(?:do\s+not|don['’]?t|does\s+not|doesn['’]?t|need\s+not|no\s+need\s+to|without)\b[^.;\n]{0,48}\b(?:wait|implementation|code|application|app|page|feature|build|ready|runnable|complete)/iu.test(value)
+    || /\b(?:implementation|code|application|app|page|feature|build)\b[^.;\n]{0,24}\b(?:unavailable|not\s+(?:ready|runnable|running|complete|completed|available)|never\s+(?:ready|runnable|running|complete|completed|available)|incomplete)\b/iu.test(value)
+    || /\b(?:ready|runnable|running|complete|completed|available)\b[^.;\n]{0,16}\b(?:is|are)\s+(?:not\s+required|optional)\b/iu.test(value)
+    || /(?:无需|不必|不要|不用)[^。；;\n]{0,24}(?:等待)?[^。；;\n]{0,16}(?:实现|代码|开发|页面|应用|功能|构建)[^。；;\n]{0,16}(?:完成|可运行|可用|就绪)?/iu.test(value)
+    || /(?:实现|代码|开发|页面|应用|功能|构建)[^。；;\n]{0,12}(?:尚未|未|不|无需|不必)[^。；;\n]{0,8}(?:完成|可运行|可用|就绪)/iu.test(value);
+}
+
+function indicatesCurrentVerificationIsAvailable(value) {
+  const currentIndex = firstMatchIndex(value, [
+    /(?:现在|立即|当下)[^。；;\n]{0,32}(?:验证|测试|检查|使用)/iu,
+    /(?:现有|当前|已有)(?:的)?(?:原型|设计稿|产品|页面|应用)[^。；;\n]{0,32}(?:可|能够|用于|验证|测试|检查)/iu,
+    /\b(?:now|immediately|currently)\b[^.;\n]{0,40}\b(?:verify|validate|test|check|use)\b/iu,
+    /\b(?:current|existing|available)\s+(?:prototype|design|product|page|application|app)\b[^.;\n]{0,40}\b(?:verify|validate|test|check|available|usable)\b/iu,
+    /\b(?:verify|validate|test|check|use)\b[^.;\n]{0,48}\b(?:current|existing|available)\s+(?:prototype|design|product|page|application|app)\b[^.;\n]{0,24}\b(?:now|immediately|currently)\b/iu,
+  ]);
+  if (currentIndex < 0) return false;
+  const futurePrerequisiteIndex = firstMatchIndex(value, [
+    /(?:实现|代码|开发|页面|应用|功能|构建)[^。；;\n]{0,32}(?:完成(?:后)?|落地(?:后)?|可运行(?:后)?|可用(?:后)?|就绪(?:后)?|部署(?:后)?)/iu,
+    /(?:after|once|when)\s+(?:the\s+)?(?:implementation|code|application|app|page|feature|build)\b[^.;\n]{0,32}\b(?:complete|implemented|runnable|running|available|ready|deployed)\b/iu,
+    /post[- ]implementation/iu,
+  ]);
+  return futurePrerequisiteIndex < 0 || currentIndex < futurePrerequisiteIndex;
+}
+
+function firstMatchIndex(value, patterns) {
+  const indexes = patterns
+    .map((pattern) => pattern.exec(value)?.index ?? -1)
+    .filter((index) => index >= 0);
+  return indexes.length ? Math.min(...indexes) : -1;
+}
+
+function meaningfulReleaseImpact(value) {
+  if (/\b(?:(?:does?|will|would|must|should)\s+not|doesn['’]?t|won['’]?t)\s+(?:block|prevent|affect)\b|\bunaffected\b|\b(?:informational|advisory)\s+only\b|(?:不会|不影响|不阻止|无需阻止|仅供参考)/iu.test(value)) return false;
+  const failure = /\b(?:fail(?:ure|ed)?|missing|absent|blocked|untested|incomplete)\b|(?:失败|缺失|未通过|未验证|阻塞)/iu.test(value);
+  const consequence = /\b(?:block(?:s|ed|ing)?|prevent(?:s|ed|ing)?|cannot|must\s+not|not\s+eligible)\b|(?:阻止|不能通过|不得|不可|不予)/iu.test(value);
+  const gate = /\b(?:verification|release|approval|ship(?:ping)?|launch)\b|(?:验证|发布|放行|上线|批准)/iu.test(value);
+  return failure && consequence && gate;
 }
 
 async function validateComponents(value) {
@@ -239,7 +385,7 @@ function validateHandoff(value, body) {
   }
 
   const requiredSections = value.status === "ready-for-engineering"
-    ? ["Build scope", "Behavior to preserve", "Do not infer", "Allowed design flexibility", "Validation evidence", "Open decisions and blockers"]
+    ? ["Build scope", "Behavior to preserve", "Do not infer", "Allowed design flexibility", "Validation evidence", "Deferred verification", "Open decisions and blockers"]
     : ["Open decisions and blockers"];
   for (const section of requiredSections) {
     if (!body.includes(`### ${section}`)) {
@@ -255,6 +401,16 @@ function validateHandoff(value, body) {
     for (const section of ["Build scope", "Behavior to preserve", "Validation evidence"]) {
       if (!hasMeaningfulSectionContent(body, section)) {
         fail("HANDOFF", `${section} needs real, non-placeholder content before engineering handoff.`, `### ${section}`);
+      }
+    }
+    const deferred = Array.isArray(value.deferred_validations) ? value.deferred_validations : [];
+    if (deferred.length > 0 && !hasMeaningfulSectionContent(body, "Deferred verification")) {
+      fail("HANDOFF", "Deferred verification needs the obligation IDs and real handoff details.", "### Deferred verification");
+    }
+    for (const validation of deferred) {
+      const id = validation && typeof validation === "object" ? String(validation.id ?? "").trim() : "";
+      if (id && !body.includes(id)) {
+        fail("HANDOFF", `Deferred verification ${id} is not referenced in the handoff.`, "### Deferred verification");
       }
     }
   }

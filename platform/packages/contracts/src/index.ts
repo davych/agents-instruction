@@ -26,6 +26,12 @@ export type PhaseStatus = z.infer<typeof phaseStatusSchema>;
 export const reviewDecisionSchema = z.enum(["approve", "request_changes"]);
 export type ReviewDecision = z.infer<typeof reviewDecisionSchema>;
 
+/**
+ * Explicit review-comment prefix that routes a Tester-discovered reusable E2E
+ * gap back to a later Software Engineer execution as read-only feedback.
+ */
+export const TESTER_E2E_CRYSTALLIZATION_REVIEW_PREFIX = "E2E crystallization request:";
+
 export const ticketStatusSchema = z.enum(["backlog", "todo", "in_progress", "done"]);
 export type TicketStatus = z.infer<typeof ticketStatusSchema>;
 
@@ -241,6 +247,26 @@ export const reviewPhaseSchema = z.object({
     .refine((ids) => new Set(ids).size === ids.length, "expectedArtifactIds 不能重复")
 });
 export type ReviewPhaseInput = z.infer<typeof reviewPhaseSchema>;
+
+export const humanDecisionPhaseIdSchema = z.enum(["discovery", "design", "architecture"]);
+export type HumanDecisionPhaseId = z.infer<typeof humanDecisionPhaseIdSchema>;
+
+export const captureHumanDecisionsSchema = z.object({
+  responses: z.array(z.object({
+    id: z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u),
+    response: z.string().trim().min(3).max(5_000),
+  }).strict()).min(1).max(50)
+    .refine((responses) => new Set(responses.map(({ id }) => id)).size === responses.length, "decision ids 不能重复"),
+  expectedArtifactIds: z.array(z.string().uuid()).min(1).max(100)
+    .refine((ids) => new Set(ids).size === ids.length, "expectedArtifactIds 不能重复"),
+}).strict().refine(
+  ({ responses }) => responses.reduce(
+    (total, { id, response }) => total + id.length + response.length,
+    0,
+  ) <= 7_000,
+  "decision responses 总长度不能超过 7000 字符",
+);
+export type CaptureHumanDecisionsInput = z.infer<typeof captureHumanDecisionsSchema>;
 
 export const architectureImpactModeSchema = z.enum(["reuse", "partial"]);
 export type ArchitectureImpactMode = z.infer<typeof architectureImpactModeSchema>;
@@ -548,6 +574,47 @@ export interface ReviewDto {
   comment: string;
   artifactIds: string[];
   createdAt: string;
+}
+
+export type HumanDecisionKind = "decision" | "work" | "dependency" | "acceptance";
+export type HumanDecisionGateState =
+  | "clear"
+  | "awaiting_decision"
+  | "awaiting_role_work"
+  | "inconsistent_approval";
+
+export interface HumanDecisionItemDto {
+  id: string;
+  phaseId: HumanDecisionPhaseId;
+  actionPhaseId: HumanDecisionPhaseId;
+  artifactKey: string;
+  kind: HumanDecisionKind;
+  title: string;
+  prompt: string;
+  owner: string;
+  nextAction: string;
+  blocking: boolean;
+  response: string | null;
+}
+
+export interface PhaseHumanDecisionGateDto {
+  phaseId: HumanDecisionPhaseId;
+  roleId: "pm-ba" | "designer" | "architect";
+  state: HumanDecisionGateState;
+  items: HumanDecisionItemDto[];
+  blockingCount: number;
+  decisionCount: number;
+  workCount: number;
+  dependencyCount: number;
+  inconsistentApproval: boolean;
+}
+
+export interface HumanDecisionSummaryDto {
+  totalBlocking: number;
+  totalDecisions: number;
+  totalRoleWork: number;
+  inconsistentPhaseIds: HumanDecisionPhaseId[];
+  phases: PhaseHumanDecisionGateDto[];
 }
 
 export interface ExecutionEventDto {

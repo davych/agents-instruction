@@ -145,6 +145,106 @@ test("adds the canonical architecture pack to an older project without rewriting
   assert.equal(await readFile(yamlPath, "utf8"), yamlBefore);
 });
 
+test("AC-ENG-003/005: extends a legacy implementation phase with the configured engineering evidence pack", async () => {
+  const root = await oldProject();
+  const engineerRole = path.join(root, ".ai-sdlc", "roles", "software-engineer");
+  await mkdir(engineerRole, { recursive: true });
+  await writeFile(
+    path.join(engineerRole, "config.yaml"),
+    YAML.stringify({
+      validation: "required",
+      output: { subdirectory: "custom/engineering-evidence/" },
+    }),
+    "utf8",
+  );
+  const yamlPath = path.join(root, "ai-native.yaml");
+  const yamlBefore = await readFile(yamlPath, "utf8");
+
+  const definition = await loadDefinition(root);
+  const implementation = definition.phases.find((phase) => phase.id === "implementation");
+  const verification = definition.phases.find((phase) => phase.id === "verification");
+  assert.equal(verification?.inputs.includes("design-spec"), true,
+    "Tester must receive deferred design verification obligations");
+  const expected = [
+    ["implementation-notes", "docs/custom/engineering-evidence/implementation-notes.md"],
+    ["implementation-plan", "docs/custom/engineering-evidence/implementation-plan.md"],
+    ["implementation-tasks", "docs/custom/engineering-evidence/implementation-tasks.md"],
+    ["engineering-session-log", "docs/custom/engineering-evidence/session-log.md"],
+    ["engineering-test-evidence", "docs/custom/engineering-evidence/independent-test-evidence.md"],
+    ["engineering-review", "docs/custom/engineering-evidence/review.md"],
+    ["engineering-provenance", "docs/custom/engineering-evidence/pr-provenance.md"],
+  ] as const;
+
+  assert.deepEqual(implementation?.outputs, expected.map(([id]) => id));
+  assert.deepEqual(
+    expected.map(([id]) => {
+      const artifact = definition.artifacts.find((candidate) => candidate.id === id);
+      return [artifact?.id, artifact?.owner, artifact?.relativePath];
+    }),
+    expected.map(([id, relativePath]) => [id, "software-engineer", relativePath]),
+  );
+  assert.deepEqual(
+    verification?.inputs.slice(-3),
+    ["implementation-notes", "engineering-test-evidence", "engineering-review"],
+  );
+  assert.equal(
+    definition.artifacts.filter((artifact) => expected.some(([id]) => id === artifact.id)).length,
+    expected.length,
+  );
+  for (const [, relativePath] of expected) {
+    assert.equal(relativePath.includes("//"), false);
+    assert.equal(relativePath.includes(".."), false);
+  }
+  assert.equal(await readFile(yamlPath, "utf8"), yamlBefore);
+});
+
+test("AC-ENG-005: a legacy engineer config without output keeps the full canonical evidence directory", async () => {
+  const root = await oldProject();
+  const config = oldConfig();
+  config.artifacts.find((artifact) => artifact.id === "implementation-notes")!.path =
+    "ai-native/engineering/implementation-notes.md";
+  const yamlPath = path.join(root, "ai-native.yaml");
+  await writeFile(yamlPath, YAML.stringify(config), "utf8");
+  const engineerRole = path.join(root, ".ai-sdlc", "roles", "software-engineer");
+  await mkdir(engineerRole, { recursive: true });
+  await writeFile(
+    path.join(engineerRole, "config.yaml"),
+    YAML.stringify({
+      version: 1,
+      resources: { role: ".codex/agents/software-engineer.toml" },
+      evidence: { registered_artifacts: ["implementation-notes"] },
+    }),
+    "utf8",
+  );
+  const yamlBefore = await readFile(yamlPath, "utf8");
+  const definition = await loadDefinition(root);
+  const expected = [
+    ["implementation-notes", "docs/ai-native/engineering/implementation-notes.md"],
+    ["implementation-plan", "docs/ai-native/engineering/implementation-plan.md"],
+    ["implementation-tasks", "docs/ai-native/engineering/implementation-tasks.md"],
+    ["engineering-session-log", "docs/ai-native/engineering/session-log.md"],
+    ["engineering-test-evidence", "docs/ai-native/engineering/independent-test-evidence.md"],
+    ["engineering-review", "docs/ai-native/engineering/review.md"],
+    ["engineering-provenance", "docs/ai-native/engineering/pr-provenance.md"],
+  ] as const;
+
+  assert.deepEqual(
+    definition.phases.find((phase) => phase.id === "implementation")?.outputs,
+    expected.map(([id]) => id),
+  );
+  assert.deepEqual(
+    expected.map(([id]) => {
+      const artifact = definition.artifacts.find((candidate) => candidate.id === id);
+      return [artifact?.id, artifact?.owner, artifact?.relativePath];
+    }),
+    expected.map(([id, relativePath]) => [id, "software-engineer", relativePath]),
+  );
+  for (const [id, relativePath] of expected) {
+    assert.notEqual(relativePath, `docs/${path.basename(relativePath)}`, id);
+  }
+  assert.equal(await readFile(yamlPath, "utf8"), yamlBefore);
+});
+
 test("rejects two registered artifacts that resolve to the same path", async () => {
   const root = await oldProject();
   const config = oldConfig();

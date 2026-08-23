@@ -276,6 +276,10 @@ test("creating a run atomically pins the design spec path derived from that task
     captured?.artifactPaths["design-spec"],
     `docs/ai-native/design/登录体验改版--${run.id}-design-spec.md`,
   );
+  assert.equal(
+    captured?.artifactPaths["test-report"],
+    `docs/ai-native/testing/登录体验改版--${run.id}-test-report.md`,
+  );
   assert.match(
     captured?.artifactPaths["change-contract"] ?? "",
     new RegExp(`登录体验改版--${run.id}-change-contract\\.md$`, "u"),

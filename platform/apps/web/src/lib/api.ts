@@ -13,6 +13,8 @@ import type {
   FigmaPlanCapabilities,
   FigmaTarget,
   HealthStatus,
+  HumanDecisionPhaseId,
+  HumanDecisionSummary,
   Project,
   ProjectDetail,
   Review,
@@ -145,6 +147,27 @@ export const api = {
 
   getRun(runId: string): Promise<RunDetail> {
     return request<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`);
+  },
+
+  getHumanDecisions(runId: string): Promise<HumanDecisionSummary> {
+    return request<HumanDecisionSummary>(
+      `/api/runs/${encodeURIComponent(runId)}/human-decisions`,
+    );
+  },
+
+  captureHumanDecisions(
+    runId: string,
+    phaseId: HumanDecisionPhaseId,
+    responses: Array<{ id: string; response: string }>,
+    expectedArtifactIds: string[],
+  ): Promise<{ review: Review; run?: WorkflowRun }> {
+    return request<{ review: Review; run?: WorkflowRun }>(
+      `/api/runs/${encodeURIComponent(runId)}/phases/${encodeURIComponent(phaseId)}/human-decisions`,
+      {
+        method: "POST",
+        body: JSON.stringify({ responses, expectedArtifactIds }),
+      },
+    );
   },
 
   async listTickets(runId: string): Promise<TicketSummary[]> {

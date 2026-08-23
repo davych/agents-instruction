@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  architectureOptionSummaries,
   architecturePartialAllowedOutputKeys,
   architecturePartialOutputKeys,
   architectureOutputKeysRequiringRefresh,
@@ -38,6 +39,16 @@ const architectureBootstrapOutputs = [
   "architecture-options",
 ];
 
+const engineeringEvidenceOutputs = [
+  "implementation-notes",
+  "implementation-plan",
+  "implementation-tasks",
+  "engineering-session-log",
+  "engineering-test-evidence",
+  "engineering-review",
+  "engineering-provenance",
+];
+
 test("a first execution keeps the existing required output defaults", () => {
   assert.deepEqual(
     initialPhaseOutputKeys({
@@ -68,6 +79,90 @@ test("a first execution keeps the existing required output defaults", () => {
     }),
     true,
   );
+});
+
+test("AC-ENG-003/006: implementation selects and requires the complete evidence pack", () => {
+  const firstExecution = {
+    phaseId: "implementation",
+    availableOutputKeys: engineeringEvidenceOutputs,
+    hasExistingArtifacts: false,
+  };
+  assert.deepEqual(initialPhaseOutputKeys(firstExecution), engineeringEvidenceOutputs);
+  assert.equal(
+    isPhaseOutputSelectionComplete({
+      ...firstExecution,
+      selectedOutputKeys: engineeringEvidenceOutputs,
+    }),
+    true,
+  );
+  assert.equal(
+    isPhaseOutputSelectionComplete({
+      ...firstExecution,
+      selectedOutputKeys: engineeringEvidenceOutputs.slice(0, -1),
+    }),
+    false,
+  );
+  for (const outputKey of engineeringEvidenceOutputs) {
+    assert.equal(isPhaseOutputLocked({
+      phaseId: "implementation",
+      outputKey,
+      hasExistingArtifacts: false,
+    }), true, outputKey);
+  }
+  assert.deepEqual(
+    requiredPhaseApprovalOutputKeys("implementation", engineeringEvidenceOutputs),
+    engineeringEvidenceOutputs,
+  );
+
+  const rerun = {
+    phaseId: "implementation",
+    availableOutputKeys: engineeringEvidenceOutputs,
+    hasExistingArtifacts: true,
+    existingOutputKeys: engineeringEvidenceOutputs,
+    initialOutputKeys: ["engineering-test-evidence", "engineering-review"],
+  };
+  assert.deepEqual(initialPhaseOutputKeys(rerun), [
+    "engineering-test-evidence",
+    "engineering-review",
+  ]);
+  assert.equal(isPhaseOutputSelectionComplete({
+    ...rerun,
+    selectedOutputKeys: ["engineering-test-evidence", "engineering-review"],
+  }), true);
+});
+
+test("AC-ENG-005/006: a legacy implementation selects every missing evidence output and remains submittable", () => {
+  const existingOutputKeys = ["implementation-notes"];
+  const missingOutputKeys = engineeringEvidenceOutputs.slice(1);
+  const legacy = {
+    phaseId: "implementation",
+    availableOutputKeys: engineeringEvidenceOutputs,
+    hasExistingArtifacts: true,
+    existingOutputKeys,
+  };
+
+  assert.deepEqual(initialPhaseOutputKeys(legacy), missingOutputKeys);
+  assert.equal(isPhaseOutputSelectionComplete({
+    ...legacy,
+    selectedOutputKeys: missingOutputKeys,
+  }), true, "the legacy backfill must be enabled for submission without MISSING_REQUIRED_OUTPUTS");
+  assert.equal(isPhaseOutputSelectionComplete({
+    ...legacy,
+    selectedOutputKeys: missingOutputKeys.slice(0, -1),
+  }), false, "every missing evidence output remains required");
+
+  const fullPackRerun = {
+    phaseId: "implementation",
+    availableOutputKeys: engineeringEvidenceOutputs,
+    hasExistingArtifacts: true,
+    existingOutputKeys: engineeringEvidenceOutputs,
+    initialOutputKeys: ["engineering-review"],
+  };
+  assert.deepEqual(initialPhaseOutputKeys(fullPackRerun), ["engineering-review"]);
+  assert.equal(isPhaseOutputSelectionComplete({
+    ...fullPackRerun,
+    selectedOutputKeys: ["engineering-review"],
+  }), true, "a complete legacy pack must retain partial-rerun behavior");
 });
 
 test("a full Product execution treats the task Change Contract as immutable context", () => {
@@ -469,6 +564,47 @@ test("architecture selection evidence uses a strict marker tied to the reviewed 
   assert.equal(architectureSelectionFromReviews(reviews, "options-v2"), undefined);
 });
 
+test("AC-ARCH-LOOP-003/004: architecture options become plain decision cards", () => {
+  const options = `# Architecture Options
+
+### Option A — Incremental extension
+
+Keep state in the existing component.
+
+- **Optimizes:** smallest code diff.
+- **Gives up:** exact-once behavior is harder to prove.
+
+### Option B — Pure feature-session engine
+
+Use a feature-local reducer and pure selectors.
+
+- **Optimizes:** correctness and table-driven tests.
+- **Gives up:** a small domain model to maintain.
+
+## Provisional recommendation
+
+**Recommend Option B.** It best preserves the current boundary.
+`;
+  assert.deepEqual(architectureOptionSummaries(options), [
+    {
+      id: "A",
+      title: "Incremental extension",
+      summary: "Keep state in the existing component.",
+      optimizes: "smallest code diff.",
+      givesUp: "exact-once behavior is harder to prove.",
+      recommended: false,
+    },
+    {
+      id: "B",
+      title: "Pure feature-session engine",
+      summary: "Use a feature-local reducer and pure selectors.",
+      optimizes: "correctness and table-driven tests.",
+      givesUp: "a small domain model to maintain.",
+      recommended: true,
+    },
+  ]);
+});
+
 test("fallback workflow matches the registered architecture pack and its consumers", () => {
   const byId = new Map(FALLBACK_PHASES.map((phase) => [phase.id, phase]));
 
@@ -485,13 +621,17 @@ test("fallback workflow matches the registered architecture pack and its consume
     "architecture-patterns",
     "architecture-nfrs",
   ]);
+  assert.deepEqual(byId.get("implementation")?.outputs, engineeringEvidenceOutputs);
   assert.deepEqual(byId.get("verification")?.inputs, [
     "change-contract",
     "prd",
     "user-stories",
+    "design-spec",
     "architecture",
     "architecture-nfrs",
     "implementation-notes",
+    "engineering-test-evidence",
+    "engineering-review",
   ]);
   assert.deepEqual(byId.get("release")?.inputs, [
     "architecture",

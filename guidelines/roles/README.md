@@ -20,7 +20,8 @@ flowchart LR
   Contract --> Tester["Tester"]
   Product --> Tester
   Architect -->|"NFRs and risks"| Tester
-  Engineer -->|"Implementation notes"| Tester
+  Engineer -->|"Evidence index, test evidence, and review"| Tester
+  Tester -->|"Missing durable E2E test"| Engineer
   Architect -->|"ADRs, NFRs, and premortem"| DevOps["DevOps"]
   Tester -->|"Test report"| DevOps
   DevOps -->|"Release runbook"| Human
@@ -39,8 +40,8 @@ The diagram has three kinds of handoff:
 | [PM / BA](pm-ba/README.md) | Is the Change Contract sufficient, reusable, locally changed, or a full product change? | Product disposition, PRD, and user stories | Designer; later consumers | Change Contract mutation, visual or technical design |
 | [Designer](designer/README.md) | Can design be skipped/reused, or what experience work is affected? | Design disposition, project baseline, and task spec | Architect and Software Engineer | Product scope, APIs, architecture, production code |
 | [Architect](architect/README.md) | Which system direction best fits the evidence and constraints? | Indexed architecture pack | Software Engineer, Tester, DevOps | Final option approval or risk acceptance |
-| [Software Engineer](software-engineer/README.md) | How do we implement the confirmed contracts correctly? | Code, tests, implementation notes | Tester | Product, design, or architecture decisions |
-| [Tester](tester/README.md) | What evidence shows the change meets acceptance and risk expectations? | Test evidence and report | DevOps and human release owner | Requirement changes or release approval |
+| [Software Engineer](software-engineer/README.md) | How do we implement the confirmed contracts with independently reviewable evidence? | Code, tests, and seven Run-scoped engineering evidence outputs | Tester | Product, design, architecture, verification-exception, publication, or merge decisions |
+| [Tester](tester/README.md) | What current, repeatable evidence shows the change meets acceptance and risk expectations? | Risk map, optional MCP exploration, standalone execution evidence, defects, and Run-scoped test report | Software Engineer for test integration; DevOps and human release owner | Repository source/test integration, CI policy, requirement changes, or release approval |
 | [DevOps](devops/README.md) | How can the release be repeated, observed, and reversed? | Release runbook and operational evidence | Human release owner | Product approval or final release decision |
 
 ## One role, one Agent
@@ -62,7 +63,7 @@ The two files have different jobs:
 - The selected client's native Agent file under `paths.agents` defines the role identity, working rules, boundaries, output contract, and handoff.
 - `.ai-sdlc/roles/<role>/workflow.md` contains a longer step-by-step procedure when that role needs one.
 
-The role workflow is ordinary Markdown loaded explicitly by the Agent. It is not a second Agent, a duplicate role definition, or a client-native Skill. PM / BA, Designer, and Architect currently have one. The other three roles keep their shorter procedure in the Agent file.
+The role workflow is ordinary Markdown loaded explicitly by the Agent. It is not a second Agent, a duplicate role definition, or a client-native Skill. PM / BA, Designer, Architect, Software Engineer, and Tester have role packs. The Software Engineer pack has ordinary `references/*.md` for layered context, contract-driven planning, independent verification, seven-lens review, CI evidence, provenance, and replay guidance. The Tester pack has a Playwright E2E reference for the exploration/crystallization/execution boundary. DevOps keeps its shorter procedure in the Agent file.
 
 Do not confuse a role workflow with `.ai-sdlc/workflows/default.md`: the default workflow controls the shared phase order and artifact resolution, while a role workflow explains how one role completes its own phase.
 
@@ -80,6 +81,10 @@ Chat messages may explain a handoff, but the registered files are the durable co
 
 A valid `direct`, `skip`, or `reuse` disposition is also a durable handoff when it records rationale, exact source revisions, and current-Run provenance. It skips Agent generation, not evidence. Downstream roles consume the immutable Change Contract plus the active Product, Design, and Architecture clearances instead of demanding empty artifacts.
 
+Software Engineer has a stricter delivery handoff. The Web execution owns seven Run-scoped outputs: `implementation-notes` as the evidence-pack index, `implementation-plan`, `implementation-tasks`, `engineering-session-log`, `engineering-test-evidence`, `engineering-review`, and `engineering-provenance`. Tester receives the index plus the test-evidence and review artifacts as declared inputs. Tier A or B test authoring may satisfy the normal engineering gate; Tier C or Limited requires a recorded human verification exception. The engineering review must cover all seven lenses and both adversarial passes. PR-ready provenance is evidence only; Software Engineer does not publish or merge the PR.
+
+Tester uses Playwright MCP only as optional transient exploration. A missing or changed durable E2E script returns to Software Engineer for Tier A/B crystallization, repository integration, real checks, refreshed engineering evidence, and Implementation reapproval. Tester then executes the current repository script with standalone Playwright and records the result in its Run-scoped `test-report`; DevOps or an authorized owner configures the required CI check.
+
 ## Escalation rule
 
 Return a missing decision to the owner who can make it:
@@ -90,7 +95,9 @@ Return a missing decision to the owner who can make it:
 | Interface behavior, content, component, asset, or responsive rule | Designer or human design owner |
 | Architecture option, trust boundary, ADR, or NFR target | Architect or human architecture/risk owner |
 | Incorrect or incomplete implementation | Software Engineer |
-| Missing verification evidence or reproducible defect | Tester or Software Engineer, depending on cause |
+| Missing repeatable verification evidence or reproducible defect | Tester for mapping/execution; Software Engineer for repository-test integration or implementation repair |
+| Environment, Playwright runner, CI report, or required-check issue | DevOps or authorized operator |
+| Tier C/Limited isolation or another engineering verification-gate exception | Human owner; Software Engineer records but cannot approve it |
 | Environment access, deployment step, monitoring, or rollback evidence | DevOps or authorized operator |
 | Final scope, architecture acceptance, risk acceptance, or release approval | Human owner |
 
@@ -105,6 +112,7 @@ Use these files for different questions:
 3. The selected client's native Agent file under `paths.agents` — role mission, rules, boundaries, and handoff.
 4. `.ai-sdlc/roles/<role>/config.yaml` — role-specific inputs and child directory when present.
 5. `.ai-sdlc/roles/<role>/workflow.md` — detailed role procedure when present.
-6. Registered output artifacts — current project evidence and decisions.
+6. `.ai-sdlc/roles/<role>/references/*.md` — ordinary supporting procedures when the role workflow names them.
+7. Registered output artifacts — current project evidence and decisions.
 
 See [Configuration](../configuration/README.md) for artifact path resolution and [End-to-End Workflow](../workflow/README.md) for the phase graph.

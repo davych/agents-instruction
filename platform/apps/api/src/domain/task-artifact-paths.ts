@@ -7,7 +7,18 @@ import type {
   LoadedDefinition
 } from "../services/definition-loader.js";
 
-const TASK_SCOPED_ARTIFACT_KEYS = new Set(["change-contract", "design-spec"]);
+export const TASK_SCOPED_ARTIFACT_KEYS: ReadonlySet<string> = new Set([
+  "change-contract",
+  "design-spec",
+  "implementation-notes",
+  "implementation-plan",
+  "implementation-tasks",
+  "engineering-session-log",
+  "engineering-test-evidence",
+  "engineering-review",
+  "engineering-provenance",
+  "test-report",
+]);
 const TASK_SLUG_MAX_BYTES = 96;
 const runIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
@@ -42,8 +53,9 @@ export function createTaskArtifactNamespace(task: TaskArtifactIdentity): string 
 
 /**
  * Returns a run-scoped definition without mutating the project definition.
- * Run-level contracts and feature-level design specs are task-scoped;
- * project-wide artifacts keep their configured paths.
+ * Run-level contracts, feature-level design specs, engineering evidence, and
+ * verification reports are task-scoped; project-wide artifacts keep their
+ * configured paths.
  */
 export function resolveTaskArtifactPaths(
   definition: LoadedDefinition,

@@ -196,7 +196,7 @@ export interface ArchitectureSelectionReviewLike {
 
 const architectureSelectionPattern = /^\s*(?:Selected option|选择方案|选定方案)\s*[:：]\s*(?:Option\s+)?([A-Za-z0-9][A-Za-z0-9._-]{0,159})\s*$/gimu;
 const anyArchitectureSelectionMarkerPattern = /^\s*(?:Selected option|选择方案|选定方案)\s*[:：]\s*(?:Option\s+)?[A-Za-z0-9][A-Za-z0-9._-]*\s*$/gimu;
-const architectureOptionHeadingPattern = /^##\s+Option\s+([A-Za-z0-9][A-Za-z0-9._-]{0,159})\s*:/gimu;
+const architectureOptionHeadingPattern = /^#{2,3}\s+Option\s+([A-Za-z0-9][A-Za-z0-9._-]{0,159})\s*(?::|：|—|–|\s-\s)/gimu;
 
 export function hasArchitectureSelectionMarker(comment: string): boolean {
   anyArchitectureSelectionMarkerPattern.lastIndex = 0;

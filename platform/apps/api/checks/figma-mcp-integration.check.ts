@@ -814,6 +814,7 @@ async function createStub(
           ]),
       '      } else if (request.method === "thread/start") {',
       '        process.stdout.write(`${JSON.stringify({ id: request.id, result: { thread: { id: "ephemeral-thread", ephemeral: true } } })}\n`);',
+      '        process.stdout.write(`${JSON.stringify({ method: "mcpServer/startupStatus/updated", params: { name: "codex_apps", status: "ready" } })}\n`);',
       '      } else if (request.method === "mcpServer/tool/call") {',
       ...(options.whoamiRawOutput
         ? [`        process.stdout.write(${JSON.stringify(options.whoamiRawOutput)});`]

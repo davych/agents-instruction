@@ -12,6 +12,15 @@ import type { LoadedDefinition } from "../src/services/definition-loader.ts";
 const firstRunId = "550e8400-e29b-41d4-a716-446655440000";
 const secondRunId = "550e8400-e29b-41d4-a716-446655440001";
 const projectRoot = path.resolve("/projects/demo");
+const engineeringEvidenceKeys = [
+  "implementation-notes",
+  "implementation-plan",
+  "implementation-tasks",
+  "engineering-session-log",
+  "engineering-test-evidence",
+  "engineering-review",
+  "engineering-provenance",
+] as const;
 
 test("uses a readable Chinese task title and the full run id for the design spec", () => {
   const definition = sampleDefinition();
@@ -62,7 +71,7 @@ test("removes path and control characters from task titles", () => {
   assert.doesNotMatch(namespace, /(?:^|-)\.\.(?:-|$)/u);
 });
 
-test("resolves the same task deterministically and leaves non-design-spec artifacts unchanged", () => {
+test("AC-ENG-004: resolves all seven engineering outputs deterministically inside the Run namespace", () => {
   const definition = sampleDefinition();
   const task = { id: firstRunId.toUpperCase(), title: "  CHECKOUT   FLOW  " };
   const first = resolveTaskArtifactPaths(definition, task);
@@ -80,9 +89,64 @@ test("resolves the same task deterministically and leaves non-design-spec artifa
     first.artifacts.find((artifact) => artifact.id === "design-baseline"),
     baseline
   );
-  assert.deepEqual(
-    first.artifacts.find((artifact) => artifact.id === "implementation-notes"),
-    definition.artifacts.find((artifact) => artifact.id === "implementation-notes")
+  for (const artifactKey of engineeringEvidenceKeys) {
+    const configured = definition.artifacts.find((artifact) => artifact.id === artifactKey)!;
+    const resolved = first.artifacts.find((artifact) => artifact.id === artifactKey)!;
+    assert.notEqual(resolved.relativePath, configured.relativePath, artifactKey);
+    assert.match(resolved.relativePath, new RegExp(firstRunId, "u"), artifactKey);
+    assert.equal(resolved.absolutePath, path.join(projectRoot, resolved.relativePath), artifactKey);
+    assert.equal(path.isAbsolute(path.relative(projectRoot, resolved.absolutePath)), false, artifactKey);
+    assert.doesNotMatch(path.relative(projectRoot, resolved.absolutePath), /^\.\.(?:\/|$)/u, artifactKey);
+  }
+  assert.equal(
+    new Set(engineeringEvidenceKeys.map((artifactKey) =>
+      first.artifacts.find((artifact) => artifact.id === artifactKey)?.relativePath
+    )).size,
+    engineeringEvidenceKeys.length,
+  );
+});
+
+test("AC-TESTER-012: gives test-report a stable Run-scoped path", () => {
+  const task = { id: firstRunId, title: "Checkout coupon" };
+  const configured = sampleDefinition();
+  const first = resolveTaskArtifactPaths(configured, task);
+  const repeated = resolveTaskArtifactPaths(first, task);
+  const report = first.artifacts.find((artifact) => artifact.id === "test-report");
+  assert.ok(report);
+
+  assert.equal(
+    report.relativePath,
+    `docs/ai-native/testing/checkout-coupon--${firstRunId}-test-report.md`,
+  );
+  assert.equal(report?.absolutePath, path.join(projectRoot, report.relativePath));
+  assert.equal(
+    configured.artifacts.find((artifact) => artifact.id === "test-report")?.relativePath,
+    "docs/ai-native/testing/test-report.md",
+    "resolver must not mutate the configured verification path",
+  );
+  assert.deepEqual(repeated, first, "task-scoping is idempotent");
+});
+
+test("AC-TESTER-012: pins a persisted test-report path across config changes", () => {
+  const task = { id: firstRunId, title: "Checkout coupon" };
+  const legacyPath = "docs/ai-native/testing/test-report.md";
+  const changed = sampleDefinition();
+  const configuredReport = changed.artifacts.find(
+    (artifact) => artifact.id === "test-report",
+  )!;
+  configuredReport.relativePath = "docs/moved/verification.md";
+  configuredReport.absolutePath = path.join(projectRoot, configuredReport.relativePath);
+
+  const resolved = pinExistingTaskArtifactPaths(
+    resolveTaskArtifactPaths(changed, task),
+    projectRoot,
+    [{ artifactKey: "test-report", filePath: legacyPath }],
+  );
+
+  assert.equal(
+    resolved.artifacts.find((artifact) => artifact.id === "test-report")?.relativePath,
+    legacyPath,
+    "an existing legacy report head remains at its persisted default path",
   );
 });
 
@@ -116,6 +180,34 @@ test("pins an existing task design spec when the live config path changes", () =
   );
 });
 
+test("AC-ENG-004: reruns retain every originally pinned engineering evidence path", () => {
+  const task = { id: firstRunId, title: "Checkout flow" };
+  const original = resolveTaskArtifactPaths(sampleDefinition(), task);
+  const pinned = engineeringEvidenceKeys.map((artifactKey) => ({
+    artifactKey,
+    filePath: original.artifacts.find((artifact) => artifact.id === artifactKey)!.relativePath,
+  }));
+  const changed = sampleDefinition();
+  for (const artifactKey of engineeringEvidenceKeys) {
+    const artifact = changed.artifacts.find((candidate) => candidate.id === artifactKey)!;
+    artifact.relativePath = `docs/moved/${artifactKey}.md`;
+    artifact.absolutePath = path.join(projectRoot, artifact.relativePath);
+  }
+
+  const resolved = pinExistingTaskArtifactPaths(
+    resolveTaskArtifactPaths(changed, task),
+    projectRoot,
+    pinned,
+  );
+
+  assert.deepEqual(
+    engineeringEvidenceKeys.map((artifactKey) =>
+      resolved.artifacts.find((artifact) => artifact.id === artifactKey)?.relativePath
+    ),
+    pinned.map(({ filePath }) => filePath),
+  );
+});
+
 function sampleDefinition(): LoadedDefinition {
   return {
     version: 1,
@@ -143,7 +235,19 @@ function sampleDefinition(): LoadedDefinition {
         owner: "software-engineer",
         relativePath: "docs/ai-native/engineering/implementation-notes.md",
         absolutePath: path.join(projectRoot, "docs", "ai-native", "engineering", "implementation-notes.md")
-      }
+      },
+      ...engineeringEvidenceKeys.slice(1).map((id) => ({
+        id,
+        owner: "software-engineer",
+        relativePath: `docs/ai-native/engineering/${id}.md`,
+        absolutePath: path.join(projectRoot, "docs", "ai-native", "engineering", `${id}.md`),
+      })),
+      {
+        id: "test-report",
+        owner: "tester",
+        relativePath: "docs/ai-native/testing/test-report.md",
+        absolutePath: path.join(projectRoot, "docs", "ai-native", "testing", "test-report.md"),
+      },
     ],
     configPath: path.join(projectRoot, "ai-native.yaml")
   };

@@ -39,6 +39,8 @@ If invoked under `skip` or `reuse`, write nothing and report that no Architect g
 - Restate the problem and constraints before proposing a solution.
 - Separate facts, assumptions, recommendations, and human decisions.
 - Produce genuinely different options before drawing the selected architecture.
+- In `architecture-options`, use the exact machine-readable heading `## Option <ID>: <name>` for every option. Do not substitute H3 headings, em dashes, translated labels, or prose-only option names; initialized projects may be read leniently, but new output must stay canonical.
+- Treat captured `ARCH-OBS-002` feedback as a human operational-policy decision, not ordinary commentary. Materialize its destination, allowed fields, redaction, owner, searchable signal, and verification method in Discovery, Options, Patterns, and NFR evidence as applicable. Once the formal artifacts contain that evidence, remove the unchecked decision and do not repeat the same question.
 - Tie each recommendation to project evidence and show its cost or risk.
 - Read the compact core rule pack, then use the rulebook index to load only conditionally applicable domain packs. Classify every pack; do not silently skip one.
 - Classify affected scope as Greenfield, Brownfield, or Hybrid from implementation evidence before applying technology defaults. Never use a Greenfield default as an unreviewed Brownfield migration.
@@ -50,8 +52,10 @@ If invoked under `skip` or `reuse`, write nothing and report that no Architect g
 - Keep diagrams, ADRs, patterns, and NFRs consistent with one another.
 - Use measurable quality targets. Never invent load, latency, cost, reliability, security, or compliance facts.
 - Mark a missing target as a human decision and keep the pack blocked instead of hiding the gap.
+- Treat a valid `design-spec.deferred_validations` entry as a downstream Verification obligation, not an open Design decision or Architecture blocker. Carry its observable target into NFR/test guidance, but do not move B-04 back into an unchecked human-decision list when the Design handoff is `ready-for-engineering`.
 - Treat every output selected by the active execution contract as mandatory. A pause point changes the artifact status; it does not permit a selected path to be absent or empty.
 - Ask only when a missing answer changes a trust boundary, an irreversible choice, a major trade-off, or whether a quality target can be tested.
+- Put each genuinely blocking human Architecture question under `## Open Human Decisions` as `- [ ] **<stable-id>:** <one plain-language decision with concrete choices>`. Never replace a known rule or dependency with a generic “close gaps” instruction. A platform option selection is handled by the current Options checkpoint and must not be duplicated as a generic checklist item.
 
 ## Output contract
 

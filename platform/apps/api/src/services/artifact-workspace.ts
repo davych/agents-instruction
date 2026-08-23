@@ -7,10 +7,12 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readlink,
   readdir,
   realpath,
   rename,
   rm,
+  rmdir,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -22,10 +24,12 @@ import { isWithin } from "./project-paths.js";
 export interface ProtectedArtifactPath {
   id: string;
   absolutePath: string;
+  maxBytes?: number;
 }
 
 interface ArtifactPathSnapshot extends ProtectedArtifactPath {
   backupPath: string;
+  existingAncestorPath: string;
   stateHash: string | null;
 }
 
@@ -54,8 +58,9 @@ export async function withProtectedArtifactPaths<T>(
   try {
     for (const [index, artifact] of artifacts.entries()) {
       await assertRuntimePath(projectRoot, artifact.absolutePath);
-      const stateHash = await hashArtifactTree(artifact.absolutePath, maxBytes);
+      const stateHash = await hashArtifactTree(artifact.absolutePath, artifact.maxBytes ?? maxBytes);
       const backupPath = path.join(backupRoot, String(index));
+      const existingAncestorPath = await closestExistingAncestor(projectRoot, artifact.absolutePath);
       if (stateHash !== null) {
         await cp(artifact.absolutePath, backupPath, {
           recursive: true,
@@ -65,7 +70,7 @@ export async function withProtectedArtifactPaths<T>(
           preserveTimestamps: true,
         });
       }
-      snapshots.push({ ...artifact, backupPath, stateHash });
+      snapshots.push({ ...artifact, backupPath, existingAncestorPath, stateHash });
     }
 
     let result: T | undefined;
@@ -81,7 +86,7 @@ export async function withProtectedArtifactPaths<T>(
     for (const snapshot of snapshots) {
       let currentHash: string | null;
       try {
-        currentHash = await hashArtifactTree(snapshot.absolutePath, maxBytes);
+        currentHash = await hashArtifactTree(snapshot.absolutePath, snapshot.maxBytes ?? maxBytes);
       } catch {
         currentHash = "unsafe-or-unreadable";
       }
@@ -96,7 +101,7 @@ export async function withProtectedArtifactPaths<T>(
 
     if (restoreError) {
       throw new AppError(
-        "局部重跑修改了未选产物，且平台无法完整还原工作区",
+        "执行修改了受保护的未选产物或角色资源，且平台无法完整还原工作区",
         500,
         "UNSELECTED_OUTPUTS_RESTORE_FAILED",
         {
@@ -109,7 +114,7 @@ export async function withProtectedArtifactPaths<T>(
     if (operationError) throw operationError;
     if (changed.length > 0) {
       throw new AppError(
-        `局部重跑修改了未选中的产物，平台已还原：${changed.join(", ")}`,
+        `执行修改了受保护的未选产物或角色资源，平台已还原：${changed.join(", ")}`,
         422,
         "UNSELECTED_OUTPUTS_CHANGED",
         { changed, restored: true },
@@ -140,8 +145,9 @@ export async function withArtifactPathsRollbackOnError<T>(
   try {
     for (const [index, artifact] of artifacts.entries()) {
       await assertRuntimePath(projectRoot, artifact.absolutePath);
-      const stateHash = await hashArtifactTree(artifact.absolutePath, maxBytes);
+      const stateHash = await hashArtifactTree(artifact.absolutePath, artifact.maxBytes ?? maxBytes);
       const backupPath = path.join(backupRoot, String(index));
+      const existingAncestorPath = await closestExistingAncestor(projectRoot, artifact.absolutePath);
       if (stateHash !== null) {
         await cp(artifact.absolutePath, backupPath, {
           recursive: true,
@@ -151,7 +157,7 @@ export async function withArtifactPathsRollbackOnError<T>(
           preserveTimestamps: true,
         });
       }
-      snapshots.push({ ...artifact, backupPath, stateHash });
+      snapshots.push({ ...artifact, backupPath, existingAncestorPath, stateHash });
     }
 
     try {
@@ -162,7 +168,7 @@ export async function withArtifactPathsRollbackOnError<T>(
       for (const snapshot of snapshots) {
         let currentHash: string | null;
         try {
-          currentHash = await hashArtifactTree(snapshot.absolutePath, maxBytes);
+          currentHash = await hashArtifactTree(snapshot.absolutePath, snapshot.maxBytes ?? maxBytes);
         } catch {
           currentHash = "unsafe-or-unreadable";
         }
@@ -170,6 +176,21 @@ export async function withArtifactPathsRollbackOnError<T>(
         changed.push(snapshot.id);
         try {
           await restoreArtifactSnapshot(projectRoot, snapshot);
+        } catch (error) {
+          restoreError ??= error;
+        }
+      }
+      // A failed writer may create only the parent chain for a selected output
+      // and stop before creating the output itself. That leaves the selected
+      // path hash unchanged (`null`) but still mutates workspace topology.
+      for (const snapshot of snapshots
+        .filter((candidate) => candidate.stateHash === null)
+        .sort((left, right) => right.absolutePath.length - left.absolutePath.length)) {
+        try {
+          await removeEmptyAncestors(
+            path.dirname(snapshot.absolutePath),
+            snapshot.existingAncestorPath,
+          );
         } catch (error) {
           restoreError ??= error;
         }
@@ -391,21 +412,35 @@ async function hashArtifactTree(target: string, maxBytes: number): Promise<strin
   const visit = async (candidate: string, relativePath: string): Promise<void> => {
     const candidateStats = await lstat(candidate);
     if (candidateStats.isSymbolicLink()) {
-      throw new AppError("受保护产物不能包含符号链接", 422, "UNSAFE_ARTIFACT");
+      hash.update("symlink\0")
+        .update(relativePath)
+        .update("\0")
+        .update(String(candidateStats.mode & 0o7777))
+        .update("\0")
+        .update(await readlink(candidate));
+      return;
     }
+    const permissionMode = String(candidateStats.mode & 0o7777);
     if (candidateStats.isFile()) {
       consumed += candidateStats.size;
       if (consumed > maxBytes) {
         throw new AppError(`产物超过 ${maxBytes} 字节限制`, 422, "ARTIFACT_TOO_LARGE");
       }
       const bytes = await readFile(candidate);
-      hash.update("file\0").update(relativePath).update("\0").update(String(bytes.length)).update("\0").update(bytes);
+      hash.update("file\0")
+        .update(relativePath)
+        .update("\0")
+        .update(permissionMode)
+        .update("\0")
+        .update(String(bytes.length))
+        .update("\0")
+        .update(bytes);
       return;
     }
     if (!candidateStats.isDirectory()) {
       throw new AppError("产物必须是普通文件或目录", 422, "INVALID_ARTIFACT");
     }
-    hash.update("directory\0").update(relativePath).update("\0");
+    hash.update("directory\0").update(relativePath).update("\0").update(permissionMode).update("\0");
     const entries = await readdir(candidate, { withFileTypes: true });
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
@@ -451,6 +486,37 @@ async function restoreArtifactSnapshot(
     throw error;
   }
   await rm(changedPath, { recursive: true, force: true });
+  if (snapshot.stateHash === null) {
+    await removeEmptyAncestors(path.dirname(snapshot.absolutePath), snapshot.existingAncestorPath);
+  }
+}
+
+async function closestExistingAncestor(projectRoot: string, target: string): Promise<string> {
+  let cursor = path.dirname(target);
+  while (isWithin(projectRoot, cursor)) {
+    if (await lstatOrNull(cursor)) return cursor;
+    if (cursor === projectRoot) break;
+    cursor = path.dirname(cursor);
+  }
+  return projectRoot;
+}
+
+async function removeEmptyAncestors(start: string, stopAt: string): Promise<void> {
+  let cursor = start;
+  while (cursor !== stopAt && isWithin(stopAt, cursor)) {
+    try {
+      await rmdir(cursor);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        cursor = path.dirname(cursor);
+        continue;
+      }
+      if (["ENOTEMPTY", "EEXIST"].includes(code ?? "")) return;
+      throw error;
+    }
+    cursor = path.dirname(cursor);
+  }
 }
 
 function parseDirectoryRevision(
@@ -518,17 +584,26 @@ function assertSafeRelativeFile(relativePath: string): void {
 }
 
 function assertNonOverlappingPaths(artifacts: ProtectedArtifactPath[]): void {
-  const resolved = artifacts.map((artifact) => ({ ...artifact, path: path.resolve(artifact.absolutePath) }));
-  for (const [index, left] of resolved.entries()) {
-    for (const right of resolved.slice(index + 1)) {
-      if (isWithin(left.path, right.path) || isWithin(right.path, left.path)) {
+  const resolved = artifacts
+    .map((artifact) => ({ ...artifact, path: path.resolve(artifact.absolutePath) }))
+    .sort((left, right) => left.path.length - right.path.length || left.path.localeCompare(right.path));
+  const seen = new Map<string, ProtectedArtifactPath>();
+  for (const artifact of resolved) {
+    let cursor = artifact.path;
+    while (true) {
+      const overlapping = seen.get(cursor);
+      if (overlapping) {
         throw new AppError(
-          `受保护产物路径互相嵌套：${left.id}, ${right.id}`,
+          `受保护产物路径互相嵌套：${overlapping.id}, ${artifact.id}`,
           422,
           "OVERLAPPING_ARTIFACT_PATHS",
         );
       }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) break;
+      cursor = parent;
     }
+    seen.set(artifact.path, artifact);
   }
 }
 

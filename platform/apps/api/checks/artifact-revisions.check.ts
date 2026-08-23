@@ -659,6 +659,7 @@ test("current phase snapshots expose only revision heads with their editable con
   assert.equal(snapshots[0]?.content, "edited");
   assert.equal(snapshots[0]?.revision, 3);
   assert.equal(snapshots[0]?.revisionSource, "human");
+  assert.equal(snapshots[0]?.executionId, null);
 });
 
 function mockClient(

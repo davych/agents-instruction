@@ -271,6 +271,48 @@ export interface Review {
   reviewer?: string;
 }
 
+export type HumanDecisionPhaseId = "discovery" | "design" | "architecture";
+export type HumanDecisionKind = "decision" | "work" | "dependency" | "acceptance";
+export type HumanDecisionGateState =
+  | "clear"
+  | "awaiting_decision"
+  | "awaiting_role_work"
+  | "inconsistent_approval";
+
+export interface HumanDecisionItem {
+  id: string;
+  phaseId: HumanDecisionPhaseId;
+  actionPhaseId: HumanDecisionPhaseId;
+  artifactKey: string;
+  kind: HumanDecisionKind;
+  title: string;
+  prompt: string;
+  owner: string;
+  nextAction: string;
+  blocking: boolean;
+  response: string | null;
+}
+
+export interface PhaseHumanDecisionGate {
+  phaseId: HumanDecisionPhaseId;
+  roleId: "pm-ba" | "designer" | "architect";
+  state: HumanDecisionGateState;
+  items: HumanDecisionItem[];
+  blockingCount: number;
+  decisionCount: number;
+  workCount: number;
+  dependencyCount: number;
+  inconsistentApproval: boolean;
+}
+
+export interface HumanDecisionSummary {
+  totalBlocking: number;
+  totalDecisions: number;
+  totalRoleWork: number;
+  inconsistentPhaseIds: HumanDecisionPhaseId[];
+  phases: PhaseHumanDecisionGate[];
+}
+
 export interface Execution {
   id: string;
   phaseRunId?: string;

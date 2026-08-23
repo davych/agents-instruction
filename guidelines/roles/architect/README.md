@@ -16,6 +16,14 @@ This role explains:
 
 Architect recommends a direction. A human selects and accepts it.
 
+The platform deliberately separates three moments that used to look like one vague review:
+
+1. **Answer concrete blockers** — for example, choose where browser diagnostics go and what data is forbidden. The page presents plain-language choices; saving opens one Architect update.
+2. **Select the direction** — compare the current A/B/C cards and click one. This records the choice against the exact Options revision and opens one selected-state Architect update. It is not approval.
+3. **Accept the completed pack** — review the C4 views, ADRs, patterns, NFRs, and premortem, then approve or request a specific change.
+
+Do not repeatedly run Architect while a card says “需要你决定”. Answer that card first. A generic “close gaps” item is only a legacy fallback; current Architect output must expose the concrete stable decision ID and choices.
+
 ## Place in the workflow
 
 | Direction | Role | Relationship |

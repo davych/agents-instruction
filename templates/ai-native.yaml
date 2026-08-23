@@ -28,12 +28,12 @@ roles:
     responsibilities: [architecture options, system boundaries, decision records, measurable quality budgets]
   - id: software-engineer
     name: Software Engineer
-    mission: 实现功能并提供可验证的工程结果。
-    responsibilities: [实现, 自动化测试, 代码质量]
+    mission: Turn confirmed contracts into the smallest complete software change and an independently verifiable engineering evidence pack.
+    responsibilities: [implementation, acceptance traceability, independent test evidence, engineering review, provenance]
   - id: tester
     name: Tester
-    mission: 验证需求、风险和回归范围。
-    responsibilities: [测试设计, 缺陷证据, 发布质量结论]
+    mission: Turn confirmed requirements and risks into independent, repeatable verification; use Playwright MCP only for exploration and standalone repository tests for reusable E2E evidence.
+    responsibilities: [risk-based test design, browser exploration, E2E evidence audit, standalone execution, defect evidence, release-quality recommendation]
   - id: devops
     name: DevOps
     mission: 建立可重复、可观察、可回滚的交付路径。
@@ -50,7 +50,7 @@ workflow:
       owner: designer
       inputs: [change-contract, prd, user-stories]
       outputs: [design-baseline, design-spec, design-prototype, figma-handoff]
-      gate: An explicit design disposition is recorded; skip and reuse have valid evidence, or the selected design outputs are complete, traceable, validated, ready-for-engineering, and unblocked.
+      gate: An explicit design disposition is recorded; skip and reuse have valid evidence, or the selected design outputs are complete, traceable, ready-for-engineering, and unblocked. Checks that require the runnable implementation are recorded as Tester-owned deferred validations, never as Design blockers.
     - id: architecture
       owner: architect
       inputs: [change-contract, prd, user-stories, design-spec]
@@ -59,13 +59,13 @@ workflow:
     - id: implementation
       owner: software-engineer
       inputs: [change-contract, prd, user-stories, design-baseline, design-spec, architecture, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs]
-      outputs: [implementation-notes]
-      gate: 实现和必要测试完成。
+      outputs: [implementation-notes, implementation-plan, implementation-tasks, engineering-session-log, engineering-test-evidence, engineering-review, engineering-provenance]
+      gate: The confirmed implementation and necessary tests are complete; every acceptance criterion has independent test evidence, all seven review lenses and the adversarial pass are complete, and the provenance chain has no unresolved blocker.
     - id: verification
       owner: tester
-      inputs: [change-contract, prd, user-stories, architecture, architecture-nfrs, implementation-notes]
+      inputs: [change-contract, prd, user-stories, design-spec, architecture, architecture-nfrs, implementation-notes, engineering-test-evidence, engineering-review]
       outputs: [test-report]
-      gate: 验收标准和主要风险已有验证证据。
+      gate: Acceptance criteria, targeted regressions, main risks, and every selected deferred Design validation have current execution evidence; Playwright MCP exploration alone never satisfies repeatable E2E or CI evidence.
     - id: release
       owner: devops
       inputs: [architecture, architecture-adrs, architecture-nfrs, architecture-adversarial, test-report]
@@ -96,6 +96,14 @@ artifacts:
   - { id: architecture-patterns, owner: architect, path: 05-patterns.md }
   - { id: architecture-nfrs, owner: architect, path: 06-nfrs.md }
   - { id: architecture-adversarial, owner: architect, path: 07-adversarial.md }
-  - { id: implementation-notes, owner: software-engineer, path: ai-native/engineering/implementation-notes.md }
+  # Software Engineer paths are resolved under its role config output.subdirectory.
+  # All seven evidence documents receive stable Run-scoped filenames in platform executions.
+  - { id: implementation-notes, owner: software-engineer, path: implementation-notes.md }
+  - { id: implementation-plan, owner: software-engineer, path: implementation-plan.md }
+  - { id: implementation-tasks, owner: software-engineer, path: implementation-tasks.md }
+  - { id: engineering-session-log, owner: software-engineer, path: session-log.md }
+  - { id: engineering-test-evidence, owner: software-engineer, path: independent-test-evidence.md }
+  - { id: engineering-review, owner: software-engineer, path: review.md }
+  - { id: engineering-provenance, owner: software-engineer, path: pr-provenance.md }
   - { id: test-report, owner: tester, path: ai-native/testing/test-report.md }
   - { id: release-runbook, owner: devops, path: ai-native/operations/release-runbook.md }

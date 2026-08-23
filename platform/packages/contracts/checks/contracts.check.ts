@@ -10,6 +10,7 @@ import {
   assessDesignImpactSchema,
   assessProductImpactSchema,
   changeContractSchema,
+  captureHumanDecisionsSchema,
   codexExecutionCapabilitiesSchema,
   codexReasoningEffortSchema,
   codexRunnerModeSchema,
@@ -101,6 +102,36 @@ test("request contracts reject incomplete reviews and invalid artifact ids", () 
   }).success, false);
   assert.equal(executePhaseSchema.safeParse({ selectedArtifactIds: ["not-a-uuid"] }).success, false);
   assert.equal(createProjectSchema.safeParse({ name: "demo", rootPath: "/tmp/demo" }).success, true);
+});
+
+test("structured human decisions require unique ids, meaningful answers, and locked artifact heads", () => {
+  const artifactId = crypto.randomUUID();
+  assert.equal(captureHumanDecisionsSchema.safeParse({
+    responses: [{ id: "PROD-Q-01", response: "Use the current catalog in its existing order." }],
+    expectedArtifactIds: [artifactId],
+  }).success, true);
+  assert.equal(captureHumanDecisionsSchema.safeParse({
+    responses: [{ id: "PROD-Q-01", response: "ok" }],
+    expectedArtifactIds: [artifactId],
+  }).success, false);
+  assert.equal(captureHumanDecisionsSchema.safeParse({
+    responses: [
+      { id: "PROD-Q-01", response: "First answer" },
+      { id: "PROD-Q-01", response: "Conflicting answer" },
+    ],
+    expectedArtifactIds: [artifactId],
+  }).success, false);
+  assert.equal(captureHumanDecisionsSchema.safeParse({
+    responses: [{ id: "PROD-Q-01", response: "Use the current catalog." }],
+    expectedArtifactIds: [],
+  }).success, false);
+  assert.equal(captureHumanDecisionsSchema.safeParse({
+    responses: [
+      { id: "PROD-Q-01", response: "x".repeat(5_000) },
+      { id: "PROD-Q-02", response: "y".repeat(2_500) },
+    ],
+    expectedArtifactIds: [artifactId],
+  }).success, false);
 });
 
 test("manual artifact revisions require non-empty content and an optimistic-lock hash", () => {

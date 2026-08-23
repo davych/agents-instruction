@@ -1,0 +1,57 @@
+version: 1
+
+resources:
+  role: {{SOFTWARE_ENGINEER_ROLE_PATH}}
+
+# Artifact IDs are resolved through ai-native.yaml and the artifact owner's config.
+# A recorded direct, skip, or reuse clearance may replace an optional upstream file;
+# never manufacture a placeholder merely because an ID appears in this vocabulary.
+inputs:
+  artifacts:
+    - change-contract
+    - prd
+    - user-stories
+    - design-baseline
+    - design-spec
+    - architecture
+    - architecture-c4-containers
+    - architecture-adrs
+    - architecture-patterns
+    - architecture-nfrs
+  markdown: []
+
+# Read only candidates that exist and are relevant to the affected slice. Missing
+# optional context is not evidence and must be recorded when it creates uncertainty.
+context:
+  candidates:
+    hot: [AGENTS.md, CLAUDE.md]
+    warm: [docs/context/stack.md, docs/context/testing.md]
+    cold: [context/cold/gap-log.md]
+
+# These IDs must also be registered in ai-native.yaml. Plan and tasks are separate
+# evidence: the plan owns strategy and slice boundaries; tasks own execution state.
+evidence:
+  registered_artifacts:
+    - implementation-plan
+    - implementation-tasks
+    - implementation-notes
+    - engineering-session-log
+    - engineering-test-evidence
+    - engineering-review
+    - engineering-provenance
+
+# Replay support is deliberately outside the normal phase registry and Web gate.
+# Create it manually from the template only for a failed or disputed run.
+conditional_support:
+  replay_packet_template: .ai-sdlc/templates/engineering-replay-packet.md
+
+# Review floors are gates, not permission to invent criteria, tests, or findings.
+quality:
+  minimum_tests_per_acceptance_criterion: 1
+  passing_isolation_tiers: [A, B]
+  minimum_review_lenses: 7
+  minimum_adversarial_passes: 2
+
+# The global output root and artifact filenames come from ai-native.yaml.
+output:
+  subdirectory: ai-native/engineering
