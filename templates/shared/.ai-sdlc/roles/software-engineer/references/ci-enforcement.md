@@ -35,6 +35,7 @@ Risk level follows confirmed scope and observed impact. The Agent may identify a
 - Test and build output must come from the changed revision; stale results do not satisfy the gate.
 - Remote CI status must be distinguished from a local CI-equivalent run.
 - High-risk changes cannot use a Tier C or Limited verification result without the explicit verification waiver, and such a waiver does not replace security or merge review.
+- A downstream Tester-owned browser, accessibility, E2E, or deferred runtime validation is not an Implementation project check. Preserve it in limitations and the Tester handoff instead of listing it as skipped, unrun, failed, or blocked in the Software Engineer command/gate tables. This does not excuse any test or project check that the Change Contract or repository policy actually assigns to Implementation.
 
 ## CI ownership boundary
 

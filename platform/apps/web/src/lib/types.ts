@@ -193,6 +193,120 @@ export interface CodexCapabilities {
   defaultReasoningEffort: CodexReasoningEffort;
 }
 
+export type E2ePackageManager = "npm";
+export type E2eBrowser = "chromium";
+
+export interface ConfigureE2eWorkspaceInput {
+  rootPath: string;
+  initialize: boolean;
+  baseUrl: string;
+  packageManager: E2ePackageManager;
+  /** Reviewed package-script key, never a free-form shell command. */
+  sourceStartScript: string;
+  /** Reviewed package-script key, never a free-form shell command. */
+  testScript: string;
+  browser: E2eBrowser;
+  playwrightVersion: string;
+}
+
+export interface E2eWorkspace {
+  version: 1;
+  productProjectId: string;
+  rootPath: string;
+  descriptorPath: string;
+  baseUrl: string;
+  packageManager: E2ePackageManager;
+  sourceStartScript: string;
+  testScript: string;
+  browser: E2eBrowser;
+  playwrightVersion: string;
+  descriptorHash: string;
+  updatedAt: string;
+}
+
+export type VerificationE2eFlowState =
+  | "unconfigured"
+  | "preflight_blocked"
+  | "needs_authoring"
+  | "authoring"
+  | "awaiting_script_review"
+  | "ready_to_execute"
+  | "executing"
+  | "awaiting_verification_review"
+  | "failed";
+
+export type E2eReadinessState =
+  | "ready"
+  | "missing"
+  | "invalid"
+  | "unreachable"
+  | "failed"
+  | "not_checked";
+
+export interface E2eReadinessItem {
+  state: E2eReadinessState;
+  message: string;
+  detail?: string;
+}
+
+export interface E2eWorkspaceReadiness {
+  ready: boolean;
+  workspace: E2eReadinessItem;
+  playwright: E2eReadinessItem;
+  browser: E2eReadinessItem;
+  sourceStartScript: E2eReadinessItem;
+  target: E2eReadinessItem;
+  checkedAt: string;
+}
+
+export interface E2eAuthoredFile {
+  path: string;
+  sha256: string;
+  bytes: number;
+  content?: string;
+}
+
+export interface VerificationE2eAuthoring {
+  runId: string;
+  executionId: string;
+  status: "awaiting_review" | "approved" | "changes_requested";
+  patchHash: string;
+  productRevisionToken: string;
+  e2eRevisionToken: string;
+  criterionIds: string[];
+  files: E2eAuthoredFile[];
+  reviewComment: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+}
+
+export interface VerificationE2eFlow {
+  runId: string;
+  state: VerificationE2eFlowState;
+  workspace: E2eWorkspace | null;
+  readiness: E2eWorkspaceReadiness | null;
+  blockers: string[];
+  criterionIds: string[];
+  contractSource: "change_contract" | "legacy_approved_artifacts" | "unavailable";
+  authoring: VerificationE2eAuthoring | null;
+  execution: Execution | null;
+  recommendedAction: string;
+}
+
+export interface VerificationE2eSelectionInput {
+  selectedArtifactIds: string[];
+  model?: string;
+  reasoningEffort?: CodexReasoningEffort;
+}
+
+export type VerificationE2eAction = "standard" | "author_e2e" | "run_e2e";
+
+export interface VerificationE2eScriptReviewInput {
+  decision: ReviewDecision;
+  expectedPatchHash: string;
+  comment: string;
+}
+
 export interface Project {
   id: string;
   name: string;

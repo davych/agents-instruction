@@ -15,14 +15,15 @@ test("AC-TESTER-011: Web guidance separates intake and the three E2E stages", ()
   assert.deepEqual(TESTER_FLOW_STEPS.map(({ number }) => number), [0, 1, 2, 3]);
   assert.match(TESTER_FLOW_STEPS[0]?.description ?? "", /实现说明.*独立测试证据.*工程七镜.*revision/iu);
   assert.match(TESTER_FLOW_STEPS[1]?.description ?? "", /Playwright MCP.*草稿.*不能.*验收.*CI/iu);
-  assert.match(TESTER_FLOW_STEPS[2]?.description ?? "", /spec.*不能复制.*Software Engineer.*刷新.*证据/iu);
-  assert.match(TESTER_FLOW_STEPS[2]?.description ?? "", /要求修改.*E2E crystallization request:.*AC.*Frozen intent/iu);
+  assert.match(TESTER_FLOW_STEPS[2]?.description ?? "", /spec.*旧 Run.*已批准.*独立 E2E workspace.*人工审核.*整套.*全部内容.*hash/iu);
+  assert.match(TESTER_FLOW_STEPS[2]?.description ?? "", /不用手写特殊评论或 Markdown/iu);
+  assert.doesNotMatch(TESTER_FLOW_STEPS[2]?.description ?? "", /E2E crystallization request:/iu);
   assert.match(TESTER_FLOW_STEPS[3]?.description ?? "", /playwright test.*不再使用 MCP.*test-report/iu);
 });
 
 test("AC-TESTER-011: test-report review points reject exploration-only evidence", () => {
   assert.equal(TEST_REPORT_REVIEW_POINTS.length, 3);
-  assert.match(TEST_REPORT_REVIEW_POINTS.join(" "), /非门禁.*新会话.*重新审批.*standalone\/CI.*report\/trace.*owner/iu);
+  assert.match(TEST_REPORT_REVIEW_POINTS.join(" "), /非门禁.*新会话.*独立项目.*完整可执行脚本基线.*standalone\/CI.*report\/trace.*owner/iu);
 });
 
 test("AC-TESTER-011: Verification page renders the Tester guide before execution and review", async () => {

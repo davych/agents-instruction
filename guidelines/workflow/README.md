@@ -60,7 +60,7 @@ Rectangles are roles or work products. Diamonds are gates or human decisions. A 
 | Design | Designer | Change Contract plus applicable product evidence | Design clearance; optional baseline, task spec, prototype, and Figma handoff | Skip/reuse is evidence-backed, or selected design outputs are traceable, validated, ready, and unblocked. |
 | Architecture | Architect | Change Contract plus applicable product/design evidence | Architecture clearance and applicable indexed pack | Skip/reuse/partial evidence is valid, or full selection and acceptance evidence is complete. |
 | Implementation | Software Engineer | Change Contract plus active product, design, and architecture clearances | Seven Run-scoped outputs: `implementation-notes`, `implementation-plan`, `implementation-tasks`, `engineering-session-log`, `engineering-test-evidence`, `engineering-review`, and `engineering-provenance` | The confirmed implementation and necessary tests are complete; criterion coverage, independent-test evidence, seven-lens/adversarial review, and provenance have no unresolved blocker. |
-| Verification | Tester | Change Contract, applicable `design-spec` and acceptance/NFR evidence, `implementation-notes`, `engineering-test-evidence`, and `engineering-review` | Run-scoped `test-report`; transient exploration notes and repository-test links are supporting evidence | Acceptance criteria, regression obligations, main risks, and every deferred design validation have current execution evidence; MCP exploration alone cannot satisfy repeatable E2E/CI evidence. |
+| Verification | Tester | Change Contract, applicable `design-spec` and acceptance/NFR evidence, `implementation-notes`, `engineering-test-evidence`, `engineering-review`, and an explicit Linked E2E Workspace binding when E2E is required | Run-scoped `test-report`; transient exploration notes and linked-workspace script hashes are supporting evidence | Acceptance, regression, risk, and deferred checks have current evidence; required scripts match a human-approved manifest and a platform-supervised real-browser run. MCP alone cannot satisfy E2E/CI. |
 | Release | DevOps | Accepted architecture, test evidence, and Tester command/report contract | `release-runbook`; authorized CI required-check configuration | Release, monitoring, rollback, and repeatable CI guidance are prepared. |
 
 The artifact lists in `ai-native.yaml` describe the complete evidence vocabulary. In a platform-managed Run, the persisted disposition and active execution contract resolve which input alternative is required. This avoids fake PRDs or design specs while keeping old initialized project definitions compatible. The CLI itself does not inspect or approve a gate.
@@ -82,27 +82,34 @@ The root [complete workflow and node table](../../README.md#complete-workflow-an
 ```mermaid
 flowchart LR
   Intake["Approved implementation + authoritative spec"] --> Map["Risk and AC map"]
-  Map --> Discover{"Interactive discovery useful?"}
+  Map --> Need{"Durable E2E required?"}
+  Need -->|"no"| Execute["Execute selected non-E2E verification"]
+  Need -->|"yes"| Linked{"Linked E2E Workspace configured?"}
+  Linked -->|"no"| Configure["Human configures separate root<br/>never infer legacy sibling"]
+  Configure --> Preflight["Package + real Chromium + server preflight"]
+  Linked -->|"yes"| Preflight
+  Preflight --> Discover{"Optional interactive discovery useful?"}
   Discover -->|"yes"| Explore["E2E Stage 1 · Playwright MCP exploration<br/>transient, non-gating"]
-  Discover -->|"no"| Need{"E2E disposition?"}
-  Explore --> Need
-  Need -->|"missing/changed"| Fresh["E2E Stage 2 · Fresh Tier A/B session<br/>freeze intent from spec"]
-  Fresh --> Engineer["Software Engineer integrates *.spec.ts<br/>refreshes evidence"]
-  Engineer --> Reapprove["Human reapproves Implementation"]
-  Reapprove --> Execute["Execute mapped verification<br/>E2E Stage 3 uses standalone Playwright"]
-  Need -->|"valid"| Execute
-  Need -->|"not applicable"| Execute
+  Discover -->|"no"| Freeze["Freeze authoritative AC intent"]
+  Explore --> Freeze
+  Freeze --> Fresh["E2E Stage 2 · Fresh Tier A/B Test Author<br/>linked workspace only"]
+  Fresh --> Manifest["Persist script manifest + SHA-256"]
+  Manifest --> ScriptReview{"Human approves exact manifest hash?"}
+  ScriptReview -->|"changes"| Freeze
+  ScriptReview -->|"approve scripts"| Browser["E2E Stage 3 · Platform standalone Playwright<br/>real headless Chromium; no MCP"]
+  Browser --> Execute["Capture dual revisions and durable evidence"]
   Execute --> Report["Run-scoped test-report"]
   Report --> Gate{"Verification gate"}
   Gate -->|"pass"| DevOps["DevOps required-check/runbook handoff"]
   Gate -->|"fail/blocked"| Owner["Classify and return to owning role"]
 ```
 
-- **Exploration** validates feasibility and finds observable selector candidates. Its “ran through” result is a diagnostic draft, although a real browser run/screenshot may supplement a specifically declared manual/deferred observation.
-- **Crystallization** starts from frozen authoritative intent in a fresh independent context. It must not copy the implementation or MCP action/transcript. A new test file changes the repository, so Software Engineer integrates it and refreshes the evidence pack before Tester resumes.
-- **Execution** runs every mapped applicable check. When E2E applies, Stage 3 uses the repository's real `playwright test` command or wrapper; otherwise the selected unit, integration, contract, or declared observation evidence still has to execute. CI contains no MCP dependency. Tester records actual local/CI evidence; DevOps or an authorized owner configures the required PR check.
+- **Configuration and preflight** use only a human-selected separate, non-nested allowed root, loopback target, validated script identifiers, installed Playwright package, configured Chromium executable, and a real headless launch probe. The platform never scans for or adopts a sibling or legacy repository.
+- **Exploration** is optional diagnostic work. Its “ran through” result cannot pass repeatable E2E/CI, and its actions/transcript/DOM dump never enter the author context.
+- **Crystallization and script review** start from frozen authoritative intent in a fresh Tier A/B subprocess that sees only the linked harness, not the product implementation or exploration. It writes allowlisted test/fixture assets and records exact hashes but cannot execute them until a human approves the current aggregate manifest hash.
+- **Execution** is platform-supervised, uses fixed argv with `shell: false`, manages the product server, and runs the approved linked scripts through standalone Playwright with a real headless Chromium. Tester records exact command/cwd, exit, product and E2E revisions, and report/trace/screenshot hashes. CI contains no MCP dependency.
 
-This is a feedback subflow across the existing Implementation and Verification boundary, not a seventh phase and not a role-ownership transfer. See the [Tester guide](../roles/tester/README.md) for selector, isolation, data, reporting, and failure-routing rules.
+This is a Verification subflow, not a seventh phase. Tester owns the separately linked harness; Software Engineer continues to own product source, product-repository tests, and testability interfaces. Only a failure that changes those product assets returns through Implementation reapproval. Script-hash approval authorizes test execution only, not Verification or Release. See the [Tester guide](../roles/tester/README.md).
 
 ## Software Engineer mini-cycle and evidence gates
 
@@ -240,7 +247,9 @@ The workflow is ordered, but it is not one-way.
 - Missing interface behavior returns to Designer.
 - A rejected option or incomplete quality target returns to Architect.
 - An implementation defect returns to Software Engineer.
-- A missing or changed repository E2E test returns to Software Engineer for integration, real checks, engineering-evidence refresh, and Implementation reapproval before Tester executes it.
+- A linked-workspace E2E test bug returns to a fresh Test Author and a new exact-manifest-hash review; it does not mutate the product repository.
+- A product implementation, product-repository test, or product testability-interface gap returns to Software Engineer for real checks, engineering-evidence refresh, and Implementation reapproval.
+- A required Linked E2E Workspace is configured explicitly by a human; no Agent or platform scan may infer or reuse a sibling legacy project.
 - A Playwright MCP exploration success never bypasses the standalone runner or CI evidence contract.
 - Missing or invalid engineering test evidence, review findings, or provenance returns to Software Engineer; Tester still owns the independent Verification conclusion.
 - Missing deployment evidence returns to DevOps or the authorized operator.

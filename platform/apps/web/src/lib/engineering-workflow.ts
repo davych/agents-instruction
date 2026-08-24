@@ -11,8 +11,8 @@ export const ENGINEERING_FLOW_STEPS = [
   },
   {
     number: 3,
-    title: "查看质量证据",
-    description: "先看实现结果，再核对独立测试、七镜审查和风险；七份文档是同一次实施的分工记录，不是七次手工任务。",
+    title: "看实现、测试和风险",
+    description: "Engineer 完成后，只需确认实现结果、独立测试和风险结论；七份记录由 Codex 维护，不要求你编辑 Markdown。",
   },
   {
     number: 4,
@@ -73,9 +73,9 @@ export const ENGINEERING_ARTIFACT_GUIDES = [
   {
     key: "engineering-provenance",
     stage: "质量与交付",
-    timing: "准备交给 Tester/PR 时",
-    purpose: "PR 证据链，连接规格、会话、测试、审查、工具和已知限制；不会替你发布或合并。",
-    humanCheck: "链接和声明是否真实，PR、合并、发布仍由人决定。",
+    timing: "准备交给 Tester 时",
+    purpose: "交付追溯清单，连接规格、会话、测试、审查、工具和已知限制；它不是实际 PR，也不表示已创建或发布 PR。",
+    humanCheck: "链接和声明是否真实，并明确 Software Engineer 未创建或发布 PR；合并与发布仍由人决定。",
     required: false,
   },
 ] as const;
@@ -312,12 +312,12 @@ function engineeringArtifactName(key: EngineeringArtifactKey): string {
     "engineering-session-log": "工程会话日志",
     "engineering-test-evidence": "独立测试证据",
     "engineering-review": "工程七镜审查",
-    "engineering-provenance": "PR 证据链",
+    "engineering-provenance": "交付追溯清单",
   }[key];
 }
 
 function isHardImplementationIssue(issue: string): boolean {
-  return /(?:explicit Failed or Blocked disposition|every task must be complete; unfinished|Commands and results contains a failed, skipped, blocked, or unrun command|contains an unresolved security finding)/iu.test(issue);
+  return /(?:explicit Failed or Blocked disposition|every task must be complete; unfinished|Verification gates contains an explicit blocked or failed gate result|Commands and results contains a failed, skipped, blocked, or unrun command|contains an unresolved security finding)/iu.test(issue);
 }
 
 function localizeEngineeringIssue(issue: string, artifactKey: EngineeringArtifactKey): string {
@@ -332,8 +332,11 @@ function localizeEngineeringIssue(issue: string, artifactKey: EngineeringArtifac
   if (/Outcome must record a complete, non-blocked result/iu.test(detail)) {
     return "Outcome 没有用机器可识别的 Complete 终态记录本次实施结果。";
   }
+  if (/Verification gates contains a downstream Tester deferral/iu.test(detail)) {
+    return "Tester 后续验证事项误放在 Implementation 的 Verification gates；应由 Codex 移到 Outcome、限制和 Tester 交接。";
+  }
   if (/Verification gates contains an explicit blocked or failed gate result/iu.test(detail)) {
-    return "Verification gates 中仍出现非通过结果；Tester 后续验证事项应写入交接/限制，不应冒充 Implementation 阻塞。";
+    return "Verification gates 中存在真实非通过结果；必须先解决对应工程失败，不能只修改证据文字。";
   }
   if (/Tier [AB] requires a concrete test-authoring model\/session/iu.test(detail)) {
     return `${detail.match(/Tier [AB]/iu)?.[0] ?? "独立测试"} 缺少可追溯的测试作者模型或独立会话标识。`;
@@ -366,7 +369,7 @@ function localizeEngineeringIssue(issue: string, artifactKey: EngineeringArtifac
   const evidenceField = /evidence field "([^"]+)" must contain/iu.exec(detail)?.[1];
   if (evidenceField) return `证据字段「${evidenceField}」缺少可追溯的 artifact、文件路径或 URL。`;
   if (/Publication boundary must state/iu.test(detail)) {
-    return "发布边界没有分别明确：Software Engineer 未发布 PR，也未执行合并或发布。";
+    return "发布边界没有分别明确：Software Engineer 未创建或发布 PR，也未执行合并或发布。";
   }
   const missingPart = /required section or field "([^"]+)" is missing/iu.exec(detail)?.[1];
   if (missingPart) return `缺少必要章节或字段「${missingPart}」。`;

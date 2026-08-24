@@ -17,11 +17,13 @@ flowchart LR
   Product --> Engineer["Software Engineer"]
   Design --> Engineer
   Architect -->|"Accepted architecture pack"| Engineer
+  Human -->|"Explicit workspace + script-hash review"| E2E["Linked E2E Workspace"]
   Contract --> Tester["Tester"]
   Product --> Tester
   Architect -->|"NFRs and risks"| Tester
   Engineer -->|"Evidence index, test evidence, and review"| Tester
-  Tester -->|"Missing durable E2E test"| Engineer
+  E2E --> Tester
+  Tester -->|"Product/testability defect only"| Engineer
   Architect -->|"ADRs, NFRs, and premortem"| DevOps["DevOps"]
   Tester -->|"Test report"| DevOps
   DevOps -->|"Release runbook"| Human
@@ -41,7 +43,7 @@ The diagram has three kinds of handoff:
 | [Designer](designer/README.md) | Can design be skipped/reused, or what experience work is affected? | Design disposition, project baseline, and task spec | Architect and Software Engineer | Product scope, APIs, architecture, production code |
 | [Architect](architect/README.md) | Which system direction best fits the evidence and constraints? | Indexed architecture pack | Software Engineer, Tester, DevOps | Final option approval or risk acceptance |
 | [Software Engineer](software-engineer/README.md) | How do we implement the confirmed contracts with independently reviewable evidence? | Code, tests, and seven Run-scoped engineering evidence outputs | Tester | Product, design, architecture, verification-exception, publication, or merge decisions |
-| [Tester](tester/README.md) | What current, repeatable evidence shows the change meets acceptance and risk expectations? | Risk map, optional MCP exploration, standalone execution evidence, defects, and Run-scoped test report | Software Engineer for test integration; DevOps and human release owner | Repository source/test integration, CI policy, requirement changes, or release approval |
+| [Tester](tester/README.md) | What current, repeatable evidence shows the change meets acceptance and risk expectations? | Risk map, optional MCP exploration, linked-workspace E2E assets, standalone real-browser evidence, defects, and Run-scoped test report | Software Engineer for product/testability repair; DevOps and human release owner | Product source/tests, CI policy, requirement changes, or release approval |
 | [DevOps](devops/README.md) | How can the release be repeated, observed, and reversed? | Release runbook and operational evidence | Human release owner | Product approval or final release decision |
 
 ## One role, one Agent
@@ -83,7 +85,7 @@ A valid `direct`, `skip`, or `reuse` disposition is also a durable handoff when 
 
 Software Engineer has a stricter delivery handoff. The Web execution owns seven Run-scoped outputs: `implementation-notes` as the evidence-pack index, `implementation-plan`, `implementation-tasks`, `engineering-session-log`, `engineering-test-evidence`, `engineering-review`, and `engineering-provenance`. Tester receives the index plus the test-evidence and review artifacts as declared inputs. Tier A or B test authoring may satisfy the normal engineering gate; Tier C or Limited requires a recorded human verification exception. The engineering review must cover all seven lenses and both adversarial passes. PR-ready provenance is evidence only; Software Engineer does not publish or merge the PR.
 
-Tester uses Playwright MCP only as optional transient exploration. A missing or changed durable E2E script returns to Software Engineer for Tier A/B crystallization, repository integration, real checks, refreshed engineering evidence, and Implementation reapproval. Tester then executes the current repository script with standalone Playwright and records the result in its Run-scoped `test-report`; DevOps or an authorized owner configures the required CI check.
+Tester uses Playwright MCP only as optional transient exploration. For required E2E, a human explicitly configures a separate Linked E2E Workspace; the platform freezes spec-only intent, a fresh Tier A/B Test Author writes only there, a human approves the exact manifest hash, and the platform runs standalone Playwright with a real headless Chromium. The platform never infers a sibling or legacy repository. Product source, product-repository tests, and testability interfaces remain Software Engineer-owned; only changes to those assets return through refreshed engineering evidence and Implementation reapproval. DevOps or an authorized owner configures the required CI check.
 
 ## Escalation rule
 
@@ -95,7 +97,8 @@ Return a missing decision to the owner who can make it:
 | Interface behavior, content, component, asset, or responsive rule | Designer or human design owner |
 | Architecture option, trust boundary, ADR, or NFR target | Architect or human architecture/risk owner |
 | Incorrect or incomplete implementation | Software Engineer |
-| Missing repeatable verification evidence or reproducible defect | Tester for mapping/execution; Software Engineer for repository-test integration or implementation repair |
+| Missing linked-workspace E2E evidence or a test-script defect | Tester/fresh Test Author plus exact manifest-hash review |
+| Product implementation, product-repository test, or testability-interface defect | Software Engineer, with refreshed engineering evidence and Implementation reapproval |
 | Environment, Playwright runner, CI report, or required-check issue | DevOps or authorized operator |
 | Tier C/Limited isolation or another engineering verification-gate exception | Human owner; Software Engineer records but cannot approve it |
 | Environment access, deployment step, monitoring, or rollback evidence | DevOps or authorized operator |

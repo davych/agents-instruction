@@ -52,6 +52,8 @@
 
 ## Verification gates
 
+> Record only gates that Software Engineer must complete before handoff. A downstream Tester-owned browser, accessibility, E2E, or other deferred validation belongs in `Outcome` as an unresolved risk/handoff item; it is not a Blocked or Failed Implementation gate when every Implementation-owned check has passed. Keep a gate Blocked when its own required evidence is genuinely missing or failing.
+
 | Gate | Evidence | Result | Blocker / waiver |
 |---|---|---|---|
 | Upstream clearances current | <references> | <Pass / Blocked> | <None or item> |
@@ -66,5 +68,5 @@
 - **Result:** <Complete / Partially complete / Failed / Blocked>
 - **Changed source/test areas:** <paths or None>
 - **Satisfied criteria:** <IDs or None>
-- **Unresolved criteria/risks:** <IDs, reason, owner, and impact or None>
+- **Unresolved criteria/risks:** <IDs, reason, owner, and impact or None; put downstream Tester-owned deferred validation here>
 - **Next owner/action:** <Tester, upstream role, or human action>

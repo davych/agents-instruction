@@ -180,20 +180,20 @@ A different prompt inside the implementation session is not Tier A or B. A Tier 
 
 Every in-scope acceptance criterion and targeted regression obligation maps to at least the configured minimum number of repository-conventional automated tests. Test IDs, names, or adjacent durable metadata cite the stable criterion ID.
 
-### Tester-returned E2E test
+### Tester E2E product feedback
 
-If Tester exploration finds that a durable E2E script is missing or must change, Verification does not write that test directly into an already approved repository and continue with stale evidence. Treat the return as a test-only engineering loop:
+Tester-owned E2E scripts now live in a human-configured Linked E2E Workspace. A fresh spec-only Test Author writes there, a human approves the exact script manifest hash, and the platform runs standalone Playwright. The normal path does not require a handwritten crystallization comment or product-repository integration by Software Engineer.
 
-For a platform-managed Run, the current Verification review uses the literal first line `E2E crystallization request: <nonempty scenario>`, one `AC: <current Change Contract ID>` line per criterion, and one nonempty `Frozen intent: <observable behavior>` line. The platform injects only those validated bounded fields plus the reviewed report-head metadata into the rerun as read-only diagnostic feedback; it does not pass the report body/free-form comment, make `test-report` an authoritative upstream input, or grant new scope.
+Return to Software Engineer only when the evidence requires product source, a product-repository test, or a reviewed product testability-interface change:
 
-1. receive the stable AC/scenario IDs and frozen behavior intent;
-2. use a fresh Tier A/B authoring session that cannot see the implementation or Playwright MCP exploration code/transcript;
-3. after intent is frozen, adapt against only the public runnable interface and project test harness;
-4. integrate the repository-conventional `*.spec.ts`, run real focused/regression checks, and classify failures;
+1. receive the stable AC/scenario IDs, frozen behavior, and real failing report/trace/script hashes;
+2. confirm the classification is a product or testability defect rather than a linked-script bug;
+3. use the normal Tier A/B procedure for any new product-repository test, without copying MCP actions/transcript, DOM dumps, or linked-script internals as the specification;
+4. implement and run the authorized product checks without editing or approving the Linked E2E Workspace;
 5. refresh every stale engineering artifact, including notes, test evidence, review, and provenance;
-6. obtain Implementation reapproval before Tester resumes standalone `playwright test` execution.
+6. obtain Implementation reapproval before Tester repeats linked-workspace readiness, script review where invalidated, and standalone execution.
 
-The feedback loop preserves Software Engineer ownership of repository integration and Tester ownership of the independent Verification conclusion.
+This preserves Software Engineer ownership of product assets and Tester ownership of the separately maintained verification harness and conclusion. The platform never infers or reuses a sibling legacy E2E repository.
 
 ## Seven-lens and adversarial review
 

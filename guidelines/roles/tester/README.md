@@ -2,184 +2,169 @@
 
 ## Purpose
 
-Tester turns the current Run's accepted requirements and risks into an independent, reproducible Verification conclusion. It may use Playwright MCP to explore a live browser path, but the reusable asset is a repository test and the gate evidence is a real standalone local or CI execution.
+Tester turns the current Run's accepted requirements and risks into an independent, reproducible Verification conclusion. Playwright MCP may help diagnose a live path, but it is optional and non-gating. When E2E is required, a fresh spec-only Test Author maintains scripts in an explicitly linked standalone E2E workspace; a human approves the exact script hashes before the platform runs standalone Playwright with a real headless Chromium.
 
-Tester does not redefine requirements, silently repair product code, weaken assertions, configure unapproved CI policy, or make the final release decision.
+Tester does not redefine requirements, silently repair product code, weaken assertions, discover a legacy test repository by convention, configure unapproved CI policy, commit/push, or make the final release decision.
 
 ## What you do when Software Engineer finishes
 
-Do not assign the seven engineering Markdown files to Tester one by one. They are one evidence pack.
+The seven engineering Markdown files are one generated evidence pack, not seven forms or Tester assignments.
 
 1. Open `implementation-notes`. If its status is `Failed` or `Blocked`, return the named gap; do not run Tester yet.
 2. Inspect the real source/test diff. Markdown is an audit record, not proof that code exists.
 3. Read `engineering-test-evidence` for AC coverage, actual commands, failures, and isolation tier.
-4. Read `engineering-review` for open findings, especially high/security findings. Use plan, tasks, session log, and provenance only when you need deeper traceability.
+4. Read `engineering-review` for open findings, especially high/security findings. Use plan, tasks, session log, and provenance only for deeper traceability.
 5. Approve Implementation only when code and evidence agree and the pack is current. Approval unlocks Tester; it does not publish/merge a PR or approve release.
 
-If Tester later finds that a durable E2E script is missing or wrong, return that test-only change to Software Engineer. The script changes repository state, so the engineering pack must be refreshed and Implementation reapproved before Tester resumes.
+Tester then maps risk. A criterion proven most strongly by unit, integration, contract, or a declared observation need not become E2E. If E2E is required, follow the linked-workspace steps below; the platform no longer asks you to hand-write a crystallization marker.
 
 ## Place in the workflow
 
-| Direction | Role | Relationship |
+| Direction | Role or resource | Relationship |
 |---|---|---|
-| Upstream | Change Contract and Product clearance | Provide immutable scope, acceptance, regression obligations, and applicable product evidence. |
-| Upstream | Designer | Provides observable behavior and every selected runtime-only `deferred_validations` obligation. |
-| Upstream | Architect | Provides the accepted index, measurable NFRs, and architecture risks. |
-| Upstream | Software Engineer | Provides the runnable change, engineering-pack index, independent-test evidence, and review. |
-| Current role | Tester | Maps risk, explores when useful, executes repeatable checks, records defects, and writes `test-report`. |
-| Feedback | Software Engineer and upstream owners | Integrate missing test code or resolve implementation/spec/design/architecture gaps, then return current evidence. |
+| Upstream | Change Contract and Product clearance | Immutable scope, acceptance, regression obligations, and applicable product evidence. |
+| Upstream | Designer | Observable behavior and every selected runtime-only `deferred_validations` obligation. |
+| Upstream | Architect | Accepted index, measurable NFRs, and architecture risks. |
+| Upstream | Software Engineer | Runnable product change, engineering-pack index, independent-test evidence, and review. |
+| Verification resource | Linked E2E Workspace | Human-configured separate root in which the fresh Test Author maintains Tester-owned tests/fixtures. It is not another six-phase Project. |
+| Current role | Tester | Maps risk, optionally explores, reviews generated-script provenance, executes repeatable checks, records defects, and writes `test-report`. |
+| Feedback | Fresh Test Author | Fixes linked-workspace test bugs from cited authority, followed by a new manifest-hash review. |
+| Feedback | Software Engineer/upstream roles | Resolves product source, product test, testability-interface, spec, design, or architecture gaps. |
 | Next phase | DevOps | Uses the report plus command/report contract to prepare CI, release, monitoring, and rollback. |
 
 ## Inputs
 
-| Artifact | Owner | Why it is needed |
+| Artifact or platform binding | Owner | Why it is needed |
 |---|---|---|
 | `change-contract` | Human/platform (`pm-ba` registry owner) | Immutable Run criteria, non-goals, and regression obligations. |
-| Product clearance and applicable `prd` / `user-stories` | PM / BA | Approved business behavior and stable story AC IDs where applicable. |
-| Applicable `design-spec` | Designer | Observable behavior and every deferred runtime validation; a valid Design skip may make this not applicable. |
-| `architecture` | Architect | Pack status, active constraints, risks, and open decisions. |
-| `architecture-nfrs` | Architect | Measurable quality targets that apply to the change. |
+| Approved `user-stories` | PM / BA | Stable AC IDs for legacy Runs without a structured Change Contract; objectives/chat do not become criteria. |
+| Applicable `design-spec` | Designer | Observable behavior and every deferred runtime validation. |
+| `architecture` / `architecture-nfrs` | Architect | Active constraints, measurable quality targets, risks, and open decisions. |
 | `implementation-notes` | Software Engineer | Start here: changed scope, status, risks, limits, and evidence index. |
-| `engineering-test-evidence` | Software Engineer | Audit AC mappings, commands/results, failure classification, changed tests, and isolation tier. |
-| `engineering-review` | Software Engineer | Carry forward unresolved review findings without treating self-review as Tester approval. |
+| `engineering-test-evidence` | Software Engineer | Audit AC mappings, commands/results, changed product-repository tests, and isolation. |
+| `engineering-review` | Software Engineer | Carry forward unresolved findings without treating self-review as Tester approval. |
+| Linked E2E Workspace binding | Human/platform | Trusted separate root, descriptor, scripts, loopback target, browser, and dual-revision contract when E2E is required. |
 
-Start architecture reading from the `architecture` index. Do not treat a child artifact as proof that the complete pack is accepted.
+Start architecture reading from its index. Do not treat a child artifact as proof the complete pack is accepted.
 
-## One E2E lifecycle, three different jobs
+## One E2E lifecycle, three stages and two checkpoints
 
-| Stage | Purpose | Tool/context | Result | Gate meaning |
+| Step | Purpose | Control plane | Result | Gate meaning |
 |---|---|---|---|---|
-| 1. Exploration | Learn whether the journey is possible, observe DOM/accessibility behavior, and diagnose selector candidates | Playwright MCP in an interactive AI session | Transient session record and diagnostic evidence | A successful path is a draft, not repeatable acceptance or CI proof |
-| 2. Crystallization | Express the authoritative scenario as a reviewable, repeatable test without copying exploration assumptions | Fresh Tier A/B authoring session using spec/frozen intent and public harness; repository integration stays with Software Engineer | Project-conventional test such as `tests/e2e/checkout-coupon.spec.ts`, plus refreshed engineering evidence | The file becomes an asset only after integration, real checks, and Implementation reapproval |
-| 3. Execution | Prove the integrated asset runs on the current revision and preserve evidence | Standalone `playwright test` or the repository wrapper, locally and/or in CI; never MCP | Pass/fail/blocked result, report, and available trace/screenshot/video | Current, traceable runner evidence can satisfy the gate; CI required-check policy stays with DevOps/owner |
+| Preflight | Prove the explicit workspace, Playwright package, browser executable, product start script, and target are ready | Platform structured checks | Individual ready/blocked states | A package version or unit/build pass is not a browser launch |
+| Stage 1 · Exploration | Diagnose the journey and selector candidates when useful | Playwright MCP interactive session | Transient diagnostic record | Optional draft; MCP success cannot pass E2E/CI |
+| Stage 2 · Crystallization | Express frozen authoritative behavior as durable tests without implementation/exploration bias | Fresh Tier A/B Test Author in only the linked root | Test/fixture manifest and SHA-256 | Cannot execute until a human approves the exact current manifest hash |
+| Script review | Review exactly what executable test code was generated | Human + platform hash binding | Approve/request changes for exact bytes | Does not approve Verification, CI, merge, or release |
+| Stage 3 · Execution | Prove approved scripts run against the bound product with a real browser | Platform-supervised standalone Playwright, fixed argv, `shell: false` | Exit, report, trace, screenshot/video/log hashes | Current traceable real-Chromium evidence can satisfy E2E obligations |
 
-Exploration is optional. Use it when discovery is valuable; do not force an MCP session for a well-understood path. E2E itself is also risk-based: select it for critical user journeys and browser/cross-system behavior, not every criterion.
+Exploration and E2E selection are both risk-based. MCP availability is distinct from standalone Chromium readiness: either, both, or neither may be available.
 
 ## Role workflow
 
 ```mermaid
 flowchart TD
   Inputs["Read contracts and engineering index"] --> Ready{"Implementation evidence current and green?"}
-  Ready -->|"No"| ReturnEngineer["Return concrete gap to Software Engineer"]
+  Ready -->|"No"| ReturnEngineer["Return concrete product gap to Software Engineer"]
   Ready -->|"Yes"| Map["Map ACs, regressions, deferred checks, NFRs, and risks"]
-  Map --> Explore{"Need interactive path discovery?"}
-  Explore -->|"Yes"| MCP["Playwright MCP exploration<br/>transient and non-gating"]
-  Explore -->|"No"| Durable{"Durable E2E required and valid?"}
-  MCP --> Durable
-  Durable -->|"Missing or changed"| Fresh["Fresh Tier A/B session<br/>freeze intent from spec"]
-  Fresh --> Integrate["Software Engineer integrates test<br/>and refreshes evidence"]
-  Integrate --> Ready
-  Durable -->|"Existing"| Execute["Standalone playwright test<br/>local or CI; no MCP"]
-  Durable -->|"Not applicable"| Evidence["Execute other mapped verification"]
-  Execute --> Evidence["Capture current durable evidence"]
-  Evidence --> Report["Write Run-scoped test-report"]
+  Map --> Need{"Durable E2E required?"}
+  Need -->|"No"| Other["Execute selected non-E2E verification"]
+  Need -->|"Yes"| Linked{"Linked E2E Workspace explicitly configured?"}
+  Linked -->|"No"| Configure["Human configures/initializes separate root<br/>never infer a legacy sibling"]
+  Configure --> Preflight["Package + real Chromium + server preflight"]
+  Linked -->|"Yes"| Preflight
+  Preflight -->|"Blocked"| Route["Classify environment/configuration failure"]
+  Preflight -->|"Ready"| Explore{"Optional MCP discovery useful?"}
+  Explore -->|"Yes"| MCP["Playwright MCP exploration<br/>transient, non-gating"]
+  Explore -->|"No"| Freeze["Freeze spec-only AC intent"]
+  MCP --> Freeze
+  Freeze --> Author["Fresh Tier A/B Test Author<br/>linked root only"]
+  Author --> Manifest["Persist files + hashes + aggregate manifest"]
+  Manifest --> Review{"Human approves exact manifest hash?"}
+  Review -->|"Request changes"| Freeze
+  Review -->|"Approve scripts"| Execute["Platform runs standalone Playwright<br/>real headless Chromium; no MCP"]
+  Execute --> Other["Capture dual revisions and durable evidence"]
+  Other --> Report["Write Run-scoped test-report"]
   Report --> Gate{"All required evidence passes?"}
-  Gate -->|"No"| Route["Classify failure and return to owner"]
+  Gate -->|"No"| Route
   Route --> Map
   Gate -->|"Yes"| Handoff["Hand command/report contract and risk to DevOps"]
 ```
 
-## Stage 0: readiness and coverage map
+This is one Verification subflow, not a seventh phase.
 
-Before opening a browser:
+## Stage 0: configuration, readiness, and coverage map
 
-1. Resolve artifacts through `ai-native.yaml` and the active execution contract, not guessed directories.
-2. Confirm the Implementation gate passed and every engineering input is from the same current revision.
+Before authoring or opening a browser:
+
+1. Resolve artifacts through the active execution contract, not guessed directories.
+2. Confirm Implementation passed and engineering inputs are from the same current product revision.
 3. Extract stable AC/regression/deferred/NFR/risk IDs and assign the strongest appropriate evidence level.
-4. Check environment, authentication fixture, synthetic data, cleanup, and observability readiness.
-5. Mark an unavailable prerequisite `blocked` with owner and release impact. Never turn “not run” into `pass`.
+4. If E2E is required, use only the platform's human-selected Linked E2E Workspace. Do not scan by sibling location, `e2e` name, Git history, prior report, or legacy documentation.
+5. Require the structured preflight to report canonical separate/non-nested roots, loopback URL, validated package-manager/test/start scripts, Playwright package/lockfile, configured Chromium executable, real headless launch-and-close probe, target readiness, evidence directories, and product-root protection.
+6. Mark an unavailable prerequisite `blocked` with a concrete owner/action. Dependency/browser installation and workspace binding are explicit human setup actions.
 
 ## Stage 1: Playwright MCP exploration
 
-Use MCP to open the runnable non-production application, perform the user path, inspect the DOM/accessibility tree, try semantic selectors, observe dynamic states, and capture diagnostic screenshots. Record the real session/run reference and build.
+Use MCP only when discovery adds value: operate the non-production app, inspect observable DOM/accessibility behavior, try semantic selectors, and capture diagnostic screenshots. Record the real session and build.
 
-Do not:
+Do not commit or copy MCP-generated actions into `.spec.ts`, expose production data, invent a session, or call “MCP ran through” a reusable pass. Do not pass exploration code, transcript, DOM dump, or generated script to the Test Author. A permitted MCP screenshot may supplement a specifically declared manual/deferred observation, but it never proves repeatability or CI readiness.
 
-- commit MCP-generated code or copy its action transcript into a `.spec.ts` file;
-- call “MCP ran through” a reusable acceptance pass;
-- expose production credentials, personal data, or secrets in screenshots/traces;
-- invent a browser session when the tool or environment is unavailable.
+## Stage 2: independent crystallization and script review
 
-A real MCP browser run may count as supplementary evidence for a specifically declared manual or deferred UI observation when that obligation explicitly accepts browser-run/screenshot evidence. It still does not prove E2E repeatability or CI readiness.
+1. Freeze stable IDs, preconditions, observable actions/results, negative/recovery paths, test data, viewport/accessibility, and NFR intent.
+2. Launch a fresh Tier A/B Test Author subprocess in only the linked E2E root.
+3. Provide approved spec/Design/NFR evidence, frozen intent, and the minimum public E2E harness. Exclude product implementation, implementation diff/session, private helpers, MCP/exploration code or transcript, and DOM dumps.
+4. Allow writes only to linked-workspace tests/fixtures. Keep product source/tests/controls, both `.git` states, `.env*`, and all non-allowlisted paths protected. The author does not install, commit, push, configure CI, or execute the new code.
+5. Prefer accessible role/name, then label/text, then a reviewed product test contract. A missing stable contract returns to Software Engineer as a testability-interface gap.
+6. Persist every path, stable AC/test name, content SHA-256, E2E before/after revision, and aggregate manifest hash.
+7. Stop for human review. No newly generated executable test may run before the exact current aggregate hash is approved. Any product/E2E revision, binding, token, file-set, or byte change invalidates approval.
 
-## Stage 2: independent crystallization
-
-When durable E2E coverage is needed:
-
-1. Freeze AC-mapped intent before revealing the implementation: preconditions, user actions, expected outcomes, negative/recovery path, data, viewport/accessibility/NFR obligations.
-2. Use a fresh Tier A/B session. Give it only the authoritative contract, approved observable behavior, frozen intent, and minimum public test harness/commands.
-3. Exclude the implementation diff/session, private helpers, MCP action code, exploration transcript, copied DOM dump, and generated exploration script.
-4. After intent is frozen, permit public runnable-interface and harness inspection only to adapt selectors. The expected behavior cannot change during adaptation.
-5. Prefer accessible role/name, then label, then stable user-facing text, then an intentionally reviewed test contract. Avoid generated classes, deep CSS, XPath, position, and `nth()` unless a constraint is documented.
-6. For a platform-managed Run, save the gap and frozen intent in the current `test-report`, choose Verification **Request changes**, and use this exact envelope:
-
-   ```text
-   E2E crystallization request: checkout-coupon
-   AC: CC-AC-001
-   Frozen intent: a valid coupon reduces the payable total before order confirmation.
-   ```
-
-   The marker must be the literal first line with a nonempty scenario. Add one `AC:` line per applicable ID from the current Change Contract and exactly one nonempty `Frozen intent:` line. A later-line marker, missing field, unknown AC, or superseded request is not routed. The platform injects only the parsed bounded fields and current report-head metadata into a later Software Engineer rerun as read-only diagnostic feedback; it does not pass the report body/free-form comment, add `test-report` to Implementation inputs, or authorize new scope. A later approval or ordinary change request retires the old marker.
-7. Return the candidate test and mapped IDs to Software Engineer. Engineer integrates it in the project's normal test location, runs checks, refreshes all stale engineering evidence, and obtains reapproval.
-
-Tester resumes from the refreshed revision. Tier C or Limited remains blocked unless a human records the existing scoped verification exception and compensating evidence.
+There is no normal-path handwritten `E2E crystallization request:` comment. The platform owns the state transition and supplies the exact generated files for review.
 
 ## Stage 3: standalone execution and CI handoff
 
-Discover the real command from project manifests and CI configuration. `playwright test` is the direct runner; a project script such as `npm run test:e2e` is valid when it invokes that runner. Do not install Playwright or invent a command merely because this guide mentions it.
-
-For a platform-managed local row, use exactly `` `<one direct runner or repository test-wrapper command>` from `<exact project root>` ``. Compound shell, comments, echo/printf, inline assignments, quoting/substitution, redirection, and background/detached execution are rejected because a successful command event must prove the same runner the report classifies. Put complex setup in a reviewed repository script, document that setup separately, and let the test command finish before the runner returns.
+After script approval, the platform constructs fixed argv from validated identifiers and spawns with `shell: false`. It supervises the product server, waits for the loopback target, launches the configured real headless Chromium through standalone Playwright from the trusted linked root, waits for completion, and cleans up every child. Agents do not start detached/background processes.
 
 Record:
 
-- exact command, working directory, current commit/build, browser/project, environment, and test data;
-- for a platform-managed run, the exact prompt-provided `workspace sha256:<workspaceRevisionToken>; platform execution <executionId>` binding; this is the protected pre-run worktree token, not a commit SHA;
-- the exact platform-supplied pre-run Git binding: `git HEAD <full SHA>`, `git unborn <symbolic ref>`, or `git state:not-repository`; never infer non-Git from a failed post-run command;
-- exit status, first failure, retries, flake classification, and final result;
-- repository-relative HTML/JUnit report and available trace/screenshot/video/log locations under root `test-results/`, `playwright-report/`, or `blob-report/`, with one SHA-256 digest per local evidence file;
-- remote CI check name, provider, run URL/ID, and commit SHA when CI actually ran;
-- blocked/unrun reason, owner, next action, and release impact when evidence is unavailable.
+- exact test wrapper, trusted linked root, exit, first failure, retry/flake history, browser/project/version, and product-server lifecycle;
+- exact platform-supplied product Git/workspace binding and Linked E2E binding plus Git/workspace before/after revision;
+- exact approved script manifest hash and human review reference;
+- report, trace, screenshot, video, and log paths under configured E2E evidence directories, each with SHA-256;
+- remote CI check/provider/run URL or ID/current revision only if CI really ran.
 
-CI executes the repository script without MCP. Tester specifies the command, scope, pass/fail semantics, reporter, and artifact contract. DevOps or the authorized repository owner configures secrets, browser installation/cache, retention, branch protection, and the required PR check. A local pass is not a remote CI pass.
+Use the canonical row `` `<validated package-manager test script>` from `<exact trusted linked E2E root>` ``. Markdown cannot self-authorize another external cwd or command. `No browser is available`, a launch failure, timeout, nonzero test, server readiness problem, or cleanup failure remains non-passing with logs. A local pass is not remote CI success.
 
-At approval, the platform verifies the current report head belongs to the current completed real Verification execution, matches the exact local test command to a successful persisted command event, validates the working directory and evidence paths within the project root, recomputes evidence hashes and the protected-worktree token, and checks repository HEAD when Git is available. Self-declared IDs or prose do not satisfy that provenance contract.
+Tester owns the command/report contract. DevOps or an authorized owner configures credentials, browser installation/cache policy, retention, branch protection, and required CI checks.
 
 ## Failure routing
 
 | Failure class | Return to | Required response |
 |---|---|---|
-| Implementation bug | Software Engineer | Fix source, refresh engineering evidence, reapprove, rerun Tester. |
-| Test bug | Software Engineer for integration | Correct against cited authority; never weaken expected behavior merely to go green. |
-| Spec ambiguity | PM / BA or human contract owner | Resolve the exact conflicting interpretation in authoritative evidence. |
-| Design ambiguity | Designer / Design Impact | Define visible interaction, content, responsive, or accessibility behavior. |
+| Implementation bug | Software Engineer | Fix product source, refresh engineering evidence, reapprove, rerun Tester. |
+| Product testability-interface gap | Software Engineer | Add/repair the reviewed public interface and refresh evidence. |
+| Linked E2E test bug | Fresh Test Author | Correct from cited authority, produce a new manifest, obtain exact-hash review, rerun. |
+| Spec ambiguity | PM / BA or human owner | Resolve the conflict in authoritative evidence. |
+| Design ambiguity | Designer / Design Impact | Define visible interaction, responsive, content, or accessibility behavior. |
 | Architecture/NFR gap | Architect / human owner | Define the measurable target, boundary, or accepted exception. |
-| Environment/CI issue | DevOps / authorized operator | Repair environment, credentials, runner, artifact retention, or required-check configuration. Local runner repair returns to Stage 3 and refreshes the report/gate; required-check repair retries CI only after Verification already passed. |
+| Environment/CI issue | DevOps / authorized operator | Repair binding, dependencies, Chromium, server, runner, credentials, or retention; repeat preflight/execution. |
 
-For a bug, retain pre-fix reproduction when available and show post-fix behavior plus targeted regression. Rerun the current revision after every fix.
+Only changes to product source, product-repository tests, or product testability interfaces return through Implementation reapproval. Linked-workspace tests stay with Tester/Test Author.
 
-## Output
+## Output and completion gate
 
-Tester owns one registered artifact, `test-report`. In a platform-managed Run it is task/Run-scoped; in a default non-platform workflow its configured basename is:
-
-```text
-docs/ai-native/testing/test-report.md
-```
-
-The report separates exploration, crystallization, standalone execution, acceptance/regression results, deferred Design checks, failure routing, gaps, defects, residual risk, and recommendation. Exploration notes and repository scripts are linked evidence, not additional registered artifacts.
-
-## Completion gate
+Tester owns one registered artifact, `test-report`. In a platform Run it is Run-scoped; in a default non-platform workflow its configured basename is `docs/ai-native/testing/test-report.md`. Linked scripts and exploration notes are supporting evidence, not additional registered artifacts.
 
 Verification can pass only when:
 
-- every applicable AC and targeted regression has appropriate current evidence;
-- every selected deferred Design validation has a real passing result;
-- required E2E scripts are independently authored, integrated, reviewed, and run against the current revision;
-- required local/CI commands pass with traceable evidence;
-- failures, blocked checks, untested scope, flakes, gaps, defects, and residual risk remain visible;
-- no unresolved implementation/spec/design/architecture/environment blocker is hidden by prose;
-- `test-report` states a supported recommendation without claiming human release authority.
+- every applicable AC/regression and selected deferred Design validation has current evidence;
+- required E2E scripts match the human-approved manifest;
+- the real configured Chromium and standalone command passed on the bound product/E2E revisions;
+- local evidence and scripts re-hash correctly and the trusted command/cwd events match;
+- failures, blocked/untested scope, flakes, gaps, defects, and risk remain visible;
+- `test-report` states a supported recommendation without claiming merge/release authority.
 
-Missing evidence keeps the gate blocked and names an owner and next action. A passing Verification gate does not approve merge or release.
+MCP success, authoring completion, script approval, unit/jsdom success, lint, or build cannot replace required E2E execution. Missing evidence keeps the gate blocked with an owner and next action.
 
 ## Source files
 

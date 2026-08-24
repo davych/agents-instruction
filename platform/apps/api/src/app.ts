@@ -6,14 +6,18 @@ import {
   assessArchitectureDispositionSchema,
   assessDesignImpactSchema,
   assessProductImpactSchema,
+  authorVerificationE2eSchema,
   captureHumanDecisionsSchema,
+  configureE2eWorkspaceSchema,
   createArtifactRevisionSchema,
   createProjectSchema,
   createRunSchema,
   executePhaseSchema,
   phaseIdSchema,
+  reviewVerificationE2eScriptsSchema,
   reviewPhaseSchema,
-  updateTicketStatusSchema
+  updateTicketStatusSchema,
+  verificationE2eFlowActionSchema
 } from "@ai-sdlc/contracts";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -24,8 +28,14 @@ import { PgWorkflowStore } from "./db/store.js";
 import { AppError } from "./domain/errors.js";
 import { CodexTerminalRunner } from "./services/codex-runner.js";
 import { CodexExecutionCapabilities } from "./services/codex-execution-capabilities.js";
+import {
+  E2eAutomationRunner,
+  E2eTestAuthorRunner,
+} from "./services/e2e-automation-runner.js";
+import { E2eWorkspaceService } from "./services/e2e-workspace-service.js";
 import { FigmaMcpIntegration } from "./services/figma-mcp-integration.js";
 import { ProjectPathPolicy } from "./services/project-paths.js";
+import { VerificationE2eCoordinator } from "./services/verification-e2e-coordinator.js";
 import { WorkflowService } from "./services/workflow-service.js";
 
 export interface AppOptions {
@@ -41,6 +51,7 @@ export interface AppOptions {
   codexDefaultReasoningEffort?: CodexReasoningEffort;
   codexHome?: string;
   cliPath?: string;
+  verificationE2eCoordinator?: VerificationE2eCoordinator;
 }
 
 const idParamsSchema = z.object({ id: z.string().uuid() });
@@ -57,6 +68,7 @@ const artifactRevisionBodyLimit = 12_100_000;
 
 export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: options.logger ?? false });
+  const allowedProjectRoots = options.allowedProjectRoots ?? [defaultRepositoryRoot()];
   await app.register(cors, {
     origin: (origin, callback) => {
       if (!origin || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/u.test(origin)) callback(null, true);
@@ -77,13 +89,23 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     defaultReasoningEffort: options.codexDefaultReasoningEffort,
     codexHome: options.codexHome
   });
+  const verificationE2e = options.verificationE2eCoordinator
+    ?? new VerificationE2eCoordinator({
+      workspaceService: new E2eWorkspaceService({ allowedRoots: allowedProjectRoots }),
+      authorRunner: new E2eTestAuthorRunner({
+        codexBinary: options.codexBinary,
+        timeoutMs: options.codexTimeoutMs,
+      }),
+      automationRunner: new E2eAutomationRunner(),
+    });
   const service = new WorkflowService(
     new PgWorkflowStore(options.pool),
-    new ProjectPathPolicy(options.allowedProjectRoots ?? [defaultRepositoryRoot()]),
+    new ProjectPathPolicy(allowedProjectRoots),
     runner,
     options.cliPath,
     figmaIntegration,
-    codexCapabilities
+    codexCapabilities,
+    verificationE2e,
   );
 
   app.setErrorHandler((error, _request, reply) => {
@@ -124,6 +146,23 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     const { id } = idParamsSchema.parse(request.params);
     return service.getProject(id);
   });
+  app.get("/api/projects/:id/e2e-workspace", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return { workspace: await service.getE2eWorkspace(id) };
+  });
+  app.put("/api/projects/:id/e2e-workspace", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const workspace = await service.configureE2eWorkspace(
+      id,
+      configureE2eWorkspaceSchema.parse(request.body),
+    );
+    return { workspace };
+  });
+  app.post("/api/projects/:id/e2e-workspace/prepare", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    z.object({}).strict().parse(request.body ?? {});
+    return service.prepareE2eWorkspace(id);
+  });
 
   app.get("/api/projects/:id/runs", async (request) => {
     const { id } = idParamsSchema.parse(request.params);
@@ -138,6 +177,36 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   app.get("/api/runs/:id", async (request) => {
     const { id } = idParamsSchema.parse(request.params);
     return service.getRun(id);
+  });
+  app.get("/api/runs/:id/verification/e2e-flow", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return { flow: await service.getVerificationE2eFlow(id) };
+  });
+  app.post("/api/runs/:id/verification/e2e-flow", async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const input = verificationE2eFlowActionSchema.parse(request.body ?? {});
+    if (input.action === "preflight") {
+      return { flow: await service.preflightVerificationE2e(id) };
+    }
+    const execution = await service.executeVerificationE2e(id, input);
+    return reply.status(202).send({ execution });
+  });
+  app.post("/api/runs/:id/verification/e2e-flow/author", async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const execution = await service.authorVerificationE2e(
+      id,
+      authorVerificationE2eSchema.parse(request.body ?? {}),
+    );
+    return reply.status(202).send({ execution });
+  });
+  app.post("/api/runs/:id/verification/e2e-flow/script-review", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return {
+      flow: await service.reviewVerificationE2eScripts(
+        id,
+        reviewVerificationE2eScriptsSchema.parse(request.body ?? {}),
+      ),
+    };
   });
   app.get("/api/runs/:id/human-decisions", async (request) => {
     const { id } = idParamsSchema.parse(request.params);

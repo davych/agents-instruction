@@ -31,6 +31,11 @@ test("AC-ENG-008: the implementation envelope protects role resources and scopes
   assert.match(prompt, /test|测试/iu);
   assert.match(prompt, /confirmed scope|确认范围|Change Contract 范围/iu);
   assert.match(prompt, /only the selected registered evidence outputs|唯一可写的注册输出|仅.*选中.*注册.*证据/iu);
+  assert.match(prompt, /旧证据模板.*机器合同.*不得改写模板/iu);
+  assert.match(prompt, /Acceptance coverage.*精确 AC ID.*真实可执行测试路径.*durable Evidence.*Result.*Pass/iu);
+  assert.match(prompt, /Verification gates.*下游 Tester.*Outcome.*Known limitations.*Next owner/iu);
+  assert.match(prompt, /none found.*durable evidence reference.*not-applicable/iu);
+  assert.match(prompt, /PR created or opened by Software Engineer: No.*PR published by Software Engineer: No.*Merge\/deploy\/release performed by Software Engineer: No/iu);
   for (const artifactKey of selectedOutputKeys) {
     assert.match(prompt, new RegExp(`- ${artifactKey}: `, "u"));
   }

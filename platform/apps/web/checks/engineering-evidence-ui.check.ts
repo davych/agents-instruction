@@ -44,12 +44,14 @@ test("AC-ENG-006: every engineering output has a unique human-readable label", (
     /session|会话|日志|记录/iu,
     /independent|test|独立|测试|验证/iu,
     /review|lens|审查|评审|七镜/iu,
-    /provenance|PR|溯源|来源/iu,
+    /provenance|追溯|溯源|来源/iu,
   ];
   labels.forEach((label, index) => {
     assert.notEqual(label, engineeringOutputs[index]);
     assert.match(label, expectedMeaning[index]!);
   });
+  assert.equal(artifactLabel("engineering-provenance"), "交付追溯清单");
+  assert.doesNotMatch(artifactLabel("engineering-provenance"), /PR/iu);
 });
 
 test("AC-CLARITY-001/002: the UI models four steps and explains every artifact", () => {
@@ -66,6 +68,10 @@ test("AC-CLARITY-001/002: the UI models four steps and explains every artifact",
     assert.ok(guide.purpose.length > 20);
     assert.ok(guide.humanCheck.length > 15);
   }
+  assert.match(ENGINEERING_FLOW_STEPS[2]?.description ?? "", /只需.*实现.*测试.*风险.*不要求.*Markdown/iu);
+  const provenanceGuide = ENGINEERING_ARTIFACT_GUIDES.find(({ key }) => key === "engineering-provenance");
+  assert.match(provenanceGuide?.purpose ?? "", /交付追溯清单.*不是实际 PR.*不表示.*创建.*发布 PR/iu);
+  assert.match(provenanceGuide?.humanCheck ?? "", /未创建或发布 PR.*合并.*发布.*人/iu);
 });
 
 test("AC-CLARITY-003: the Implementation CTA says when real code work starts", async () => {
@@ -110,7 +116,7 @@ test("AC-CLARITY-020/021/022/025: the active FE-cc failure becomes one five-docu
         "implementation-notes: Evidence index does not link engineering-review",
         "implementation-notes: Evidence index does not link engineering-provenance",
         "engineering-session-log: Outcome must record a complete, non-blocked result",
-        "engineering-session-log: Verification gates contains an explicit blocked or failed gate result",
+        "engineering-session-log: Verification gates contains a downstream Tester deferral that must move to Outcome or limitations",
         "engineering-test-evidence: Tier A requires a concrete test-authoring model/session",
         "engineering-test-evidence: acceptance criterion US-001-AC-01 has no passing automated-test row",
         "engineering-review: section \"Behaviour Preservation\" actionable finding lacks stable ENG-REV-<three-digits> ID, severity, finding, durable evidence, impact, required action, non-Agent owner, terminal status, resolution evidence",
@@ -136,6 +142,7 @@ test("AC-CLARITY-020/021/022/025: the active FE-cc failure becomes one five-docu
   assert.equal(guidance.actions.length, 5);
   assert.deepEqual(guidance.actions.map(({ issueCount }) => issueCount), [5, 2, 2, 2, 2]);
   assert.match(guidance.actions[0]?.reasons.join(" ") ?? "", /Ready for verification.*索引.*工程会话日志/iu);
+  assert.match(guidance.actions[1]?.reasons.join(" ") ?? "", /Tester.*误放.*Outcome.*交接/iu);
   assert.match(guidance.actions[2]?.reasons.join(" ") ?? "", /Tier A.*测试作者.*US-001-AC-01.*测试路径.*证据.*Pass/iu);
   assert.match(guidance.actions[3]?.reasons.join(" ") ?? "", /Behaviour Preservation.*表格.*Pre-mortem/iu);
   assert.doesNotMatch(guidance.actions.map(({ title }) => title).join(" "), /检查写代码后的/u);
@@ -147,6 +154,7 @@ test("AC-CLARITY-022: real implementation failures recommend a full rerun", () =
     details: {
       issues: [
         "implementation-tasks: every task must be complete; unfinished: ENG-TASK-004",
+        "engineering-session-log: Verification gates contains an explicit blocked or failed gate result",
         "engineering-test-evidence: Commands and results contains a failed, skipped, blocked, or unrun command",
       ],
     },
@@ -232,5 +240,9 @@ test("AC-CLARITY-013: Implementation review prioritizes three human-facing docum
   assert.match(source, /建议先看 3 份/u);
   assert.match(source, /实现说明 → 独立测试证据 → 工程七镜/u);
   assert.match(source, /通常不用逐字阅读.*自动检查全部 7 份/u);
+  assert.match(source, /只需看实现、测试和风险.*不要求编辑 Markdown.*通过并解锁 Tester/u);
+  assert.match(source, /交付追溯清单不是实际 PR.*Software Engineer 未创建或发布 PR/u);
+  assert.match(source, /已核对实现、自动化测试与风险，无未解决工程阻塞，同意进入 Tester/u);
+  assert.match(source, /检查证据并解锁 Tester/u);
   assert.match(source, /implementation-notes[\s\S]*engineering-test-evidence[\s\S]*engineering-review/u);
 });

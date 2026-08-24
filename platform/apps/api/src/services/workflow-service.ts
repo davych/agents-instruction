@@ -12,11 +12,18 @@ import {
   type AssessArchitectureImpactInput,
   type ChangeContractDto,
   type CaptureHumanDecisionsInput,
+  type ConfigureE2eWorkspaceInput,
   type CreateArtifactRevisionInput,
   type CreateProjectInput,
   type CreateRunInput,
+  type AuthorVerificationE2eInput,
   type DesignBaselineDto,
+  type E2eAuthoringDto,
+  type E2eReadinessItemDto,
+  type E2eWorkspaceDto,
+  type E2eWorkspaceReadinessDto,
   type ExecutePhaseInput,
+  type ExecutionDto,
   type FigmaIntegrationStatusDto,
   type FigmaPlanCapabilitiesDto,
   type FigmaTarget,
@@ -26,7 +33,9 @@ import {
   type PhaseResolutionDto,
   type PhaseRunDto,
   type ProductBaselineDto,
+  type ReviewVerificationE2eScriptsInput,
   type ReviewPhaseInput,
+  type VerificationE2eFlowDto,
   type WorkflowDefinition
 } from "@ai-sdlc/contracts";
 
@@ -37,10 +46,15 @@ import type {
   PhaseBaselineRecord,
   PgWorkflowStore,
   RunBundle,
+  SelectionArtifact,
 } from "../db/store.js";
 import { AppError } from "../domain/errors.js";
 import { deferredDesignValidationIds } from "../domain/design-deferred-validation.js";
 import { resolveEngineeringAcceptanceCriteria } from "../domain/engineering-acceptance-criteria.js";
+import {
+  freezeVerificationE2eIntent,
+  type FrozenE2eIntent,
+} from "../domain/verification-e2e-intent.js";
 import {
   assessPhaseHumanDecisionGate,
   assertPhaseHumanDecisionGateReady,
@@ -87,11 +101,15 @@ import {
   type ArchitectureSelectionEvidence,
 } from "../domain/workflow.js";
 import { CodexTerminalRunner, type ResolvedFigmaTarget } from "./codex-runner.js";
-import { CodexExecutionCapabilities } from "./codex-execution-capabilities.js";
+import {
+  CodexExecutionCapabilities,
+  type ResolvedCodexExecutionConfig,
+} from "./codex-execution-capabilities.js";
 import {
   assertRuntimePath,
   prepareArtifactRevision,
   readArtifactContent,
+  withArtifactPathsRollbackOnError,
 } from "./artifact-workspace.js";
 import {
   architectureRulebookValidationRequired,
@@ -102,16 +120,48 @@ import {
   engineeringEvidenceRepairFeedback,
   validateEngineeringEvidencePack,
 } from "./engineering-evidence-validator.js";
-import { loadDefinition, type LoadedDefinition } from "./definition-loader.js";
+import {
+  loadDefinition,
+  type LoadedArtifactDefinition,
+  type LoadedDefinition,
+} from "./definition-loader.js";
 import type { FigmaMcpIntegration } from "./figma-mcp-integration.js";
 import { initializeCodexProject } from "./project-initializer.js";
 import { ProjectPathPolicy } from "./project-paths.js";
+import type {
+  VerificationE2eCoordinator,
+  VerificationE2eScriptReviewAuthority,
+} from "./verification-e2e-coordinator.js";
+import {
+  captureVerificationGitState,
+  type VerificationGitState,
+} from "./verification-git-state.js";
 import { validateVerificationEvidenceProvenance } from "./verification-evidence-provenance.js";
+import { withVerificationWorkspaceProtected } from "./verification-workspace.js";
+
+interface VerificationE2eDefinitionContext {
+  definition: LoadedDefinition;
+  phaseDefinition: LoadedDefinition["phases"][number];
+  phase: PhaseRunDto;
+  reportArtifact: LoadedArtifactDefinition;
+}
+
+interface VerificationE2eExecutionContext extends VerificationE2eDefinitionContext {
+  bundle: RunBundle;
+  selected: SelectionArtifact[];
+  currentArtifacts: CurrentArtifactSnapshot[];
+  intent: FrozenE2eIntent;
+  executionConfig: ResolvedCodexExecutionConfig | null;
+}
 
 export class WorkflowService {
   private readonly tasks = new Set<Promise<void>>();
   private readonly artifactRevisionLocks = new Map<string, Promise<void>>();
   private readonly activeWorkspaceMutations = new Set<string>();
+  private readonly e2eReadinessCache = new Map<string, {
+    descriptorHash: string;
+    readiness: E2eWorkspaceReadinessDto;
+  }>();
 
   constructor(
     private readonly store: PgWorkflowStore,
@@ -119,7 +169,19 @@ export class WorkflowService {
     private readonly runner: CodexTerminalRunner,
     private readonly cliPath?: string,
     private readonly figmaIntegration?: FigmaMcpIntegration,
-    private readonly codexCapabilities?: CodexExecutionCapabilities
+    private readonly codexCapabilities?: CodexExecutionCapabilities,
+    private readonly verificationE2e?: Pick<
+      VerificationE2eCoordinator,
+      | "configure"
+      | "workspace"
+      | "optionalWorkspace"
+      | "prepare"
+      | "readiness"
+      | "author"
+      | "latestAuthoring"
+      | "review"
+      | "execute"
+    >,
   ) {}
 
   async listProjects() {
@@ -150,6 +212,55 @@ export class WorkflowService {
     await this.assertProjectPath(project.rootPath);
     const definition = await loadDefinition(project.rootPath);
     return { project, definition: publicDefinition(definition) };
+  }
+
+  async getE2eWorkspace(projectId: string): Promise<E2eWorkspaceDto | null> {
+    const project = await this.store.getProject(projectId);
+    await this.assertProjectPath(project.rootPath);
+    return this.requireVerificationE2e().optionalWorkspace(project);
+  }
+
+  async configureE2eWorkspace(
+    projectId: string,
+    input: ConfigureE2eWorkspaceInput,
+  ): Promise<E2eWorkspaceDto> {
+    const project = await this.store.getProject(projectId);
+    await this.assertProjectPath(project.rootPath);
+    const releaseWorkspaces = this.acquireWorkspaceMutations([
+      project.rootPath,
+      path.resolve(input.rootPath),
+    ]);
+    try {
+      const workspace = await this.requireVerificationE2e().configure(project, input);
+      this.e2eReadinessCache.delete(project.rootPath);
+      return workspace;
+    } finally {
+      releaseWorkspaces();
+    }
+  }
+
+  async prepareE2eWorkspace(projectId: string): Promise<{
+    result: unknown;
+    readiness: E2eWorkspaceReadinessDto;
+  }> {
+    const project = await this.store.getProject(projectId);
+    await this.assertProjectPath(project.rootPath);
+    const coordinator = this.requireVerificationE2e();
+    const workspace = await coordinator.workspace(project);
+    const releaseWorkspaces = this.acquireWorkspaceMutations([
+      project.rootPath,
+      workspace.rootPath,
+    ]);
+    try {
+      const prepared = await coordinator.prepare(project);
+      this.e2eReadinessCache.set(project.rootPath, {
+        descriptorHash: workspace.descriptorHash,
+        readiness: prepared.readiness,
+      });
+      return prepared;
+    } finally {
+      releaseWorkspaces();
+    }
   }
 
   async listRuns(projectId: string) {
@@ -792,7 +903,211 @@ export class WorkflowService {
     }
   }
 
+  async getVerificationE2eFlow(runId: string): Promise<VerificationE2eFlowDto> {
+    const bundle = await this.store.getRun(runId);
+    await this.assertProjectPath(bundle.project.rootPath);
+    return this.verificationE2eFlow(bundle);
+  }
+
+  async preflightVerificationE2e(runId: string): Promise<VerificationE2eFlowDto> {
+    const bundle = await this.store.getRun(runId);
+    await this.assertProjectPath(bundle.project.rootPath);
+    const coordinator = this.requireVerificationE2e();
+    const verificationPhase = bundle.phases.find(({ phaseId }) => phaseId === "verification");
+    if (
+      verificationPhase
+      && verificationE2eExecutions(verificationPhase).some(({ status }) => status === "running")
+    ) return this.verificationE2eFlow(bundle);
+    const workspace = await coordinator.optionalWorkspace(bundle.project);
+    if (!workspace) return this.verificationE2eFlow(bundle);
+    const releaseWorkspaces = this.acquireWorkspaceMutations([
+      bundle.project.rootPath,
+      workspace.rootPath,
+    ]);
+    try {
+      const readiness = await coordinator.readiness(bundle.project);
+      this.e2eReadinessCache.set(bundle.project.rootPath, {
+        descriptorHash: workspace.descriptorHash,
+        readiness,
+      });
+      return this.verificationE2eFlow(bundle, readiness);
+    } finally {
+      releaseWorkspaces();
+    }
+  }
+
+  async authorVerificationE2e(
+    runId: string,
+    input: AuthorVerificationE2eInput,
+  ): Promise<ExecutionDto> {
+    const initial = await this.store.getRun(runId);
+    await this.assertProjectPath(initial.project.rootPath);
+    const coordinator = this.requireVerificationE2e();
+    const workspace = await coordinator.workspace(initial.project);
+    const releaseWorkspaces = this.acquireWorkspaceMutations([
+      initial.project.rootPath,
+      workspace.rootPath,
+    ]);
+    let scheduled = false;
+    try {
+      const context = await this.verificationE2eExecutionContext(runId, input);
+      const execution = await this.store.createExecution(
+        runId,
+        "verification",
+        input.selectedArtifactIds,
+        [context.reportArtifact.id],
+        this.runner.mode(),
+        context.executionConfig?.model ?? null,
+        context.executionConfig?.reasoningEffort ?? null,
+        "codex exec --ephemeral (independent E2E Test Author)",
+      );
+      try {
+        await this.store.appendEvent(execution.id, 1, "e2e.authoring.queued", {
+          phaseId: "verification",
+          criterionIds: context.intent.criteria.map(({ id }) => id),
+        });
+      } catch (error) {
+        await this.store.failExecution(
+          execution.id,
+          null,
+          error instanceof Error ? error.message : String(error),
+        );
+        throw error;
+      }
+      const task = this.performVerificationE2eAuthor({
+        ...context,
+        execution,
+        startingSequence: 1,
+      }).finally(releaseWorkspaces);
+      this.trackTask(task);
+      scheduled = true;
+      return execution;
+    } catch (error) {
+      if (!scheduled) releaseWorkspaces();
+      throw error;
+    }
+  }
+
+  async reviewVerificationE2eScripts(
+    runId: string,
+    input: ReviewVerificationE2eScriptsInput,
+  ): Promise<VerificationE2eFlowDto> {
+    const initial = await this.store.getRun(runId);
+    await this.assertProjectPath(initial.project.rootPath);
+    const coordinator = this.requireVerificationE2e();
+    const workspace = await coordinator.workspace(initial.project);
+    const releaseWorkspaces = this.acquireWorkspaceMutations([
+      initial.project.rootPath,
+      workspace.rootPath,
+    ]);
+    try {
+      const current = await this.store.getRun(runId);
+      const { reportArtifact } = await this.verificationE2eDefinitionContext(current);
+      const pendingAuthoring = await coordinator.latestAuthoring(current.project, runId);
+      if (!pendingAuthoring) {
+        throw new AppError("尚未生成可审核的 E2E 脚本", 409, "E2E_AUTHORING_REQUIRED");
+      }
+      assertTrustedE2eAuthoringExecution(current, pendingAuthoring);
+      const reviewed = await coordinator.review(
+        current.project,
+        runId,
+        input,
+        reportArtifact.relativePath,
+      );
+      const refreshed = await this.store.getRun(runId);
+      const verificationPhase = requiredRunPhase(refreshed, "verification");
+      const nextSequence = verificationPhase.events
+        .filter(({ executionId }) => executionId === reviewed.executionId)
+        .reduce((maximum, { sequence }) => Math.max(maximum, sequence), 0) + 1;
+      const reviewedAt = reviewed.reviewedAt ?? new Date().toISOString();
+      await this.store.appendEvent(reviewed.executionId, nextSequence, "e2e.script.reviewed", {
+        decision: input.decision,
+        authorExecutionId: reviewed.executionId,
+        patchHash: reviewed.patchHash,
+        productRevisionToken: reviewed.productRevisionToken,
+        e2eRevisionToken: reviewed.e2eRevisionToken,
+        commentHash: createHash("sha256").update(input.comment).digest("hex"),
+        reviewedAt,
+      });
+      return this.verificationE2eFlow(await this.store.getRun(runId));
+    } finally {
+      releaseWorkspaces();
+    }
+  }
+
+  async executeVerificationE2e(
+    runId: string,
+    input: AuthorVerificationE2eInput,
+  ): Promise<ExecutionDto> {
+    const initial = await this.store.getRun(runId);
+    await this.assertProjectPath(initial.project.rootPath);
+    const coordinator = this.requireVerificationE2e();
+    const workspace = await coordinator.workspace(initial.project);
+    const releaseWorkspaces = this.acquireWorkspaceMutations([
+      initial.project.rootPath,
+      workspace.rootPath,
+    ]);
+    let scheduled = false;
+    try {
+      const context = await this.verificationE2eExecutionContext(runId, input);
+      const execution = await this.store.createExecution(
+        runId,
+        "verification",
+        input.selectedArtifactIds,
+        [context.reportArtifact.id],
+        this.runner.mode(),
+        context.executionConfig?.model ?? null,
+        context.executionConfig?.reasoningEffort ?? null,
+        `npm run ${workspace.testScript} + ${this.runner.commandLabel(context.executionConfig ?? undefined)}`,
+      );
+      try {
+        await this.store.appendEvent(execution.id, 1, "e2e.execution.queued", {
+          phaseId: "verification",
+        });
+      } catch (error) {
+        await this.store.failExecution(
+          execution.id,
+          null,
+          error instanceof Error ? error.message : String(error),
+        );
+        throw error;
+      }
+      const task = this.performVerificationE2eExecution({
+        ...context,
+        execution,
+        startingSequence: 1,
+      }).finally(releaseWorkspaces);
+      this.trackTask(task);
+      scheduled = true;
+      return execution;
+    } catch (error) {
+      if (!scheduled) releaseWorkspaces();
+      throw error;
+    }
+  }
+
   async executePhase(runId: string, phaseId: PhaseId, input: ExecutePhaseInput) {
+    if (phaseId !== "verification" && input.verificationAction !== undefined) {
+      throw new AppError(
+        "verificationAction 只能由 Verification 阶段使用",
+        400,
+        "VERIFICATION_ACTION_PHASE_MISMATCH",
+      );
+    }
+    if (phaseId === "verification" && input.verificationAction === "author_e2e") {
+      return this.authorVerificationE2e(runId, {
+        selectedArtifactIds: input.selectedArtifactIds,
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+      });
+    }
+    if (phaseId === "verification" && input.verificationAction === "run_e2e") {
+      return this.executeVerificationE2e(runId, {
+        selectedArtifactIds: input.selectedArtifactIds,
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+      });
+    }
     if (new Set(input.selectedArtifactIds).size !== input.selectedArtifactIds.length) {
       throw new AppError("selectedArtifactIds 不能重复", 400, "DUPLICATE_ARTIFACT_SELECTION");
     }
@@ -1063,7 +1378,10 @@ export class WorkflowService {
       (execution) => execution.status === "completed",
     );
     const needsExecutionInputs = hasPriorRoutedPhase
-      || (phaseId === "implementation" && input.decision === "approve");
+      || (
+        input.decision === "approve"
+        && (phaseId === "implementation" || phaseId === "verification")
+      );
     const executionInputs = needsExecutionInputs
       && latestCompletedExecution?.selectedArtifactIds.length
       && typeof this.store.selectionArtifacts === "function"
@@ -1185,11 +1503,15 @@ export class WorkflowService {
         designArtifacts,
         verificationArtifacts,
       });
+      assertLinkedE2eApprovalObligation(currentPhase, verificationArtifacts);
       await validateVerificationEvidenceProvenance({
         projectRoot: current.project.rootPath,
         artifacts: verificationArtifacts,
         phase: currentPhase,
-        acceptanceCriteria: current.run.changeContract?.acceptanceCriteria,
+        acceptanceCriteria: resolveEngineeringAcceptanceCriteria({
+          changeContractCriteria: current.run.changeContract?.acceptanceCriteria,
+          selectedArtifacts: executionInputs,
+        }),
         regressionScope: current.run.changeContract?.regressionScope,
         riskFlags: current.run.changeContract?.riskFlags,
       });
@@ -1212,6 +1534,503 @@ export class WorkflowService {
 
   async getArtifact(artifactId: string) {
     return this.store.getArtifact(artifactId);
+  }
+
+  private async verificationE2eDefinitionContext(
+    bundle: RunBundle,
+  ): Promise<VerificationE2eDefinitionContext> {
+    const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+    const phaseDefinition = definition.phases.find(({ id }) => id === "verification");
+    const phase = bundle.phases.find(({ phaseId }) => phaseId === "verification");
+    if (!phaseDefinition || !phase) {
+      throw new AppError("Verification 阶段不存在", 404, "PHASE_NOT_FOUND");
+    }
+    if (phaseDefinition.owner !== "tester") {
+      throw new AppError(
+        "Linked E2E author/run 只能由固定 Verification Tester 角色执行",
+        409,
+        "E2E_VERIFICATION_OWNER_INVALID",
+      );
+    }
+    if (
+      phase.resolution
+      && ["skip", "direct", "reuse"].includes(phase.resolution.mode)
+    ) {
+      throw new AppError(
+        `Verification 已通过 ${phase.resolution.mode} 处置，不能运行 Linked E2E`,
+        409,
+        "PHASE_RESOLUTION_IMMUTABLE",
+      );
+    }
+    const reportArtifact = definition.artifacts.find(({ id }) => id === "test-report");
+    if (!reportArtifact || !phaseDefinition.outputs.includes(reportArtifact.id)) {
+      throw new AppError(
+        "Verification 没有注册 test-report 输出",
+        400,
+        "CONFIG_INVALID",
+      );
+    }
+    return { definition, phaseDefinition, phase, reportArtifact };
+  }
+
+  private async verificationE2eExecutionContext(
+    runId: string,
+    input: AuthorVerificationE2eInput,
+  ): Promise<VerificationE2eExecutionContext> {
+    if (new Set(input.selectedArtifactIds).size !== input.selectedArtifactIds.length) {
+      throw new AppError("selectedArtifactIds 不能重复", 400, "DUPLICATE_ARTIFACT_SELECTION");
+    }
+    const bundle = await this.store.getRun(runId);
+    await this.assertProjectPath(bundle.project.rootPath);
+    const definitionContext = await this.verificationE2eDefinitionContext(bundle);
+    const selected = await this.store.selectionArtifacts(runId, input.selectedArtifactIds);
+    const requiredInputs = effectiveRequiredInputKeys(
+      "verification",
+      definitionContext.phaseDefinition.inputs,
+      bundle.phases,
+      Boolean(bundle.run.changeContract),
+      outputKeysByPhase(definitionContext.definition),
+    );
+    validateArtifactSelection(
+      "verification",
+      requiredSelectionKeys("verification", requiredInputs),
+      selected.map((artifact) => ({
+        id: artifact.id,
+        artifactKey: artifact.artifactKey,
+        sourcePosition: artifact.sourcePosition,
+        sourceStatus: artifact.sourceStatus,
+        reviewStatus: artifact.reviewStatus,
+      })),
+    );
+    await this.validateArtifactWorkspaceSnapshots(bundle.project.rootPath, selected);
+    const adoptedArchitecture = bundle.phases.find(
+      (phase) => phase.phaseId === "architecture" && phase.architectureImpact,
+    );
+    if (adoptedArchitecture) {
+      await this.validateCurrentArchitectureWorkspace(bundle.project.rootPath, runId);
+    }
+    const intent = freezeVerificationE2eIntent({
+      changeContract: bundle.run.changeContract,
+      selectedArtifacts: selected,
+    });
+    if (this.runner.mode() === "real" && !this.codexCapabilities) {
+      throw new AppError("Codex 执行能力服务未配置", 503, "CODEX_CAPABILITIES_UNAVAILABLE");
+    }
+    const executionConfig = this.runner.mode() === "real"
+      ? await this.codexCapabilities!.resolve(bundle.project.rootPath, input)
+      : null;
+    return {
+      ...definitionContext,
+      bundle,
+      selected,
+      currentArtifacts: await this.store.currentArtifactSnapshotsForPhase(runId, "verification"),
+      intent,
+      executionConfig,
+    };
+  }
+
+  private async verificationE2eFlow(
+    bundle: RunBundle,
+    probedReadiness?: E2eWorkspaceReadinessDto,
+  ): Promise<VerificationE2eFlowDto> {
+    const coordinator = this.requireVerificationE2e();
+    const definitionContext = await this.verificationE2eDefinitionContext(bundle);
+    const flowIntent = await this.verificationE2eFlowIntent(bundle);
+    const workspace = await coordinator.optionalWorkspace(bundle.project);
+    if (!workspace) {
+      return {
+        runId: bundle.run.id,
+        state: "unconfigured",
+        workspace: null,
+        readiness: null,
+        blockers: flowIntent.blockers,
+        criterionIds: flowIntent.intent?.criteria.map(({ id }) => id) ?? [],
+        contractSource: flowIntent.contractSource,
+        authoring: null,
+        execution: null,
+        recommendedAction: "先为项目显式配置一个新的独立 E2E 工作区。",
+      };
+    }
+
+    const cachedReadiness = this.e2eReadinessCache.get(bundle.project.rootPath);
+    let readiness = probedReadiness
+      ?? (cachedReadiness?.descriptorHash === workspace.descriptorHash
+        ? cachedReadiness.readiness
+        : unprobedE2eReadiness());
+    let staleAuthoringBlockers: string[] = [];
+    let localAuthoring: E2eAuthoringDto | null;
+    try {
+      localAuthoring = await coordinator.latestAuthoring(bundle.project, bundle.run.id);
+    } catch (error) {
+      if (
+        error instanceof AppError
+        && ["E2E_AUTHORING_RECORD_INVALID", "E2E_SCRIPT_APPROVAL_STALE"].includes(error.code)
+      ) {
+        localAuthoring = null;
+        staleAuthoringBlockers = ["已生成的 E2E 脚本与完整待审 manifest 不一致，请重新生成。"];
+      } else {
+        throw error;
+      }
+    }
+    const reviewResolution = localAuthoring
+      ? resolveE2eScriptReviewAuthority(definitionContext.phase, localAuthoring)
+      : { authority: null, mismatch: false };
+    const authoring = localAuthoring
+      ? {
+        ...localAuthoring,
+        status: reviewResolution.authority
+          ? (reviewResolution.authority.decision === "approve" ? "approved" as const : "changes_requested" as const)
+          : (localAuthoring.status === "changes_requested" ? "changes_requested" as const : "awaiting_review" as const),
+        reviewedAt: reviewResolution.authority?.reviewedAt ?? null,
+      }
+      : null;
+    const specialExecutions = verificationE2eExecutions(
+      definitionContext.phase,
+    );
+    const latest = specialExecutions[0] ?? null;
+    const latestKind = latest
+      ? verificationE2eExecutionKind(definitionContext.phase, latest.id)
+      : null;
+    if (latest && latestKind === "execute") {
+      const completed = definitionContext.phase.events
+        .filter(({ executionId, eventType }) => (
+          executionId === latest.id && eventType === "e2e.execution.completed"
+        ))
+        .sort((left, right) => left.sequence - right.sequence)
+        .at(-1);
+      const payload = completed?.payload && typeof completed.payload === "object"
+        ? completed.payload as Record<string, unknown>
+        : null;
+      if (payload?.targetProbe && typeof payload.targetProbe === "object") {
+        const target = payload.targetProbe as Record<string, unknown>;
+        const trustedTarget = isTrustedLinkedE2eCompletedPayload(payload);
+        readiness = {
+          ...readiness,
+          target: {
+            state: trustedTarget ? "ready" : "failed",
+            message: trustedTarget ? "真实 Chromium 已访问目标" : "真实 Chromium 目标验证失败",
+            detail: `url=${String(target.url ?? "unknown")}; status=${String(target.status ?? "unknown")}; cleanup=${String(payload.serverCleanup ?? "unknown")}`,
+          },
+        };
+      }
+    }
+    const readinessBlockers = readiness.ready
+      ? []
+      : e2eReadinessBlockers(readiness);
+    const currentReport = (await this.store.currentArtifactSnapshotsForPhase(
+      bundle.run.id,
+      "verification",
+    )).find(({ artifactKey }) => artifactKey === "test-report");
+    const linkedExecutionIsCurrent = latestKind !== "execute"
+      || currentReport?.executionId === latest?.id;
+    const blockers = [...new Set([
+      ...flowIntent.blockers,
+      ...readinessBlockers,
+      ...staleAuthoringBlockers,
+      ...(reviewResolution.mismatch
+        ? ["数据库脚本审核与当前生成文件的 hash/revision 不匹配，必须重新审核。"]
+        : []),
+      ...(latestKind === "execute" && latest?.status !== "running" && !linkedExecutionIsCurrent
+        ? ["旧 Linked E2E 结果不是当前 test-report head，必须重新运行。"]
+        : []),
+    ])];
+    let state: VerificationE2eFlowDto["state"];
+    let recommendedAction: string;
+    if (latest?.status === "running" && latestKind === "author") {
+      state = "authoring";
+      recommendedAction = "独立 Test Author 正在生成脚本；完成后请审核精确文件哈希。";
+    } else if (latest?.status === "running" && latestKind === "execute") {
+      state = "executing";
+      recommendedAction = "平台正在监督产品服务和真实 Playwright 浏览器执行。";
+    } else if (!readiness.ready) {
+      state = "preflight_blocked";
+      recommendedAction = "按预检项修复环境；依赖与 Chromium 只能通过显式准备操作安装。";
+    } else if (!flowIntent.intent) {
+      state = "needs_authoring";
+      recommendedAction = "先批准带稳定 AC ID 的 user-stories，或为新 Run 提供 Change Contract。";
+    } else if (!authoring || authoring.status === "changes_requested") {
+      state = "needs_authoring";
+      recommendedAction = "从已批准规格重新生成独立 E2E 脚本。";
+    } else if (authoring.status === "awaiting_review") {
+      state = "awaiting_script_review";
+      recommendedAction = "人工审核生成文件及 manifest hash；脚本批准不等于 Verification 批准。";
+    } else if (latestKind === "execute" && latest?.status !== "running" && !linkedExecutionIsCurrent) {
+      state = "ready_to_execute";
+      recommendedAction = "当前 test-report 已被其他 Tester 执行替换，请重新运行 Linked E2E。";
+    } else if (
+      latestKind === "execute"
+      && (
+        latest?.status === "failed"
+        || (latest?.status === "completed" && latest.exitCode !== 0)
+      )
+    ) {
+      state = "failed";
+      recommendedAction = "查看真实浏览器执行失败证据，按归属修复后重新运行。";
+    } else if (
+      latestKind === "execute"
+      && latest?.status === "completed"
+      && latest.exitCode === 0
+    ) {
+      state = "awaiting_verification_review";
+      recommendedAction = "检查 test-report 与真实 Playwright 证据，再进行正常 Verification 人工审核。";
+    } else {
+      state = "ready_to_execute";
+      recommendedAction = "运行已批准哈希对应的真实 Playwright 脚本。";
+    }
+    return {
+      runId: bundle.run.id,
+      state,
+      workspace,
+      readiness,
+      blockers,
+      criterionIds: flowIntent.intent?.criteria.map(({ id }) => id) ?? [],
+      contractSource: flowIntent.contractSource,
+      authoring,
+      execution: latest,
+      recommendedAction,
+    };
+  }
+
+  private async verificationE2eFlowIntent(bundle: RunBundle): Promise<{
+    intent: FrozenE2eIntent | null;
+    contractSource: VerificationE2eFlowDto["contractSource"];
+    blockers: string[];
+  }> {
+    const priorPhases = bundle.phases.filter(
+      ({ phaseId, status }) => phasePosition(phaseId) < phasePosition("verification")
+        && status === "approved",
+    );
+    const selectedArtifacts = (await Promise.all(priorPhases.map(async (phase) => (
+      (await this.store.currentArtifactSnapshotsForPhase(bundle.run.id, phase.phaseId))
+        .map((artifact) => ({ ...artifact, sourceStatus: phase.status }))
+    )))).flat();
+    try {
+      const intent = freezeVerificationE2eIntent({
+        changeContract: bundle.run.changeContract,
+        selectedArtifacts,
+      });
+      return {
+        intent,
+        contractSource: intent.criteriaSource === "change_contract"
+          ? "change_contract"
+          : "legacy_approved_artifacts",
+        blockers: [],
+      };
+    } catch (error) {
+      if (error instanceof AppError && error.code === "E2E_AUTHORITATIVE_CRITERIA_MISSING") {
+        return {
+          intent: null,
+          contractSource: "unavailable",
+          blockers: [error.message],
+        };
+      }
+      throw error;
+    }
+  }
+
+  private async performVerificationE2eAuthor(
+    input: VerificationE2eExecutionContext & {
+      execution: ExecutionDto;
+      startingSequence: number;
+    },
+  ): Promise<void> {
+    let sequence = input.startingSequence;
+    const event = async (eventType: string, payload: unknown) => {
+      sequence += 1;
+      await this.store.appendEvent(input.execution.id, sequence, eventType, payload);
+    };
+    try {
+      const productGitState = await captureVerificationGitState(input.bundle.project.rootPath);
+      const artifact = await withArtifactPathsRollbackOnError(
+        input.bundle.project.rootPath,
+        [{ id: input.reportArtifact.id, absolutePath: input.reportArtifact.absolutePath }],
+        2_000_000,
+        () => withVerificationWorkspaceProtected(
+          {
+            projectRoot: input.bundle.project.rootPath,
+            selectedOutputPaths: [input.reportArtifact.absolutePath],
+            protectedGitMetadataPaths: verificationGitMetadataPaths(productGitState),
+          },
+          async () => {
+            await event("e2e.authoring.started", {
+              isolationTier: "B",
+              criterionIds: input.intent.criteria.map(({ id }) => id),
+            });
+            const authored = await this.requireVerificationE2e().author({
+              project: input.bundle.project,
+              runId: input.bundle.run.id,
+              executionId: input.execution.id,
+              intent: input.intent,
+              model: input.executionConfig?.model ?? null,
+              reasoningEffort: input.executionConfig?.reasoningEffort ?? null,
+              testReportPath: input.reportArtifact.relativePath,
+            });
+            const report = await this.writeVerificationE2eReport(
+              input.bundle.project.rootPath,
+              input.reportArtifact,
+              authored.reportContent,
+            );
+            await event("e2e.authoring.materialized", {
+              patchHash: authored.authoring.patchHash,
+              productRevisionToken: authored.authoring.productRevisionToken,
+              e2eRevisionToken: authored.authoring.e2eRevisionToken,
+              criterionIds: authored.authoring.criterionIds,
+              files: authored.authoring.files.map(({ path: filePath, sha256, bytes }) => ({
+                path: filePath,
+                sha256,
+                bytes,
+              })),
+            });
+            return report;
+          },
+        ),
+      );
+      await this.store.completeExecution(input.execution.id, 0, [artifact]);
+      await event("e2e.authoring.completed", { exitCode: 0 });
+    } catch (error) {
+      const failure = e2eFailureDetails(error, "test_author");
+      await event("e2e.authoring.failed", failure).catch(() => undefined);
+      await this.store.failExecution(
+        input.execution.id,
+        e2eFailureExitCode(error),
+        `[${failure.code}] ${failure.stage}: ${failure.message}`,
+      );
+    }
+  }
+
+  private async performVerificationE2eExecution(
+    input: VerificationE2eExecutionContext & {
+      execution: ExecutionDto;
+      startingSequence: number;
+    },
+  ): Promise<void> {
+    let sequence = input.startingSequence;
+    const event = async (eventType: string, payload: unknown) => {
+      sequence += 1;
+      await this.store.appendEvent(input.execution.id, sequence, eventType, payload);
+    };
+    try {
+      const coordinator = this.requireVerificationE2e();
+      const workspace = await coordinator.workspace(input.bundle.project);
+      const productGitState = await captureVerificationGitState(input.bundle.project.rootPath);
+      const e2eGitState = await captureVerificationGitState(workspace.rootPath);
+      const latestBundle = await this.store.getRun(input.bundle.run.id);
+      const localAuthoring = await coordinator.latestAuthoring(
+        latestBundle.project,
+        latestBundle.run.id,
+      );
+      const reviewResolution = localAuthoring
+        ? resolveE2eScriptReviewAuthority(
+          requiredRunPhase(latestBundle, "verification"),
+          localAuthoring,
+        )
+        : { authority: null, mismatch: false };
+      if (localAuthoring) assertTrustedE2eAuthoringExecution(latestBundle, localAuthoring);
+      if (!reviewResolution.authority || reviewResolution.authority.decision !== "approve") {
+        throw new AppError(
+          "Linked E2E 缺少与当前脚本完全匹配的数据库人工批准事件",
+          409,
+          "E2E_SCRIPT_REVIEW_REQUIRED",
+        );
+      }
+      const reviewAuthority = reviewResolution.authority;
+      const completed = await withArtifactPathsRollbackOnError(
+        input.bundle.project.rootPath,
+        [{ id: input.reportArtifact.id, absolutePath: input.reportArtifact.absolutePath }],
+        2_000_000,
+        () => withVerificationWorkspaceProtected(
+          {
+            projectRoot: input.bundle.project.rootPath,
+            selectedOutputPaths: [input.reportArtifact.absolutePath],
+            protectedGitMetadataPaths: verificationGitMetadataPaths(productGitState),
+          },
+          () => withVerificationWorkspaceProtected(
+            {
+              projectRoot: workspace.rootPath,
+              selectedOutputPaths: [],
+              protectedGitMetadataPaths: verificationGitMetadataPaths(e2eGitState),
+            },
+            async () => {
+            const e2e = await coordinator.execute({
+              project: input.bundle.project,
+              runId: input.bundle.run.id,
+              executionId: input.execution.id,
+              testReportPath: input.reportArtifact.relativePath,
+              reviewAuthority,
+              onEvent: event,
+            });
+            const report = await this.runner.run({
+              executionId: input.execution.id,
+              project: input.bundle.project,
+              run: input.bundle.run,
+              phase: input.phaseDefinition,
+              definition: input.definition,
+              selectedArtifacts: input.selected,
+              currentArtifacts: input.currentArtifacts,
+              revisionFeedback: [
+                e2e.prompt,
+                ...input.phase.reviews
+                  .filter(({ decision }) => decision === "request_changes")
+                  .slice(0, 5)
+                  .map(({ comment }) => comment),
+              ],
+              selectedOutputKeys: [input.reportArtifact.id],
+              requireEverySelectedOutputUpdated: true,
+              phaseResolution: input.phase.resolution,
+              model: input.executionConfig?.model ?? null,
+              reasoningEffort: input.executionConfig?.reasoningEffort ?? null,
+            }, event);
+            return { e2e, report };
+            },
+          ),
+        ),
+      );
+      const effectiveExitCode = completed.e2e.result.passed
+        ? 0
+        : (completed.e2e.result.testExitCode || 1);
+      await this.store.completeExecution(
+        input.execution.id,
+        effectiveExitCode,
+        completed.report.artifacts,
+      );
+      await event("e2e.workflow.completed", {
+        exitCode: effectiveExitCode,
+        testExitCode: completed.e2e.result.testExitCode,
+        passed: completed.e2e.result.passed,
+      });
+    } catch (error) {
+      const failure = e2eFailureDetails(error, "linked_e2e_execution_or_report");
+      await event("e2e.workflow.failed", failure).catch(() => undefined);
+      await this.store.failExecution(
+        input.execution.id,
+        e2eFailureExitCode(error),
+        `[${failure.code}] ${failure.stage}: ${failure.message}`,
+      );
+    }
+  }
+
+  private async writeVerificationE2eReport(
+    projectRoot: string,
+    artifact: LoadedArtifactDefinition,
+    content: string,
+  ) {
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes === 0 || bytes > 2_000_000) {
+      throw new AppError(
+        "E2E authoring report is empty or exceeds the artifact limit",
+        bytes > 2_000_000 ? 413 : 422,
+        bytes > 2_000_000 ? "ARTIFACT_TOO_LARGE" : "OUTPUT_ARTIFACTS_MISSING",
+      );
+    }
+    await assertRuntimePath(projectRoot, artifact.absolutePath);
+    await mkdir(path.dirname(artifact.absolutePath), { recursive: true });
+    await writeFile(artifact.absolutePath, content, "utf8");
+    return {
+      artifactKey: artifact.id,
+      filePath: artifact.relativePath,
+      content,
+      contentHash: createHash("sha256").update(content).digest("hex"),
+    };
   }
 
   private async priorDeferredDesignValidationIds(
@@ -1390,6 +2209,40 @@ export class WorkflowService {
 
   async getExecutionEvents(executionId: string) {
     return this.store.eventsForExecution(executionId);
+  }
+
+  private requireVerificationE2e(): NonNullable<WorkflowService["verificationE2e"]> {
+    if (!this.verificationE2e) {
+      throw new AppError(
+        "Linked E2E 服务未配置",
+        503,
+        "E2E_SERVICE_UNAVAILABLE",
+      );
+    }
+    return this.verificationE2e;
+  }
+
+  private trackTask(task: Promise<void>): void {
+    this.tasks.add(task);
+    void task.then(
+      () => this.tasks.delete(task),
+      () => this.tasks.delete(task),
+    );
+  }
+
+  private acquireWorkspaceMutations(roots: readonly string[]): () => void {
+    const releases: Array<() => void> = [];
+    try {
+      for (const root of [...new Set(roots.map((candidate) => path.resolve(candidate)))].sort()) {
+        releases.push(this.acquireWorkspaceMutation(root));
+      }
+    } catch (error) {
+      for (const release of releases.reverse()) release();
+      throw error;
+    }
+    return () => {
+      for (const release of releases.reverse()) release();
+    };
   }
 
   async waitForIdle(): Promise<void> {
@@ -1891,6 +2744,248 @@ export class WorkflowService {
     await this.store.syncTickets(runId, artifact.id, tickets);
     return this.store.listTickets(runId);
   }
+}
+
+function verificationGitMetadataPaths(state: VerificationGitState): string[] {
+  return state.kind === "not_repository"
+    ? []
+    : [...new Set([state.gitDirectory, state.gitCommonDirectory])];
+}
+
+function requiredRunPhase(bundle: RunBundle, phaseId: PhaseId): PhaseRunDto {
+  const phase = bundle.phases.find((candidate) => candidate.phaseId === phaseId);
+  if (!phase) throw new AppError(`阶段 ${phaseId} 不存在`, 404, "PHASE_NOT_FOUND");
+  return phase;
+}
+
+function resolveE2eScriptReviewAuthority(
+  phase: PhaseRunDto,
+  authoring: E2eAuthoringDto,
+): { authority: VerificationE2eScriptReviewAuthority | null; mismatch: boolean } {
+  const latest = phase.events
+    .filter(({ executionId, eventType }) => (
+      executionId === authoring.executionId && eventType === "e2e.script.reviewed"
+    ))
+    .sort((left, right) => left.sequence - right.sequence)
+    .at(-1);
+  if (!latest || typeof latest.payload !== "object" || latest.payload === null) {
+    return { authority: null, mismatch: false };
+  }
+  const payload = latest.payload as Record<string, unknown>;
+  if (
+    !["approve", "request_changes"].includes(String(payload.decision))
+    || typeof payload.authorExecutionId !== "string"
+    || typeof payload.patchHash !== "string"
+    || typeof payload.productRevisionToken !== "string"
+    || typeof payload.e2eRevisionToken !== "string"
+    || typeof payload.commentHash !== "string"
+    || typeof payload.reviewedAt !== "string"
+    || !/^[a-f0-9]{64}$/u.test(payload.commentHash)
+    || Number.isNaN(Date.parse(payload.reviewedAt))
+  ) return { authority: null, mismatch: true };
+  const authority = payload as unknown as VerificationE2eScriptReviewAuthority;
+  const matches = authority.authorExecutionId === authoring.executionId
+    && authority.patchHash === authoring.patchHash
+    && authority.productRevisionToken === authoring.productRevisionToken
+    && authority.e2eRevisionToken === authoring.e2eRevisionToken;
+  return matches
+    ? { authority, mismatch: false }
+    : { authority: null, mismatch: true };
+}
+
+function assertTrustedE2eAuthoringExecution(
+  bundle: RunBundle,
+  authoring: E2eAuthoringDto,
+): void {
+  const phase = requiredRunPhase(bundle, "verification");
+  const execution = phase.executions.find(({ id }) => id === authoring.executionId);
+  const materialized = phase.events
+    .filter(({ executionId, eventType }) => (
+      executionId === authoring.executionId && eventType === "e2e.authoring.materialized"
+    ))
+    .sort((left, right) => left.sequence - right.sequence)
+    .at(-1);
+  const payload = materialized?.payload && typeof materialized.payload === "object"
+    ? materialized.payload as Record<string, unknown>
+    : null;
+  const eventFiles = Array.isArray(payload?.files)
+    ? payload.files.flatMap((candidate) => {
+      if (!candidate || typeof candidate !== "object") return [];
+      const file = candidate as Record<string, unknown>;
+      return typeof file.path === "string"
+        && typeof file.sha256 === "string"
+        && typeof file.bytes === "number"
+        ? [`${file.path}\0${file.sha256}\0${file.bytes}`]
+        : [];
+    }).sort()
+    : [];
+  const authoredFiles = authoring.files
+    .map(({ path: filePath, sha256, bytes }) => `${filePath}\0${sha256}\0${bytes}`)
+    .sort();
+  if (
+    !execution
+    || execution.status !== "completed"
+    || verificationE2eExecutionKind(phase, execution.id) !== "author"
+    || !payload
+    || payload.patchHash !== authoring.patchHash
+    || payload.productRevisionToken !== authoring.productRevisionToken
+    || payload.e2eRevisionToken !== authoring.e2eRevisionToken
+    || eventFiles.length !== authoredFiles.length
+    || eventFiles.some((value, index) => value !== authoredFiles[index])
+  ) {
+    throw new AppError(
+      "E2E authoring record is not bound to a completed author execution in this run",
+      409,
+      "E2E_AUTHORING_EXECUTION_UNTRUSTED",
+    );
+  }
+}
+
+function e2eFailureExitCode(error: unknown): number | null {
+  const value = error instanceof AppError
+    ? (error.details as { exitCode?: unknown } | undefined)?.exitCode
+    : undefined;
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+function e2eFailureDetails(error: unknown, stage: string): {
+  stage: string;
+  code: string;
+  message: string;
+} {
+  return {
+    stage,
+    code: error instanceof AppError ? error.code : "E2E_UNEXPECTED_FAILURE",
+    message: (error instanceof Error ? error.message : String(error)).slice(0, 2_000),
+  };
+}
+
+function verificationE2eExecutions(phase: PhaseRunDto): ExecutionDto[] {
+  const executionIds = new Set(
+    phase.events
+      .filter(({ eventType }) => eventType.startsWith("e2e."))
+      .map(({ executionId }) => executionId),
+  );
+  return phase.executions.filter(({ id }) => executionIds.has(id));
+}
+
+function verificationE2eExecutionKind(
+  phase: PhaseRunDto,
+  executionId: string,
+): "author" | "execute" | null {
+  const events = phase.events.filter((event) => event.executionId === executionId);
+  if (events.some(({ eventType }) => eventType.startsWith("e2e.execution."))) return "execute";
+  if (events.some(({ eventType }) => eventType.startsWith("e2e.authoring."))) return "author";
+  return null;
+}
+
+export function assertLinkedE2eApprovalObligation(
+  phase: PhaseRunDto,
+  verificationArtifacts: readonly CurrentArtifactSnapshot[],
+): void {
+  const linkedSelected = phase.events.some(({ eventType }) => (
+    eventType === "e2e.authoring.queued" || eventType === "e2e.authoring.started"
+  ));
+  if (!linkedSelected) return;
+  const reportHead = verificationArtifacts.find(({ artifactKey }) => artifactKey === "test-report");
+  const execution = reportHead?.executionId
+    ? phase.executions.find(({ id }) => id === reportHead.executionId)
+    : undefined;
+  const completedEvent = execution
+    ? phase.events
+      .filter(({ executionId, eventType }) => (
+        executionId === execution.id && eventType === "e2e.execution.completed"
+      ))
+      .sort((left, right) => left.sequence - right.sequence)
+      .at(-1)
+    : undefined;
+  const payload = completedEvent?.payload && typeof completedEvent.payload === "object"
+    ? completedEvent.payload as Record<string, unknown>
+    : null;
+  if (
+    !execution
+    || execution.status !== "completed"
+    || execution.exitCode !== 0
+    || verificationE2eExecutionKind(phase, execution.id) !== "execute"
+    || !isTrustedLinkedE2eCompletedPayload(payload)
+  ) {
+    throw new AppError(
+      "本 Run 已选择 Linked E2E；当前 test-report 必须来自同 Run 成功的受监督浏览器执行",
+      409,
+      "E2E_LINKED_EXECUTION_REQUIRED",
+    );
+  }
+}
+
+function isTrustedLinkedE2eCompletedPayload(
+  payload: Record<string, unknown> | null,
+): boolean {
+  if (!payload) return false;
+  const browser = payload.browser !== null && typeof payload.browser === "object"
+    ? payload.browser as Record<string, unknown>
+    : null;
+  const target = payload.targetProbe !== null && typeof payload.targetProbe === "object"
+    ? payload.targetProbe as Record<string, unknown>
+    : null;
+  if (
+    payload.passed !== true
+    || payload.exitCode !== 0
+    || payload.testExitCode !== 0
+    || !["already_exited", "sigterm"].includes(String(payload.serverCleanup))
+    || typeof payload.baseUrl !== "string"
+    || !browser
+    || typeof browser.executablePath !== "string"
+    || browser.executablePath.length === 0
+    || typeof browser.version !== "string"
+    || browser.version.length === 0
+    || !target
+    || typeof target.url !== "string"
+    || !Number.isInteger(target.status)
+    || (target.status as number) < 200
+    || (target.status as number) >= 500
+    || typeof target.browserVersion !== "string"
+    || target.browserVersion.length === 0
+    || target.browserVersion !== browser.version
+  ) return false;
+  try {
+    const configured = new URL(payload.baseUrl);
+    const navigated = new URL(target.url);
+    return configured.origin === navigated.origin && configured.href === navigated.href;
+  } catch {
+    return false;
+  }
+}
+
+function e2eReadinessBlockers(readiness: E2eWorkspaceReadinessDto): string[] {
+  const items: Array<[string, E2eReadinessItemDto]> = [
+    ["workspace", readiness.workspace],
+    ["playwright", readiness.playwright],
+    ["browser", readiness.browser],
+    ["sourceStartScript", readiness.sourceStartScript],
+    ["target", readiness.target],
+  ];
+  return items.flatMap(([label, item]) => (
+    item.state !== "ready"
+      ? [`${label}: ${item.message}${item.detail ? ` — ${item.detail}` : ""}`]
+      : []
+  ));
+}
+
+function unprobedE2eReadiness(): E2eWorkspaceReadinessDto {
+  const item = {
+    state: "not_checked" as const,
+    message: "E2E_PREFLIGHT_REQUIRED",
+    detail: "请显式运行预检；读取流程状态不会启动 Chromium。",
+  };
+  return {
+    ready: false,
+    workspace: item,
+    playwright: item,
+    browser: item,
+    sourceStartScript: item,
+    target: item,
+    checkedAt: new Date(0).toISOString(),
+  };
 }
 
 function ticketRecords(artifactPath: string, content: string) {

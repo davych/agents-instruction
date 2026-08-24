@@ -1,6 +1,6 @@
 # Seven-lens engineering review
 
-Review the confirmed slice after implementation and independent verification. Prefer a fresh reviewer or session and record the review relationship. Every lens must contain an actionable finding or the exact statement `none found`; a blank section is not a completed review.
+Review the confirmed slice after implementation and independent verification. Prefer a fresh reviewer or session and record the review relationship. Every lens must contain an actionable finding or an exact, non-contradictory `none found` row; a blank section is not a completed review.
 
 ## Required lenses
 
@@ -41,7 +41,18 @@ Run both methods after the seven lenses:
 
 ## Finding contract
 
-Each finding records:
+A `none found` disposition is not an actionable finding. In its canonical table row:
+
+- set Finding ID to the exact text `none found`;
+- set Severity, Impact, and Required action / owner to `N/A`;
+- for Pre-mortem or Edge-case-hunter, also set the failure/trigger or edge-condition contract to `N/A`;
+- put the real review basis in Evidence, using a repository path, test path/name, exact command, result log, or artifact revision;
+- set Status / resolution evidence to the exact text `not-applicable`;
+- do not add an actionable finding row to the same section.
+
+Narrative such as “reviewed the code” is not durable Evidence. Do not attach a severity, impact, action, owner, `resolved` status, or resolution claim to `none found`.
+
+For a real finding, record:
 
 - stable ID `ENG-REV-<three-digits>` for a lens or `ENG-ADV-<three-digits>` for an adversarial method;
 - lens or adversarial method;

@@ -5,10 +5,13 @@ import type {
   AssessProductImpactInput,
   CodexCapabilities,
   CodexReasoningEffort,
+  ConfigureE2eWorkspaceInput,
   CreateArtifactRevisionInput,
   CreateProjectInput,
   CreateRunInput,
   Execution,
+  E2eWorkspace,
+  E2eWorkspaceReadiness,
   FigmaIntegrationStatus,
   FigmaPlanCapabilities,
   FigmaTarget,
@@ -25,6 +28,10 @@ import type {
   TicketStatus,
   TicketSummary,
   WorkflowRun,
+  VerificationE2eFlow,
+  VerificationE2eAction,
+  VerificationE2eScriptReviewInput,
+  VerificationE2eSelectionInput,
 } from "@/lib/types";
 import { parseApiErrorBody } from "@/lib/api-error";
 
@@ -123,6 +130,36 @@ export const api = {
     return "project" in response ? response.project : response;
   },
 
+  async getE2eWorkspace(projectId: string): Promise<E2eWorkspace | null> {
+    const response = await request<
+      { workspace: E2eWorkspace | null } | E2eWorkspace | null
+    >(`/api/projects/${encodeURIComponent(projectId)}/e2e-workspace`);
+    return response && typeof response === "object" && "workspace" in response
+      ? response.workspace
+      : response;
+  },
+
+  async configureE2eWorkspace(
+    projectId: string,
+    input: ConfigureE2eWorkspaceInput,
+  ): Promise<E2eWorkspace> {
+    const response = await request<{ workspace: E2eWorkspace } | E2eWorkspace>(
+      `/api/projects/${encodeURIComponent(projectId)}/e2e-workspace`,
+      { method: "PUT", body: JSON.stringify(input) },
+    );
+    return "workspace" in response ? response.workspace : response;
+  },
+
+  async prepareE2eWorkspace(projectId: string): Promise<E2eWorkspaceReadiness> {
+    const response = await request<
+      { readiness: E2eWorkspaceReadiness } | E2eWorkspaceReadiness
+    >(
+      `/api/projects/${encodeURIComponent(projectId)}/e2e-workspace/prepare`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    return "readiness" in response ? response.readiness : response;
+  },
+
   getProject(projectId: string): Promise<ProjectDetail> {
     return request<ProjectDetail>(`/api/projects/${encodeURIComponent(projectId)}`);
   },
@@ -147,6 +184,57 @@ export const api = {
 
   getRun(runId: string): Promise<RunDetail> {
     return request<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`);
+  },
+
+  async getVerificationE2eFlow(runId: string): Promise<VerificationE2eFlow> {
+    const response = await request<{ flow: VerificationE2eFlow } | VerificationE2eFlow>(
+      `/api/runs/${encodeURIComponent(runId)}/verification/e2e-flow`,
+    );
+    return "flow" in response ? response.flow : response;
+  },
+
+  async preflightVerificationE2e(runId: string): Promise<VerificationE2eFlow> {
+    const response = await request<{ flow: VerificationE2eFlow } | VerificationE2eFlow>(
+      `/api/runs/${encodeURIComponent(runId)}/verification/e2e-flow`,
+      { method: "POST", body: JSON.stringify({ action: "preflight" }) },
+    );
+    return "flow" in response ? response.flow : response;
+  },
+
+  async authorVerificationE2e(
+    runId: string,
+    input: VerificationE2eSelectionInput,
+  ): Promise<Execution> {
+    const response = await request<{ execution: Execution } | Execution>(
+      `/api/runs/${encodeURIComponent(runId)}/verification/e2e-flow/author`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    return "execution" in response ? response.execution : response;
+  },
+
+  async reviewVerificationE2eScript(
+    runId: string,
+    input: VerificationE2eScriptReviewInput,
+  ): Promise<VerificationE2eFlow> {
+    const response = await request<{ flow: VerificationE2eFlow } | VerificationE2eFlow>(
+      `/api/runs/${encodeURIComponent(runId)}/verification/e2e-flow/script-review`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    return "flow" in response ? response.flow : response;
+  },
+
+  async executeVerificationE2e(
+    runId: string,
+    input: VerificationE2eSelectionInput,
+  ): Promise<Execution> {
+    const response = await request<{ execution: Execution } | Execution>(
+      `/api/runs/${encodeURIComponent(runId)}/verification/e2e-flow`,
+      {
+        method: "POST",
+        body: JSON.stringify({ action: "execute", ...input }),
+      },
+    );
+    return "execution" in response ? response.execution : response;
   },
 
   getHumanDecisions(runId: string): Promise<HumanDecisionSummary> {
@@ -205,6 +293,7 @@ export const api = {
       model?: string;
       reasoningEffort?: CodexReasoningEffort;
       figmaTarget?: FigmaTarget;
+      verificationAction?: VerificationE2eAction;
     } = {},
   ) {
     const response = await request<{ execution: Execution } | Execution>(

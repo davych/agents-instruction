@@ -23,7 +23,7 @@ export const FALLBACK_ROLES: RoleDefinition[] = [
     id: "software-engineer",
     name: "Software Engineer",
     mission: "把已确认合同实现为最小完整变更，并交付可独立验证的工程证据包。",
-    responsibilities: ["实现", "验收追踪", "独立测试证据", "工程审查", "Provenance"],
+    responsibilities: ["实现", "验收追踪", "独立测试证据", "工程审查", "交付追溯"],
   },
   {
     id: "tester",
@@ -99,7 +99,7 @@ export const FALLBACK_PHASES: PhaseDefinition[] = [
       "engineering-review",
       "engineering-provenance",
     ],
-    gate: "实现与必要测试完成，每条验收标准有独立证据，七镜与对抗审查完整，证据链无阻塞。",
+    gate: "实现与必要测试完成，每条验收标准有独立证据，七镜与对抗审查完整，交付追溯无阻塞。",
   },
   {
     id: "verification",
@@ -179,7 +179,7 @@ export function artifactLabel(artifactId: string) {
     "engineering-session-log": "工程会话日志",
     "engineering-test-evidence": "独立测试证据",
     "engineering-review": "工程七镜审查",
-    "engineering-provenance": "PR 证据链",
+    "engineering-provenance": "交付追溯清单",
     "test-report": "测试报告",
     "release-runbook": "发布手册",
   };

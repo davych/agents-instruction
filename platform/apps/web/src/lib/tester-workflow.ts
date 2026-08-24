@@ -1,5 +1,3 @@
-import { TESTER_E2E_CRYSTALLIZATION_REVIEW_PREFIX } from "@ai-sdlc/contracts";
-
 export const TESTER_FLOW_SUMMARY =
   "Before Verification execution, review the current engineering handoff. MCP success is not evidence and cannot pass Verification by itself.";
 
@@ -16,8 +14,8 @@ export const TESTER_FLOW_STEPS = [
   },
   {
     number: 2,
-    title: "固化：全新独立会话",
-    description: `从权威 spec 冻结 AC 场景，不能复制探索代码/记录；缺少 *.spec.ts 时在 Verification 选择“要求修改”，评论首行精确写“${TESTER_E2E_CRYSTALLIZATION_REVIEW_PREFIX} <非空场景>”，随后每个当前合同 ID 单独写“AC: <ID>”，再写唯一“Frozen intent: <可观察行为>”，由 Software Engineer 集成并刷新工程证据。`,
+    title: "固化：独立 E2E 项目",
+    description: "从权威 spec 冻结 AC 场景；旧 Run 只采用已批准的 User Story。点击生成或更新脚本，由全新会话写入独立 E2E workspace，再人工审核实际会执行的整套 tests/** 与 fixtures/** 的全部内容和 hash；不复制 MCP 探索记录，也不用手写特殊评论或 Markdown。",
   },
   {
     number: 3,
@@ -28,6 +26,6 @@ export const TESTER_FLOW_STEPS = [
 
 export const TEST_REPORT_REVIEW_POINTS = [
   "MCP 探索是否被明确标为非门禁草稿，而不是验收通过证据",
-  "需要的 E2E 脚本是否由新会话从 spec 固化，并经 Software Engineer 集成、刷新证据和重新审批",
+  "需要的 E2E 脚本是否由新会话从批准规格固化到独立项目，并经过完整可执行脚本基线人工审核",
   "是否记录当前 revision 的真实 standalone/CI 命令、退出结果、report/trace，以及失败 owner 和下一步",
 ] as const;

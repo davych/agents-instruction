@@ -1749,6 +1749,10 @@ function buildOutputMaterializationContract(request: CodexRunRequest): string {
       "- Software Engineer 特例：当前 Change Contract 范围内的生产源码、非敏感实现配置和仓库惯例测试是实现本身，可以创建或修改；它们不是注册阶段产物，也不会替代下面的证据文档。其他角色的注册产物、ai-native.yaml、根级 Agent 指令、环境文件、Agent/角色配置、默认与角色工作流、参考规则和证据模板仍为只读。",
       "- 独立验收测试必须由未见实现内容的新上下文根据 Change Contract、已批准规格和公开接口生成。记录真实 isolation tier 和方法；Tier C 或 Limited 必须把 pack 标为 Blocked，除非存在明确的人类 gate-exception 证据。",
       "- implementation-notes 是 pack 索引。它必须链接本次注册的 plan、tasks、session log、test evidence、review 和 provenance；源码与测试继续留在仓库惯例路径，只在证据中引用。",
+      "- 已初始化项目中的旧证据模板若与以下机器合同冲突，以本执行合同为准，但不得改写模板本身：Acceptance coverage 的每条 AC 必须在同一行记录精确 AC ID、真实可执行测试路径与测试名、durable Evidence 引用，并且只有真实执行通过时 Result 才能写 Pass。",
+      "- Verification gates 只记录 Software Engineer 必须完成的 Implementation gates。下游 Tester 负责的浏览器、无障碍、E2E 或运行时验证必须写入 Outcome、Known limitations 或 Next owner，不能作为 Blocked、Failed、Skipped 或 Deferred gate 行。",
+      "- Engineering review 的 `none found` 标准行必须是 `| none found | N/A | <durable evidence reference> | N/A | N/A | not-applicable |`；Pre-mortem 与 Edge-case-hunter 在 Evidence 前再增加一个精确 `N/A`。真实 finding 必须使用完整 ENG-REV/ENG-ADV 行，不能伪装成 none found。",
+      "- Engineering provenance 是未来可复用的交付追溯，不是实际 PR；必须分别记录 `PR created or opened by Software Engineer: No`、`PR published by Software Engineer: No`、`Merge/deploy/release performed by Software Engineer: No`，且合并、发布、安全风险、范围和架构决定保持 human-owned。",
     );
   }
   if (request.phase.owner === "tester") {

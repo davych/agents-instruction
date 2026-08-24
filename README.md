@@ -53,7 +53,7 @@ Use `implementation-plan`, `implementation-tasks`, and `engineering-session-log`
 
 - If any primary file says `Failed`, `Blocked`, contains an unresolved finding, reports an unrun required check, or contradicts the real diff, do not approve. Return the named problem to Product, Design, Architecture, or Software Engineer, rerun the affected work, and review the refreshed pack.
 - If the code and evidence are complete and current, approve the Implementation gate. That unlocks Tester; it does not merge a PR or approve release.
-- Tester independently maps risk and writes `test-report`. When E2E applies, Tester may explore with Playwright MCP, ensures the durable script was independently crystallized and integrated through Software Engineer, then executes it with standalone Playwright. When E2E does not apply, Tester records the stronger applicable unit, integration, contract, or declared observation evidence instead.
+- Tester independently maps risk and writes `test-report`. When E2E applies, a human explicitly links a separate E2E workspace; a fresh spec-only Test Author writes there, a human approves the exact generated-script manifest hash, and the platform runs standalone Playwright with a real headless Chromium. Playwright MCP remains optional non-gating exploration. When E2E does not apply, Tester records the stronger applicable unit, integration, contract, or declared observation evidence instead.
 - DevOps or the authorized repository owner turns the applicable repository suite into a required PR check; for E2E, it reuses the standalone command. A human still decides merge and release.
 
 There are also two Markdown namespaces in this repository:
@@ -83,36 +83,41 @@ flowchart TD
   subgraph Verification["Verification · Tester"]
     W07 -->|"approve"| W08["W08 · Read notes → test evidence → review"]
     W08 --> W09["W09 · Map ACs, regressions, deferred checks, NFRs, risks"]
-    W09 --> W10{"W10 · Need interactive discovery?"}
-    W10 -->|"yes"| W11["W11 · Playwright MCP exploration<br/>transient, non-gating"]
-    W10 -->|"no"| W12{"W12 · Durable E2E ready?"}
-    W11 --> W12
-    W12 -->|"missing or changed"| W13["W13 · Fresh Tier A/B crystallization<br/>freeze intent from spec"]
-    W13 --> W14["W14 · Software Engineer integrates test<br/>refreshes evidence"]
-    W14 --> W07
-    W12 -->|"valid"| W15["W15 · Execution of mapped verification<br/>standalone Playwright when E2E"]
-    W12 -->|"not applicable"| W15
-    W15 --> W16["W16 · Run-scoped test-report"]
-    W16 --> W17{"W17 · Verification gate"}
-    W17 -->|"fail or blocked"| W18["W18 · Classify and return to owning role"]
-    W18 -->|"product/spec"| W02
-    W18 -->|"design"| W03
-    W18 -->|"architecture/NFR"| W04
-    W18 -->|"implementation"| W05
-    W18 -->|"test script"| W13
-    W18 -->|"local environment/runner"| W15
-    W18 -->|"required-check configuration"| W19
+    W09 --> W10{"W10 · Durable E2E required?"}
+    W10 -->|"no"| W18N["W18N · Execute selected non-E2E verification"]
+    W10 -->|"yes"| W11{"W11 · Linked E2E Workspace configured?"}
+    W11 -->|"no"| W12["W12 · Human configures separate root<br/>never infer legacy sibling"]
+    W12 --> W13["W13 · Package + real Chromium + server preflight"]
+    W11 -->|"yes"| W13
+    W13 --> W14{"W14 · Optional MCP discovery useful?"}
+    W14 -->|"yes"| W15["W15 · Playwright MCP exploration<br/>transient, non-gating"]
+    W14 -->|"no"| W16["W16 · Crystallization · freeze AC intent<br/>fresh Tier A/B Test Author in linked root"]
+    W15 --> W16
+    W16 --> W17{"W17 · Human approves exact script manifest hash?"}
+    W17 -->|"changes"| W16
+    W17 -->|"approve scripts"| W18["W18 · Platform-supervised standalone Playwright<br/>real headless Chromium; no MCP"]
+    W18 --> W19["W19 · Dual revisions + Run-scoped test-report"]
+    W18N --> W19
+    W19 --> W20{"W20 · Verification gate"}
+    W20 -->|"fail or blocked"| W21["W21 · Classify and return to owning role"]
+    W21 -->|"product/spec"| W02
+    W21 -->|"design"| W03
+    W21 -->|"architecture/NFR"| W04
+    W21 -->|"implementation/testability"| W05
+    W21 -->|"linked test script"| W16
+    W21 -->|"environment/runner"| W13
+    W21 -->|"required-check configuration"| W22
   end
 
   subgraph Release["Release preparation and continuous enforcement"]
-    W17 -->|"pass"| W19["W19 · DevOps runbook + required-check configuration"]
-    W19 --> W20["W20 · Required PR check runs repository tests"]
-    W20 -->|"fail"| W18
-    W20 -->|"pass"| W21{"W21 · Human merge/release decision"}
+    W20 -->|"pass"| W22["W22 · DevOps runbook + required-check configuration"]
+    W22 --> W23["W23 · Required PR check runs linked E2E wrapper"]
+    W23 -->|"fail"| W21
+    W23 -->|"pass"| W24{"W24 · Human merge/release decision"}
   end
 ```
 
-The Playwright steps are three E2E stages inside the existing Implementation-to-Verification boundary, not three extra global phases. They correspond to the user's Phase 1/2/3 description, but this documentation calls them stages so they cannot be confused with Product, Design, Implementation, Verification, and the other global phases. The return from W14 to W07 is deliberate: adding or changing `tests/e2e/*.spec.ts` makes the old engineering evidence stale, so Software Engineer must integrate it and refresh the pack before Tester can use it as current evidence.
+The Playwright steps are three E2E stages plus readiness and script-review checkpoints inside Verification, not extra global phases. The Linked E2E Workspace is an explicit separate, non-nested local project and is never inferred from a sibling or legacy folder. Tester owns its scripts; Software Engineer continues to own product source, product-repository tests, and testability interfaces. A change to those product assets returns through Implementation reapproval, while a linked-script bug stays in the fresh-author/hash-review loop. Script approval permits only the exact current bytes to execute; it does not approve Verification, CI, merge, or release.
 
 ## Workflow node details
 
@@ -127,18 +132,22 @@ The Playwright steps are three E2E stages inside the existing Implementation-to-
 | W07 | Human reviewer | W05-W06 | Inspect notes, real diff, test evidence, review, and provenance | Approve Implementation or request changes | Return to W05; no merge occurs |
 | W08 | Tester | Approved W07 | Read `implementation-notes`, then test evidence and review | Verified intake and known-risk list | Stale/blocked evidence returns to Engineer |
 | W09 | Tester | Contract, design/NFR, W08 | Map every AC, regression, deferred validation, and material risk to an evidence level | Verification strategy | Ambiguity routes to its upstream owner |
-| W10 | Tester | W09 | Decide whether UI path discovery adds value | Explore or proceed | MCP absence blocks only required exploration |
-| W11 | Tester | Runnable non-production app | Operate Playwright MCP, observe DOM/accessibility, diagnose selectors | Transient session/screenshot notes | Never counts as repeatable pass alone |
-| W12 | Tester | W09-W11 and existing tests | Decide whether durable E2E is required and already valid | Reuse/not-applicable or crystallization request | Missing/changed script goes to W13 |
-| W13 | Fresh independent authoring session | Authoritative spec, frozen intent, public harness | Author from spec without implementation/exploration transcript; adapt selectors only after intent is frozen. In a platform Run, Verification requests changes with an exact first-line `E2E crystallization request: <nonempty scenario>`, one current-contract `AC: <ID>` per line, and one `Frozen intent: <observable behavior>`; only those parsed bounded fields reach the later Engineer rerun | Candidate repository-conventional `*.spec.ts` plus traceable read-only feedback | Tier C/Limited stays blocked without human exception |
-| W14 | Software Engineer | W13 candidate | Integrate test, run real checks, refresh all stale engineering evidence | Current test path and reapprovable evidence pack | Back to W07, never straight to CI |
-| W15 | Tester/runner | Approved current revision and W09 evidence map | Execute every applicable mapped unit, integration, contract, E2E, or declared observation check; E2E uses actual `playwright test` or the repository wrapper, never MCP | Current exit/result plus report, trace, screenshot, log, or observation evidence as applicable | Classify at W18 |
-| W16 | Tester | W09-W15 | Record exploration status, isolation, test path, exact execution, gaps, defects, and risk | Run-scoped `test-report` | Missing evidence remains fail/blocked/untested |
-| W17 | Human/workflow gate | W16 and declared obligations | Check all applicable evidence is current and no material blocker remains | Verification pass or return | Failure goes to W18 |
-| W18 | Tester + owning role | Reproduction and failure evidence | Classify implementation/test/spec/design/architecture/environment cause before changing anything | Named owner and next action | Routes to W02/W03/W04/W05/W13; local runner repair returns to W15, CI-policy repair to W19 |
-| W19 | DevOps/authorized owner | Passing Verification plus Tester command/report contract, or a required-check configuration failure | Prepare release/rollback and configure the real CI job, secrets, browser, reporter, retention, and check name | Runbook and enforced CI contract | Retry W20 after CI repair; local Tester execution never skips W15-W17 |
-| W20 | CI | Every relevant PR revision | Execute repository tests autonomously; MCP is not present | Required-check pass/fail plus durable report | Failure goes to W18 |
-| W21 | Human | Current CI, test report, runbook, residual risk | Decide merge timing and release | Explicit human decision | No Agent self-approves |
+| W10 | Tester | W09 | Decide whether risk requires durable E2E | E2E or stronger non-E2E disposition | Missing rationale blocks strategy |
+| W11 | Human/platform | E2E-required W10 | Use one explicitly configured Linked E2E Workspace | Trusted separate binding | Never infer a sibling/legacy root |
+| W12 | Human/platform | Missing W11 | Configure or initialize an allowed separate, non-nested root | Explicit binding | Unsafe/unmanaged path stays blocked |
+| W13 | Platform | Current binding | Check Playwright package, validated scripts, real Chromium launch, product server, and loopback target | Structured readiness | Missing dependency/browser/server is actionable, not pass |
+| W14 | Tester | Ready W13 | Decide whether optional UI path discovery adds value | Explore or proceed | MCP absence does not block a known path |
+| W15 | Tester | Runnable non-production app | Operate Playwright MCP for diagnosis without passing its transcript to authoring | Transient session/screenshot notes | Never repeatable pass alone |
+| W16 | Platform + fresh Test Author | Approved spec, frozen intent, linked harness only | Write allowlisted tests/fixtures without product implementation or exploration context | Exact file/hash manifest | Product root stays read-only; Tier C/Limited blocks |
+| W17 | Human reviewer | W16 manifest and bound revisions | Approve or reject the exact aggregate manifest hash | Script execution authorization only | Any byte/revision/binding change invalidates approval |
+| W18 | Platform runner | Current W17 approval and readiness | Supervise product server and run fixed-argv standalone Playwright with real headless Chromium | Exit plus report/trace/screenshot/log hashes | No browser, timeout, nonzero, or cleanup failure stays non-passing |
+| W18N | Tester/runner | W09 non-E2E evidence map | Execute selected unit, integration, contract, or declared observation checks | Current non-E2E result and durable evidence | Classify at W21 |
+| W19 | Tester | W09-W18 | Record exploration, authoring, manifest approval, dual revisions, exact execution, gaps, and risk | Run-scoped `test-report` | Missing/mismatched provenance blocks |
+| W20 | Human/workflow gate | W19 and declared obligations | Check all evidence is current and blockers are resolved | Verification pass or return | Failure goes to W21 |
+| W21 | Tester + owning role | Reproduction and failure evidence | Classify implementation/test/spec/design/architecture/environment cause | Named owner and next action | Product assets → W05; linked test → W16; environment → W13 |
+| W22 | DevOps/authorized owner | Passing Verification or CI-policy failure | Prepare release/rollback and configure real CI, secrets, browser, retention, and check name | Runbook and enforced CI contract | Retry W23 after CI repair |
+| W23 | CI | Every relevant PR revision | Execute the linked standalone wrapper autonomously; MCP is absent | Required-check result and durable report | Failure goes to W21 |
+| W24 | Human | Current CI, test report, runbook, residual risk | Decide merge timing and release | Explicit human decision | No Agent self-approves |
 
 See the [Tester guide](guidelines/roles/tester/README.md) for the operating procedure and the [End-to-End Workflow](guidelines/workflow/README.md) for phase contracts and feedback rules.
 
@@ -200,7 +209,7 @@ The Software Engineer phase creates a working repository change plus seven regis
 | [Designer](guidelines/roles/designer/README.md) | Design Impact, skip/reuse/partial/full paths, project baseline, task spec, and handoff |
 | [Architect](guidelines/roles/architect/README.md) | Context, options, human selection, C4, ADRs, NFRs, and premortem |
 | [Software Engineer](guidelines/roles/software-engineer/README.md) | Layered context, contract-driven implementation, independent tests, seven-lens review, and provenance |
-| [Tester](guidelines/roles/tester/README.md) | Playwright MCP exploration, independent E2E crystallization, standalone execution, evidence, defects, and test report |
+| [Tester](guidelines/roles/tester/README.md) | Optional MCP exploration, linked-workspace spec-only authoring, script-hash review, standalone real-browser execution, defects, and test report |
 | [DevOps](guidelines/roles/devops/README.md) | Release preparation, monitoring, rollback, and runbook |
 
 ## Local validation

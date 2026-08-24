@@ -27,6 +27,8 @@ Tier A and B are pass-capable. Tier C and Limited make `State: Blocked` unless t
 
 Preserve stable story AC IDs. If a Change Contract criterion has no ID, derive `CC-AC-001`, `CC-AC-002`, and so on from its array order only for traceability, record the source position, and leave the immutable contract unchanged.
 
+For every in-scope criterion, keep all proof on one row: the exact trace ID, a real repository test path plus executable test ID/name (use `path :: test name`), a durable result reference such as a real log/artifact path or exact command, and `Pass`. A generic “tests passed” statement, a source path without a test name, or evidence split across rows does not establish coverage.
+
 | Trace ID | Source ID / position | Observable criterion or regression | Test path and test ID/name | Evidence | Result |
 |---|---|---|---|---|---|
 | CC-AC-001 | <existing ID or Change Contract criterion 1> | <criterion> | <real test path :: test name> | <result/log reference> | <Pass / Fail / Blocked / Untested> |
@@ -42,6 +44,8 @@ Every in-scope acceptance criterion must have at least the configured minimum nu
 | <real path> | <change> | <IDs> | <what the test challenges> | <reason> |
 
 ## Commands and results
+
+Record real Implementation-owned commands only. Do not add a future Tester-owned browser, accessibility, E2E, or other deferred validation as a skipped, unrun, failed, or blocked command here; preserve it under `Coverage gaps` and in the Tester handoff instead. If an Implementation-owned required command did not run, record it honestly below and keep the applicable conclusion gate Blocked.
 
 | Sequence | Working directory | Exact command | Check type | Exit/result | Evidence / notes |
 |---|---|---|---|---|---|
@@ -63,7 +67,7 @@ Do not change a failing expectation until it is classified. A `spec ambiguity` i
 
 ## Coverage gaps
 
-- <Untested criterion, unavailable environment, residual risk, owner, and impact, or None>
+- <Untested criterion, unavailable environment, downstream Tester-owned deferred validation, residual risk, owner, and impact, or None>
 
 ## Conclusion
 

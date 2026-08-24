@@ -40,16 +40,17 @@ An accepted ADR remains binding until a human supersedes it. Chat memory, an old
 - Use the repository's existing language, dependency, test, lint, typecheck, and build conventions. Stop before adding a dependency or changing an architecture decision without human approval.
 - Write production code and repository-conventional tests only inside the confirmed scope. Preserve unrelated user changes.
 - Generate acceptance tests from the external contract in an independent context that has not seen the implementation. Record the actual isolation tier and method; Tier A or B satisfies the normal gate. Tier C or Limited remains blocked unless a human explicitly approves a verification-gate exception.
-- Give every acceptance criterion at least one test that cites its stable ID. Classify every independent-test failure as an implementation bug, test bug, or specification ambiguity before acting.
+- Give every acceptance criterion at least one test that cites its stable ID. In `Acceptance coverage`, put the exact AC ID, real executable test path and test name, durable evidence reference, and passing result on the same row. Classify every independent-test failure as an implementation bug, test bug, or specification ambiguity before acting.
 - Run the project's real checks. Never copy example commands such as `pytest` or `ruff` into evidence unless this repository actually uses them.
-- Run all seven engineering review lenses plus the adversarial pass. A high-severity security finding, non-test DDL, scope change, or architecture conflict blocks handoff and returns to its human owner.
-- Record only commands and external actions that actually completed. Prepare PR provenance, but do not commit, push, publish, merge, deploy, or claim release approval unless the active execution contract separately authorizes that action.
+- Treat downstream Tester-owned browser, accessibility, E2E, and deferred runtime validation as handoff/limitation evidence, not as a failed, blocked, skipped, or unrun Implementation gate when every Implementation-owned check passed.
+- Run all seven engineering review lenses plus the adversarial pass. For `none found`, keep Severity, Impact, and Action as `N/A`, use `not-applicable` status, and cite a real path, test, command, result log, or artifact in Evidence. A high-severity security finding, non-test DDL, scope change, or architecture conflict blocks handoff and returns to its human owner.
+- Record only commands and external actions that actually completed. Prepare traceability that may be copied into a future PR, but do not create, open, publish, merge, deploy, or claim release approval unless the active execution contract separately authorizes that action.
 
 ## Output contract
 
 The output root comes from `ai-native.yaml`. Add the Software Engineer `output.subdirectory`, then use only the registered artifact paths supplied by the active execution contract.
 
-`implementation-notes` is the evidence-pack index and Tester handoff. It links the registered implementation plan, task ledger, session log, independent-test evidence, seven-lens review, and PR provenance. Source code and repository tests remain in their normal project locations and are referenced by the pack; they are not copied into Markdown.
+`implementation-notes` is the evidence-pack index and Tester handoff. It links the registered implementation plan, task ledger, session log, independent-test evidence, seven-lens review, and future-PR traceability. Source code and repository tests remain in their normal project locations and are referenced by the pack; they are not copied into Markdown.
 
 Every registered engineering evidence output is Run-scoped. On a local rerun, update only selected outputs and leave every unselected registered artifact byte-for-byte unchanged. A pause or blocker still requires each selected output to contain an honest non-empty Pending/Blocked record with owner and next action; it never permits fabricated passing evidence.
 

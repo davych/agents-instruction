@@ -36,16 +36,16 @@ Use this loop for each smallest complete vertical slice. A slice crosses the nec
 
 ### 5. Review
 
-- Run all seven lenses and record a finding or `none found` for each.
+- Run all seven lenses and record a finding or a canonical `none found` row for each. A none-found row cites real Evidence, keeps Severity/Impact/Action as `N/A`, and uses `not-applicable` status.
 - Run both adversarial passes: pre-mortem and edge-case-hunter.
 - Link each actionable finding to a task, owner, and evidence or blocker.
 
 ### 6. Evidence
 
 - Update the session log as work occurs rather than reconstructing a fictional history.
-- Record exact commands and outcomes, including failures and skipped checks.
+- Record exact Implementation-owned commands and outcomes, including genuine failures and skipped required checks. Keep future Tester-owned validation in the handoff/limitations rather than presenting it as a non-passing Implementation command.
 - Link the complete evidence chain in engineering provenance.
-- Generate PR-ready content only; Software Engineer does not publish or merge a PR.
+- Generate future-use PR traceability only; Software Engineer does not create, open, publish, or merge a PR.
 
 ## Loop outcome
 

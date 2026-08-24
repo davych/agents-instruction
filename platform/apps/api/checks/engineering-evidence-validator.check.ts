@@ -66,6 +66,57 @@ test("AC-CLARITY-024: a valid pack adds no machine repair feedback", () => {
   }), undefined);
 });
 
+test("AC-CLARITY-024: repair feedback gives exact canonical repairs for all four affected evidence types", () => {
+  let artifacts = withTesterDeferredSessionGate(
+    "Blocked / deferred",
+    "Owner: Tester; blocks Verification/Release only, not this implementation handoff",
+  );
+  artifacts = replaceArtifact(
+    artifacts,
+    "engineering-test-evidence",
+    () => canonicalTableTestEvidence({
+      tier: "A",
+      resultEvidence: "The rendered output and state transition were asserted.",
+    }),
+  );
+  artifacts = replaceArtifact(
+    artifacts,
+    "engineering-review",
+    () => canonicalTableReview({
+      lensRows: {
+        [engineeringReviewHeadings[0]!]: [
+          "| none found | N/A | N/A | N/A | N/A | resolved |",
+        ],
+      },
+    }),
+  );
+  artifacts = replaceArtifact(
+    artifacts,
+    "engineering-provenance",
+    (content) => content.replace("PR created or opened by Software Engineer: No\n", ""),
+  );
+
+  const feedback = engineeringEvidenceRepairFeedback({
+    artifacts,
+    acceptanceCriteria,
+    selectedArtifactKeys: [
+      "engineering-session-log",
+      "engineering-test-evidence",
+      "engineering-review",
+      "engineering-provenance",
+    ],
+  });
+
+  assert.ok(feedback);
+  assert.match(feedback, /stable AC ID.*real executable test path and test name.*durable artifact, path, URL, or command reference/isu);
+  assert.match(feedback, /\| none found \| N\/A \| <durable evidence reference> \| N\/A \| N\/A \| not-applicable \|/u);
+  assert.match(feedback, /remove the downstream Tester row from `Verification gates`/iu);
+  assert.match(feedback, /preserve its true `Blocked \/ deferred`.*`Owner: Tester`.*Verification\/Release impact.*`Outcome`.*`Known limitations`.*`Next owner`/isu);
+  assert.match(feedback, /PR created or opened by Software Engineer: No/iu);
+  assert.match(feedback, /PR published by Software Engineer: No/iu);
+  assert.match(feedback, /Merge\/deploy\/release performed by Software Engineer: No/iu);
+});
+
 test("AC-ENG-007: approval rejects an otherwise-valid pack without acceptance criteria", () => {
   assertGateFailure(
     () => validateEngineeringEvidencePack({
@@ -262,6 +313,78 @@ for (const [label, overrides] of [
   });
 }
 
+test("AC-ENG-007: canonical coverage rejects assertion-only Evidence despite a durable test reference", () => {
+  const artifacts = replaceArtifact(
+    withCanonicalTestEvidence({
+      tier: "A",
+      resultEvidence: "Focused test included in the full run; state and rendered output asserted",
+    }),
+    "engineering-test-evidence",
+    (content) => content.replace(
+      "Canonical role workflow is loaded.",
+      "Re-entry resumes the first incomplete task without a duplicate count.",
+    ),
+  );
+
+  assertGateFailure(
+    () => validateEngineeringEvidencePack({
+      artifacts,
+      acceptanceCriteria,
+      reviewComment: "The Evidence cell has an assertion summary but no durable reference.",
+    }),
+    [/engineering-test-evidence|CC-AC-001|passing automated-test row/iu],
+  );
+});
+
+for (const proseEvidence of [
+  "Assertions cover status/count transitions.",
+  "Assertions cover pinyin/flashcard/quiz branches.",
+  "Keyboard coverage includes Tab/Enter.",
+  "All 4/4 scenarios passed.",
+] as const) {
+  test(`AC-ENG-007: slash prose is not durable Evidence: ${proseEvidence}`, () => {
+    assertGateFailure(
+      () => validateEngineeringEvidencePack({
+        artifacts: withCanonicalTestEvidence({ tier: "A", resultEvidence: proseEvidence }),
+        acceptanceCriteria,
+        reviewComment: "Slash-separated prose is an assertion summary, not a durable reference.",
+      }),
+      [/engineering-test-evidence|CC-AC-001|passing automated-test row/iu],
+    );
+  });
+}
+
+test("AC-ENG-007: prose beginning with a tool name is not an exact command reference", () => {
+  assertGateFailure(
+    () => validateEngineeringEvidencePack({
+      artifacts: withCanonicalTestEvidence({
+        tier: "A",
+        resultEvidence: "npm test passed but no durable result was retained",
+      }),
+      acceptanceCriteria,
+      reviewComment: "A command claim without exact command formatting or retained output is not durable.",
+    }),
+    [/engineering-test-evidence|CC-AC-001|passing automated-test row/iu],
+  );
+});
+
+for (const durableEvidence of [
+  "artifact:engineering-test-evidence@rev-2",
+  "https://ci.example/runs/42",
+  "artifacts/test-results/engineering-evidence-validator.tap",
+  "`yarn workspace @ai-sdlc/api test`",
+  "npm test",
+  `git:${"a".repeat(40)}`,
+] as const) {
+  test(`AC-ENG-007: a durable Evidence reference passes: ${durableEvidence}`, () => {
+    assert.deepEqual(validateEngineeringEvidencePack({
+      artifacts: withCanonicalTestEvidence({ tier: "A", resultEvidence: durableEvidence }),
+      acceptanceCriteria,
+      reviewComment: "The Evidence cell contains a durable machine-traceable reference.",
+    }), { verificationTier: "A" });
+  });
+}
+
 for (const [label, overrides] of [
   ["Acceptance gate Blocked", { acceptanceGate: "Blocked; CC-AC-002 has no passing evidence." }],
   ["Project-check gate Failed", { projectCheckGate: "Failed; yarn test exited 1." }],
@@ -297,6 +420,64 @@ test("AC-ENG-007: session Pass with Blocker / waiver No remains a valid success 
     reviewComment: "The session Project checks gate passed and has no blocker or waiver.",
   }), { verificationTier: "A" });
 });
+
+test("AC-ENG-007: a Tester-owned downstream deferred gate must move out of Verification gates", () => {
+  assertGateFailure(
+    () => validateEngineeringEvidencePack({
+      artifacts: withTesterDeferredSessionGate(
+        "Blocked / deferred",
+        "Owner: Tester; blocks Verification/Release only, not this implementation handoff",
+      ),
+      acceptanceCriteria,
+      reviewComment: "The downstream deferral belongs under Outcome, limitations, or Next owner.",
+    }),
+    [/session|Verification gates|downstream Tester deferral|Outcome|limitations/iu],
+  );
+});
+
+for (const [label, result, boundary] of [
+  [
+    "non-Tester owner",
+    "Blocked / deferred",
+    "Owner: Software Engineer; blocks Verification/Release only, not this implementation handoff",
+  ],
+  [
+    "Implementation impact",
+    "Blocked / deferred",
+    "Owner: Tester; blocks Implementation and Verification",
+  ],
+  [
+    "ordinary blocked result",
+    "Blocked",
+    "Owner: Tester; blocks Verification/Release only, not this implementation handoff",
+  ],
+  [
+    "failed deferred result",
+    "Failed / deferred",
+    "Owner: Tester; blocks Verification/Release only, not this implementation handoff",
+  ],
+  [
+    "pending deferred result",
+    "Pending / deferred",
+    "Owner: Tester; blocks Verification/Release only, not this implementation handoff",
+  ],
+  [
+    "skipped deferred result",
+    "Skipped / deferred",
+    "Owner: Tester; blocks Verification/Release only, not this implementation handoff",
+  ],
+] as const) {
+  test(`AC-ENG-007: a deferred-looking session gate still blocks for ${label}`, () => {
+    assertGateFailure(
+      () => validateEngineeringEvidencePack({
+        artifacts: withTesterDeferredSessionGate(result, boundary),
+        acceptanceCriteria,
+        reviewComment: `The session row has ${label}.`,
+      }),
+      [/session|Verification gates|Blocked|deferred/iu],
+    );
+  });
+}
 
 for (const result of ["Blocked", "Failed", "Pending", "Untested", "Skipped"] as const) {
   test(`AC-ENG-007: provenance Verification gates rejects ${result} despite top-level Complete`, () => {
@@ -365,7 +546,7 @@ test("AC-ENG-007: Tier A rejects the exact combined same-session and full-source
 });
 
 test("AC-ENG-007: mapped criteria still fail when their independent result is not passing", () => {
-  for (const result of ["Untested", "Blocked", "Not run", "None run"]) {
+  for (const result of ["Untested", "Blocked", "Failed", "Pending", "Not run", "None run"]) {
     const artifacts = replaceArtifact(
       validPack("A"),
       "engineering-test-evidence",
@@ -854,7 +1035,7 @@ for (const { heading, headingLevel, findingId } of actionableReviewSections) {
   });
 }
 
-const canonicalNoneLensRow = "| none found | N/A | N/A | N/A | N/A | not-applicable |";
+const canonicalNoneLensRow = "| none found | N/A | platform/apps/api/checks/engineering-evidence-validator.check.ts | N/A | N/A | not-applicable |";
 const canonicalResolvedLensRow = "| ENG-REV-701 | medium | platform/apps/api/checks/engineering-evidence-validator.check.ts :: canonical review table | Canonical review rows could be rejected despite complete evidence. | Preserve canonical table parsing; Owner: Human reviewer Mei Chen | resolved; Resolution: docs/engineering-review/ENG-REV-701-resolution.md |";
 const canonicalResolvedSecurityRow = "| ENG-REV-710 | medium | docs/security/ENG-REV-710-evidence.md | A security boundary finding was remediated. | Preserve the regression; Human owner: Mei Chen | resolved; Human decision: docs/security/ENG-REV-710-decision.md |";
 const canonicalActionOnlyLensRow = "| ENG-REV-720 | medium | platform/apps/api/checks/engineering-evidence-validator.check.ts :: owner contract | Approval accountability would be ambiguous without an owner. | Apply the validation fix before handoff | resolved; Resolution: docs/engineering-review/ENG-REV-720-resolution.md |";
@@ -873,6 +1054,136 @@ test("AC-ENG-007: the canonical review tables pass when every lens and adversari
     reviewComment: "Every canonical finding table records none found.",
   }), { verificationTier: "A" });
 });
+
+test("AC-ENG-007: none-found rows may retain only durable non-actionable Evidence cells", () => {
+  const lensRows = Object.fromEntries(engineeringReviewHeadings.map((heading) => [
+    heading,
+    [
+      "| none found | N/A | src/PinyinPractice.test.tsx and npm test 11/11 support the review conclusion | N/A | N/A | not-applicable |",
+    ],
+  ]));
+  assert.deepEqual(validateEngineeringEvidencePack({
+    artifacts: withCanonicalReview({
+      lensRows,
+      preMortemRows: [
+        "| none found | N/A | N/A | src/PinyinPractice.test.tsx AC-03/04 and reducer idempotence checks | N/A | N/A | not-applicable |",
+      ],
+      edgeCaseRows: [
+        "| none found | N/A | N/A | src/PinyinPractice.test.tsx AC-01 through AC-06; full suite passed | N/A | N/A | not-applicable |",
+      ],
+    }),
+    acceptanceCriteria,
+    reviewComment: "The none-found conclusions retain only durable review evidence.",
+  }), { verificationTier: "A" });
+});
+
+for (const [label, row] of [
+  [
+    "severity",
+    "| none found | high | src/auth.test.ts | N/A | N/A | not-applicable |",
+  ],
+  [
+    "empty severity",
+    "| none found |  | src/auth.test.ts | N/A | N/A | not-applicable |",
+  ],
+  [
+    "impact",
+    "| none found | N/A | src/auth.test.ts | Credentials may cross the trust boundary. | N/A | not-applicable |",
+  ],
+  [
+    "required action",
+    "| none found | N/A | src/auth.test.ts | N/A | Rotate credentials; Owner: Mei Chen | not-applicable |",
+  ],
+  [
+    "non-canonical none impact",
+    "| none found | N/A | src/auth.test.ts | none | N/A | not-applicable |",
+  ],
+  [
+    "non-canonical not-applicable action",
+    "| none found | N/A | src/auth.test.ts | N/A | not applicable | not-applicable |",
+  ],
+  [
+    "open status",
+    "| none found | N/A | src/auth.test.ts | N/A | N/A | open; remediation pending |",
+  ],
+  [
+    "resolved status",
+    "| none found | N/A | src/auth.test.ts | N/A | N/A | resolved |",
+  ],
+  [
+    "prose status",
+    "| none found | N/A | src/auth.test.ts | N/A | N/A | reviewed with no finding |",
+  ],
+] as const) {
+  test(`AC-ENG-007: none-found rows cannot hide actionable ${label}`, () => {
+    assertGateFailure(
+      () => validateEngineeringEvidencePack({
+        artifacts: withCanonicalReview({
+          lensRows: { [engineeringReviewHeadings[0]!]: [row] },
+        }),
+        acceptanceCriteria,
+        reviewComment: `The none-found row contains actionable ${label}.`,
+      }),
+      [/none found|contradict|engineering-review/iu],
+    );
+  });
+}
+
+test("AC-ENG-007/012: a none-found Security row cannot hide a security description outside Evidence", () => {
+  const securityHeading = engineeringReviewHeadings.find((heading) => /security/iu.test(heading))!;
+  assertGateFailure(
+    () => validateEngineeringEvidencePack({
+      artifacts: withCanonicalReview({
+        lensRows: {
+          [securityHeading]: [
+            "| none found | N/A | src/auth.test.ts | Credential exposure remains across the trust boundary. | N/A | not-applicable |",
+          ],
+        },
+      }),
+      acceptanceCriteria,
+      reviewComment: "A security description is hidden in the Impact cell of a none-found row.",
+    }),
+    [/none found|Security|contradict|engineering-review/iu],
+  );
+});
+
+for (const [label, options] of [
+  [
+    "Pre-mortem failure contract",
+    {
+      preMortemRows: [
+        "| none found | N/A | A parser regression occurs after a template change. | platform/apps/api/checks/engineering-evidence-validator.check.ts | N/A | N/A | not-applicable |",
+      ],
+    },
+  ],
+  [
+    "Edge-case-hunter condition contract",
+    {
+      edgeCaseRows: [
+        "| none found | N/A | Empty evidence should be rejected. | platform/apps/api/checks/engineering-evidence-validator.check.ts | N/A | N/A | not-applicable |",
+      ],
+    },
+  ],
+  [
+    "non-canonical Pre-mortem none contract",
+    {
+      preMortemRows: [
+        "| none found | N/A | none | platform/apps/api/checks/engineering-evidence-validator.check.ts | N/A | N/A | not-applicable |",
+      ],
+    },
+  ],
+] as const) {
+  test(`AC-ENG-007: a none-found adversarial row cannot hide a ${label}`, () => {
+    assertGateFailure(
+      () => validateEngineeringEvidencePack({
+        artifacts: withCanonicalReview(options),
+        acceptanceCriteria,
+        reviewComment: `${label} must use an ENG-ADV finding row.`,
+      }),
+      [/none found|Pre-mortem|Edge-case-hunter|contradict|engineering-review/iu],
+    );
+  });
+}
 
 test("AC-ENG-007: a complete canonical standard-lens actionable row passes", () => {
   assert.deepEqual(validateEngineeringEvidencePack({
@@ -1383,6 +1694,41 @@ test("AC-ENG-012: honest release-approval negation does not create a false autho
   }), { verificationTier: "A" });
 });
 
+test("AC-ENG-012: Markdown-bold publication boundaries preserve the explicit No disposition", () => {
+  assert.deepEqual(validateEngineeringEvidencePack({
+    artifacts: withMarkdownBoldPublicationBoundary("No"),
+    acceptanceCriteria,
+    reviewComment: "Bold canonical labels still state that publication and release actions were not performed.",
+  }), { verificationTier: "A" });
+});
+
+test("AC-ENG-012: Markdown-bold publication boundaries still reject an explicit Yes", () => {
+  assertGateFailure(
+    () => validateEngineeringEvidencePack({
+      artifacts: withMarkdownBoldPublicationBoundary("Yes"),
+      acceptanceCriteria,
+      reviewComment: "Bold formatting cannot hide Software Engineer publication authority.",
+    }),
+    [/provenance|publish|merge|release|human-owned/iu],
+  );
+});
+
+test("AC-ENG-012: provenance requires the explicit PR creation or opening boundary", () => {
+  const artifacts = replaceArtifact(
+    validPack("A"),
+    "engineering-provenance",
+    (content) => content.replace("PR created or opened by Software Engineer: No\n", ""),
+  );
+  assertGateFailure(
+    () => validateEngineeringEvidencePack({
+      artifacts,
+      acceptanceCriteria,
+      reviewComment: "The PR creation/opening human boundary is missing.",
+    }),
+    [/engineering-provenance|PR creation\/opening|Software Engineer/iu],
+  );
+});
+
 for (const [field, validReference] of [
   ["Spec", "changes/software-engineer-evidence-pack/delta.md"],
   ["Session log", "engineering-session-log.md"],
@@ -1449,6 +1795,7 @@ test("AC-ENG-007/012: provenance must be complete and cannot claim merge or rele
 });
 
 for (const contradictoryPublication of [
+  "PR created or opened by Software Engineer: Yes",
   "PR published by Software Engineer: Yes",
   "Merge/deploy/release performed by Software Engineer: Yes",
   "Merge performed by Software Engineer: Yes",
@@ -1628,6 +1975,7 @@ function validPack(tier: "A" | "B" | "C" | "Limited") {
         "Pull request: https://github.example/create-ai-native-sdlc/pull/42",
         "",
         "## Publication boundary",
+        "PR created or opened by Software Engineer: No",
         "PR published by Software Engineer: No",
         "Merge decision: Human-owned; not performed.",
         "Release decision: Human-owned; not performed.",
@@ -1670,6 +2018,26 @@ function replaceArtifact(
   return artifacts.map((artifact) => artifact.artifactKey === artifactKey
     ? { ...artifact, content: replace(artifact.content) }
     : artifact);
+}
+
+function withMarkdownBoldPublicationBoundary(disposition: "No" | "Yes") {
+  return replaceArtifact(
+    validPack("A"),
+    "engineering-provenance",
+    (content) => content.replace(
+      [
+        "PR created or opened by Software Engineer: No",
+        "PR published by Software Engineer: No",
+        "Merge decision: Human-owned; not performed.",
+        "Release decision: Human-owned; not performed.",
+      ].join("\n"),
+      [
+        `**PR created or opened by Software Engineer:** ${disposition}`,
+        `**PR published by Software Engineer:** ${disposition}`,
+        `**Merge/deploy/release performed by Software Engineer:** ${disposition}`,
+      ].join("\n"),
+    ),
+  );
 }
 
 function addTopLevelState(content: string, state: "Failed" | "Blocked"): string {
@@ -1756,13 +2124,17 @@ function canonicalTableReview(options: {
     "",
     "| Finding ID | Severity | Plausible failure and trigger | Evidence / detection | Impact | Required action / owner | Status / resolution evidence |",
     "|---|---|---|---|---|---|---|",
-    ...(options.preMortemRows ?? ["| none found | N/A | N/A | N/A | N/A | N/A | not-applicable |"]),
+    ...(options.preMortemRows ?? [
+      "| none found | N/A | N/A | platform/apps/api/checks/engineering-evidence-validator.check.ts | N/A | N/A | not-applicable |",
+    ]),
     "",
     "### Edge-case-hunter",
     "",
     "| Finding ID | Severity | Edge condition and expected behaviour | Evidence / result | Impact | Required action / owner | Status / resolution evidence |",
     "|---|---|---|---|---|---|---|",
-    ...(options.edgeCaseRows ?? ["| none found | N/A | N/A | N/A | N/A | N/A | not-applicable |"]),
+    ...(options.edgeCaseRows ?? [
+      "| none found | N/A | N/A | platform/apps/api/checks/engineering-evidence-validator.check.ts | N/A | N/A | not-applicable |",
+    ]),
     "",
     "## Finding summary",
     "",
@@ -1903,6 +2275,20 @@ function withCanonicalSessionGates(
     (content) => content
       .replace("\n", "\n\n## Status\n\n**State:** Complete")
       .replace(/## Verification gates[\s\S]*?## Outcome/u, table),
+  );
+}
+
+function withTesterDeferredSessionGate(result: string, blockerOrWaiver: string) {
+  return replaceArtifact(
+    withCanonicalSessionGates("Pass", "None"),
+    "engineering-session-log",
+    (content) => content.replace(
+      "| Provenance complete | artifact:engineering-provenance@rev-1 | Pass | None |",
+      [
+        "| Provenance complete | artifact:engineering-provenance@rev-1 | Pass | None |",
+        `| B-04 browser/accessibility validation | artifact:design-spec@rev-1 | ${result} | ${blockerOrWaiver} |`,
+      ].join("\n"),
+    ),
   );
 }
 

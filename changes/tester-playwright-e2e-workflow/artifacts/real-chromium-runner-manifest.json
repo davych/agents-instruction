@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "scope": "sanitized copy of the platform-owned runner manifest; temporary source fixture deleted",
+  "executionId": "final-chromium-smoke-002",
+  "passed": true,
+  "testExitCode": 0,
+  "serverExitCode": 0,
+  "serverCleanup": "sigterm",
+  "sourceCommand": {
+    "command": "npm",
+    "args": [
+      "run",
+      "start:e2e"
+    ],
+    "cwd": "<temporary-product-root>"
+  },
+  "testCommand": {
+    "command": "npm",
+    "args": [
+      "run",
+      "test:e2e"
+    ],
+    "cwd": "<temporary-e2e-root>"
+  },
+  "browser": {
+    "executablePath": "<playwright-managed-chromium>",
+    "version": "151.0.7922.34"
+  },
+  "targetProbe": {
+    "url": "http://127.0.0.1:43137/",
+    "status": 200,
+    "browserVersion": "151.0.7922.34"
+  },
+  "stdoutSha256": "48dcb457ff741ac8ce4a6b64bd47d58a8f0f754e333b8d32fe0e7eda6b3631ec",
+  "stderrSha256": "06bbda5475ffff597cc7885fa092e2d692ad4d3b1359d752c89a7bfa8eb2a3f6",
+  "evidence": [
+    {
+      "path": "playwright-report/index.html",
+      "sha256": "56d6682024852d6378ca79f68c351cde052ec68ad29d93782badaa32f3cabbfe",
+      "bytes": 517323
+    },
+    {
+      "path": "test-results/artifacts/.last-run.json",
+      "sha256": "91d1c43004802cd49950d78eb11c8fa7d05da8ffffe219a8b13b2f561bc00903",
+      "bytes": 45
+    }
+  ]
+}

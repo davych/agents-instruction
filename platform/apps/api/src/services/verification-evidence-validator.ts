@@ -93,15 +93,21 @@ export function validateVerificationEvidenceGate(
 
   const currentRevision = statusSection
     ? namedFieldValue(statusSection.body, "Current revision")
+      ?? namedFieldValue(statusSection.body, "Product revision binding")
     : undefined;
   if (!isCurrentRevision(currentRevision)) {
     issues.push("test-report: Current revision must identify the exact commit, build, or working revision");
   }
 
-  const crystallization = namedSection(content, "E2E Stage 2: Crystallization");
+  const crystallization = namedSection(content, "E2E Stage 2: Crystallization")
+    ?? namedSection(content, "E2E Stage 2: Crystallization and script review");
+  const linkedWorkspace = namedSection(content, "E2E Stage 0: Linked workspace and readiness");
   const e2eDisposition = crystallization
     ? namedFieldValue(crystallization.body, "E2E script required")
-    : undefined;
+      ?? (linkedWorkspace ? namedFieldValue(linkedWorkspace.body, "E2E required") : undefined)
+    : linkedWorkspace
+      ? namedFieldValue(linkedWorkspace.body, "E2E required")
+      : undefined;
   const e2eRequired = /^yes\b/iu.test(e2eDisposition ?? "");
   if (!/^(?:yes|no)\b/iu.test(e2eDisposition ?? "")) {
     issues.push("test-report: E2E script required must declare yes or no with a reason");
@@ -231,20 +237,33 @@ export function parseExactExecutionCommand(value: string): ExactExecutionCommand
 }
 
 function parseExecutionRows(body: string): ExecutionRow[] {
-  return parseTable<ExecutionRow>(body, {
+  const legacy = parseTable<ExecutionRow>(body, {
     execution: "execution",
     command: "exact command and working directory",
     revisionAndEnvironment: "revision and environment",
     result: "result",
     evidence: "durable evidence",
   });
+  return legacy.length > 0 ? legacy : parseTable<ExecutionRow>(body, {
+    execution: "execution",
+    command: "exact command and trusted working directory",
+    revisionAndEnvironment: "product and e2e revisions / real browser",
+    result: "result",
+    evidence: "durable evidence",
+  });
 }
 
 function parseCoverageRows(body: string): CoverageRow[] {
-  return parseTable<CoverageRow>(body, {
+  const legacy = parseTable<CoverageRow>(body, {
     trace: "criterion or regression obligation",
     testOrObservation: "repository test or observation",
     evidence: "execution evidence",
+    result: "result",
+  });
+  return legacy.length > 0 ? legacy : parseTable<CoverageRow>(body, {
+    trace: "criterion or regression obligation",
+    testOrObservation: "test or declared observation",
+    evidence: "current machine execution evidence",
     result: "result",
   });
 }

@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 
 import { EmptyState, ErrorState, Field, PageSkeleton } from "@/components/states";
+import { VerificationE2ePanel } from "@/components/verification-e2e-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -82,6 +83,7 @@ import {
   TESTER_FLOW_STEPS,
   TEST_REPORT_REVIEW_POINTS,
 } from "@/lib/tester-workflow";
+import { verificationE2eStandardGate } from "@/lib/verification-e2e-workflow";
 import {
   architecturePartialAllowedOutputKeys,
   architectureOptionSummaries,
@@ -126,6 +128,8 @@ import type {
   ChangeContract,
   CodexCapabilities,
   CodexReasoningEffort,
+  ConfigureE2eWorkspaceInput,
+  E2eWorkspace,
   FigmaTarget,
   HumanDecisionPhaseId,
   HumanDecisionSummary,
@@ -137,6 +141,8 @@ import type {
   ReviewDecision,
   RoleDefinition,
   RunEvent,
+  VerificationE2eAction,
+  VerificationE2eAuthoring,
   WorkflowRun,
 } from "@/lib/types";
 import { cn, formatDate } from "@/lib/utils";
@@ -256,6 +262,7 @@ const statusStyle: Record<
 interface ExecuteTarget {
   phaseId: string;
   initialOutputKeys?: string[];
+  verificationAction?: VerificationE2eAction;
 }
 
 interface ReviewTarget {
@@ -283,6 +290,9 @@ export function RunPage({
   const [selectedPhaseId, setSelectedPhaseId] = useState<string>();
   const [executeTarget, setExecuteTarget] = useState<ExecuteTarget>();
   const [reviewTarget, setReviewTarget] = useState<ReviewTarget>();
+  const [e2eWorkspaceOpen, setE2eWorkspaceOpen] = useState(false);
+  const [e2eScriptReviewOpen, setE2eScriptReviewOpen] = useState(false);
+  const queryClient = useQueryClient();
   const runQuery = useQuery({
     queryKey: ["run", runId],
     queryFn: () => api.getRun(runId),
@@ -302,6 +312,62 @@ export function RunPage({
     queryFn: () => api.listRuns(runQuery.data!.run.projectId),
     enabled: Boolean(runQuery.data?.run.changeContract?.sourceRunIds?.length),
   });
+  const e2eFlowQueryKey = ["run", runId, "verification", "e2e-flow"] as const;
+  const e2eFlowQuery = useQuery({
+    queryKey: e2eFlowQueryKey,
+    queryFn: () => api.getVerificationE2eFlow(runId),
+    enabled: Boolean(runQuery.data),
+    retry: 1,
+    refetchInterval: (query) => (
+      query.state.data?.state === "authoring" || query.state.data?.state === "executing"
+        ? 1_500
+        : false
+    ),
+  });
+  const e2eWorkspaceQueryKey = [
+    "project",
+    runQuery.data?.run.projectId,
+    "e2e-workspace",
+  ] as const;
+  const e2eWorkspaceQuery = useQuery({
+    queryKey: e2eWorkspaceQueryKey,
+    queryFn: () => api.getE2eWorkspace(runQuery.data!.run.projectId),
+    enabled: Boolean(runQuery.data?.run.projectId),
+    retry: 1,
+  });
+  const e2eFlowLoadError = e2eFlowErrorMessage(e2eFlowQuery.error);
+  const preflightE2eMutation = useMutation({
+    mutationFn: () => api.preflightVerificationE2e(runId),
+    onSuccess: (flow) => {
+      queryClient.setQueryData(e2eFlowQueryKey, flow);
+    },
+    onError: async () => {
+      await queryClient.invalidateQueries({ queryKey: e2eFlowQueryKey });
+    },
+  });
+  const prepareE2eMutation = useMutation({
+    mutationFn: () => {
+      const projectId = runQuery.data?.project.id;
+      if (!projectId) throw new Error("当前项目尚未加载，无法准备 E2E 环境");
+      return api.prepareE2eWorkspace(projectId);
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: e2eFlowQueryKey });
+    },
+    onError: async () => {
+      await queryClient.invalidateQueries({ queryKey: e2eFlowQueryKey });
+    },
+  });
+  const linkedWorkspace = e2eFlowQuery.data?.workspace ?? e2eWorkspaceQuery.data ?? null;
+  const linkedGate = verificationE2eStandardGate({
+    flowLoaded: e2eFlowQuery.isSuccess,
+    flowState: e2eFlowQuery.data?.state,
+    flowHasWorkspace: Boolean(e2eFlowQuery.data?.workspace),
+    workspaceLoaded: e2eWorkspaceQuery.isSuccess,
+    workspaceConfigured: Boolean(e2eWorkspaceQuery.data),
+  });
+  const linkedStateUncertain = linkedGate.stateUncertain;
+  const standardVerificationLocked = linkedGate.standardTesterLocked;
 
   useEffect(() => {
     if (selectedPhaseId || !runQuery.data?.phases?.length) return;
@@ -531,6 +597,56 @@ export function RunPage({
                   setReviewTarget({ phaseId: selectedPhase.phaseId, initialArtifactId })
                 }
                 onOpenTickets={() => onViewChange("tickets")}
+                standardVerificationLocked={standardVerificationLocked}
+                verificationE2eStarted={Boolean(
+                  e2eFlowQuery.data?.authoring || e2eFlowQuery.data?.execution
+                )}
+                verificationE2eStateUncertain={linkedStateUncertain}
+                verificationE2eReviewReady={
+                  e2eFlowQuery.data?.state === "awaiting_verification_review"
+                  && !e2eFlowLoadError
+                }
+                verificationE2ePanel={selectedPhase.phaseId === "verification" ? (
+                  <VerificationE2ePanel
+                    projectId={project.id}
+                    runId={runId}
+                    phaseStatus={selectedPhase.status}
+                    workspace={linkedWorkspace}
+                    flow={e2eFlowQuery.data ?? null}
+                    busy={
+                      e2eFlowQuery.isFetching
+                      || e2eWorkspaceQuery.isFetching
+                      || preflightE2eMutation.isPending
+                      || prepareE2eMutation.isPending
+                    }
+                    error={e2eFlowErrorMessage(
+                      e2eFlowQuery.error,
+                      preflightE2eMutation.error,
+                      prepareE2eMutation.error,
+                    )}
+                    flowLoadError={e2eFlowLoadError}
+                    flowStateUncertain={linkedStateUncertain}
+                    onRetryFlow={() => {
+                      void Promise.all([
+                        e2eFlowQuery.refetch(),
+                        e2eWorkspaceQuery.refetch(),
+                      ]);
+                    }}
+                    onConfigureWorkspace={() => setE2eWorkspaceOpen(true)}
+                    onPrepareWorkspace={() => prepareE2eMutation.mutate()}
+                    onPreflight={() => preflightE2eMutation.mutate()}
+                    onAuthor={() => setExecuteTarget({
+                      phaseId: "verification",
+                      verificationAction: "author_e2e",
+                    })}
+                    onReviewScript={() => setE2eScriptReviewOpen(true)}
+                    onExecute={() => setExecuteTarget({
+                      phaseId: "verification",
+                      verificationAction: "run_e2e",
+                    })}
+                    onOpenVerificationReview={() => setReviewTarget({ phaseId: "verification" })}
+                  />
+                ) : undefined}
               />
               <EventTimeline phase={selectedPhase} />
             </div>
@@ -550,6 +666,7 @@ export function RunPage({
               designBaseline={designBaseline}
               architectureBaseline={architectureBaseline}
               initialOutputKeys={executeTarget?.initialOutputKeys}
+              verificationAction={executeTarget?.verificationAction}
               definition={
                 phaseDefinitions.find((definitionItem) => definitionItem.id === executePhase.phaseId) ??
                 FALLBACK_PHASES[0]
@@ -596,8 +713,349 @@ export function RunPage({
               }}
             />
           ) : null}
+          <E2eWorkspaceDialog
+            projectId={project.id}
+            suggestedRootPath={`${project.rootPath}-e2e`}
+            open={e2eWorkspaceOpen}
+            onOpenChange={setE2eWorkspaceOpen}
+            onConfigured={async (workspace) => {
+              queryClient.setQueryData(e2eWorkspaceQueryKey, workspace);
+              await queryClient.invalidateQueries({ queryKey: e2eFlowQueryKey });
+            }}
+          />
+          <E2eScriptReviewDialog
+            runId={runId}
+            authoring={e2eFlowLoadError ? null : e2eFlowQuery.data?.authoring ?? null}
+            loadError={e2eFlowLoadError}
+            open={e2eScriptReviewOpen}
+            onOpenChange={setE2eScriptReviewOpen}
+            onReviewed={async () => {
+              await queryClient.invalidateQueries({ queryKey: e2eFlowQueryKey });
+              await queryClient.invalidateQueries({ queryKey: ["run", runId] });
+            }}
+          />
         </>
       )}
+    </div>
+  );
+}
+
+function E2eWorkspaceDialog({
+  projectId,
+  suggestedRootPath,
+  open,
+  onOpenChange,
+  onConfigured,
+}: {
+  projectId: string;
+  suggestedRootPath: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfigured: (workspace: E2eWorkspace) => void | Promise<void>;
+}) {
+  const [rootPath, setRootPath] = useState(suggestedRootPath);
+  const [baseUrl, setBaseUrl] = useState("http://127.0.0.1:4173");
+  const [sourceStartScript, setSourceStartScript] = useState("preview");
+  const [playwrightVersion, setPlaywrightVersion] = useState("1.62.1");
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    if (!open) return;
+    setRootPath(suggestedRootPath);
+    setError(undefined);
+  }, [open, suggestedRootPath]);
+  const mutation = useMutation({
+    mutationFn: () => {
+      const input: ConfigureE2eWorkspaceInput = {
+        rootPath: rootPath.trim(),
+        initialize: true,
+        baseUrl: baseUrl.trim(),
+        packageManager: "npm",
+        sourceStartScript: sourceStartScript.trim(),
+        testScript: "test:e2e",
+        browser: "chromium",
+        playwrightVersion: playwrightVersion.trim(),
+      };
+      return api.configureE2eWorkspace(projectId, input);
+    },
+    onMutate: () => setError(undefined),
+    onSuccess: async (workspace) => {
+      await onConfigured(workspace);
+      onOpenChange(false);
+    },
+    onError: (mutationError) => setError(
+      mutationError instanceof Error ? mutationError.message : "无法配置独立 E2E workspace",
+    ),
+  });
+  const rootValid = isAbsoluteFilePath(rootPath);
+  const baseUrlValid = isLoopbackHttpUrl(baseUrl);
+  const scriptValid = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,79}$/u.test(sourceStartScript.trim());
+  const versionValid = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(playwrightVersion.trim());
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => !mutation.isPending && onOpenChange(nextOpen)}
+      title="配置独立 E2E workspace"
+      description="平台会显式初始化一个只维护 Playwright 脚本的新目录，并在产品项目写入 linked workspace 描述文件；产品源代码不会改变。依赖和 Chromium 下载将在下一步由你单独确认。"
+    >
+      <div className="min-h-0 flex-1 overflow-y-auto p-6">
+        <div className="space-y-4">
+          <Field label="独立 E2E 目录" hint="必须是绝对路径，且与产品目录分离" required>
+            <Input
+              value={rootPath}
+              onChange={(event) => setRootPath(event.target.value)}
+              className="font-mono text-xs"
+              aria-invalid={!rootValid}
+            />
+            {rootPath.trim() && !rootValid ? (
+              <p className="mt-1 text-xs text-rose-700">请输入绝对路径，例如 /workspace/product-e2e 或 C:\workspace\product-e2e。</p>
+            ) : null}
+          </Field>
+          <Field label="本机应用地址" hint="仅无凭据、无 #fragment 的 loopback HTTP" required>
+            <Input
+              type="url"
+              value={baseUrl}
+              onChange={(event) => setBaseUrl(event.target.value)}
+              className="font-mono text-xs"
+              aria-invalid={Boolean(baseUrl && !baseUrlValid)}
+            />
+            {baseUrl.trim() && !baseUrlValid ? (
+              <p className="mt-1 text-xs text-rose-700">请输入不含用户名、密码或 #fragment 的 http://localhost、127.0.0.1 或 [::1] 地址。</p>
+            ) : null}
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="产品启动 script" hint="仅字母数字、:、_、-，最多 80 字符" required>
+              <Input
+                value={sourceStartScript}
+                onChange={(event) => setSourceStartScript(event.target.value)}
+                placeholder="preview"
+                className="font-mono text-xs"
+                aria-invalid={Boolean(sourceStartScript && !scriptValid)}
+              />
+              {sourceStartScript.trim() && !scriptValid ? (
+                <p className="mt-1 text-xs text-rose-700">请输入最多 80 字符的固定 npm script key；不允许点号、空格或 shell 语法。</p>
+              ) : null}
+            </Field>
+            <Field label="Playwright 精确版本" hint="禁止 latest / range" required>
+              <Input
+                value={playwrightVersion}
+                onChange={(event) => setPlaywrightVersion(event.target.value)}
+                placeholder="1.62.1"
+                className="font-mono text-xs"
+                aria-invalid={Boolean(playwrightVersion && !versionValid)}
+              />
+            </Field>
+          </div>
+          <div className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs sm:grid-cols-3">
+            <E2eFact label="包管理器" value="npm（固定）" />
+            <E2eFact label="测试 script" value="test:e2e（固定）" mono />
+            <E2eFact label="浏览器" value="Chromium（固定）" />
+          </div>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-900">
+            此操作只创建 workspace 描述文件、package.json、Playwright 配置和空测试目录；不会提交、推送、合并或发布。
+          </div>
+          {error ? <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">{error}</div> : null}
+        </div>
+      </div>
+      <div className="flex justify-end gap-2 border-t border-slate-100 px-6 py-4">
+        <Button variant="ghost" disabled={mutation.isPending} onClick={() => onOpenChange(false)}>取消</Button>
+        <Button
+          variant="primary"
+          loading={mutation.isPending}
+          disabled={!rootValid || !baseUrlValid || !scriptValid || !versionValid}
+          onClick={() => mutation.mutate()}
+        >
+          初始化独立 E2E workspace
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+function E2eScriptReviewDialog({
+  runId,
+  authoring,
+  loadError,
+  open,
+  onOpenChange,
+  onReviewed,
+}: {
+  runId: string;
+  authoring: VerificationE2eAuthoring | null;
+  loadError?: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onReviewed: () => void | Promise<void>;
+}) {
+  const [comment, setComment] = useState("");
+  const [completeBaselineReviewed, setCompleteBaselineReviewed] = useState(false);
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    if (!open) return;
+    setComment("");
+    setCompleteBaselineReviewed(false);
+    setError(undefined);
+  }, [open, authoring?.patchHash]);
+  const completeBaselineDisplayed = Boolean(
+    authoring?.files.length
+      && authoring.files.every((file) => typeof file.content === "string"),
+  );
+  const mutation = useMutation({
+    mutationFn: (decision: ReviewDecision) => {
+      if (!authoring) throw new Error("当前没有可审核的 E2E 脚本版本");
+      if (decision === "approve" && (loadError || !completeBaselineDisplayed)) {
+        throw new Error("整套可执行脚本基线没有完整加载，不能批准");
+      }
+      if (decision === "approve" && !completeBaselineReviewed) {
+        throw new Error("请先确认已经看过整套文件的全部内容和每个 hash");
+      }
+      return api.reviewVerificationE2eScript(runId, {
+        decision,
+        expectedPatchHash: authoring.patchHash,
+        comment: comment.trim(),
+      });
+    },
+    onMutate: () => setError(undefined),
+    onSuccess: async () => {
+      await onReviewed();
+      onOpenChange(false);
+    },
+    onError: (mutationError) => setError(
+      mutationError instanceof Error ? mutationError.message : "无法保存 E2E 脚本审核",
+    ),
+  });
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => !mutation.isPending && onOpenChange(nextOpen)}
+      title="人工审核 · 完整 E2E 可执行脚本基线"
+      description="这里展示 Playwright 实际会执行的整套 tests/** 与 fixtures/**，不是只展示本次变更。必须核对每个文件的全部内容与 hash；这里不会批准 Verification、合并或发布。"
+      className="max-w-4xl"
+    >
+      <div className="min-h-0 flex-1 overflow-y-auto p-6">
+        {loadError ? (
+          <div role="alert" className="mb-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2.5 text-xs leading-5 text-rose-900">
+            完整可执行脚本基线加载失败；当前没有完整展示整套文件，不能批准或执行。{loadError}
+          </div>
+        ) : null}
+        {authoring ? (
+          <div className="space-y-4">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+              <E2eFact label="完整基线 Manifest SHA-256" value={authoring.patchHash} mono />
+              <p className="mt-2 text-slate-600">覆盖：{authoring.criterionIds.join("、") || "未解析到稳定 AC ID"}</p>
+              <p className="mt-1 text-slate-600">整套文件：{authoring.files.length} 个；全部内容与 hash 都必须人工看过。</p>
+            </div>
+            <div className="space-y-3">
+              {authoring.files.map((file) => (
+                <details key={file.path} className="overflow-hidden rounded-xl border border-slate-200 bg-white" open={authoring.files.length === 1}>
+                  <summary className="cursor-pointer list-none px-4 py-3 marker:hidden">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-mono text-xs font-semibold text-slate-800">{file.path}</span>
+                      <Badge variant="muted">{file.bytes} bytes</Badge>
+                    </div>
+                    <div className="mt-1 truncate font-mono text-[10px] text-slate-400">sha256:{file.sha256}</div>
+                  </summary>
+                  <pre className="max-h-80 overflow-auto border-t border-slate-100 bg-slate-950 p-4 text-[11px] leading-5 text-slate-100">
+                    <code>{file.content ?? "平台未返回完整文件内容；当前页面没有完整展示整套基线，不能仅凭 hash 审核。"}</code>
+                  </pre>
+                </details>
+              ))}
+            </div>
+            {!completeBaselineDisplayed ? (
+              <div role="alert" className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-900">
+                当前没有完整展示整套可执行脚本基线，批准操作已停用。
+              </div>
+            ) : (
+              <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-sky-200 bg-sky-50 px-3 py-3 text-xs leading-5 text-sky-950">
+                <Checkbox
+                  checked={completeBaselineReviewed}
+                  onCheckedChange={setCompleteBaselineReviewed}
+                  disabled={mutation.isPending}
+                  aria-label="确认已审阅整套可执行脚本基线"
+                />
+                <span>我已逐一看过整套 tests/** 与 fixtures/** 文件的全部内容和每个 SHA-256，并确认这就是允许 Playwright 实际执行的完整基线。</span>
+              </label>
+            )}
+            <Field label="审核意见" required>
+              <Textarea
+                value={comment}
+                maxLength={5_000}
+                onChange={(event) => setComment(event.target.value)}
+                placeholder="写下你核对过的测试意图、选择器、数据与运行边界，或具体修改要求。"
+                className="min-h-24"
+              />
+            </Field>
+            {error ? <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">{error}</div> : null}
+          </div>
+        ) : loadError ? null : (
+          <EmptyState title="没有待审完整基线" description="刷新 E2E flow，或先生成独立 Playwright 脚本基线。" />
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-2 border-t border-slate-100 px-6 py-4">
+        <Button
+          variant="destructive"
+          loading={mutation.isPending && mutation.variables === "request_changes"}
+          disabled={!authoring || !comment.trim() || mutation.isPending}
+          onClick={() => mutation.mutate("request_changes")}
+        >
+          要求修改脚本
+        </Button>
+        <Button
+          variant="success"
+          loading={mutation.isPending && mutation.variables === "approve"}
+          disabled={
+            !authoring
+            || !comment.trim()
+            || mutation.isPending
+            || Boolean(loadError)
+            || !completeBaselineDisplayed
+            || !completeBaselineReviewed
+          }
+          onClick={() => mutation.mutate("approve")}
+        >
+          批准脚本并允许运行
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+function isLoopbackHttpUrl(value: string): boolean {
+  try {
+    const trimmed = value.trim();
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "http:"
+      && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)
+      && !parsed.username
+      && !parsed.password
+      && !parsed.hash
+      && !trimmed.includes("#");
+  } catch {
+    return false;
+  }
+}
+
+function isAbsoluteFilePath(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.startsWith("/")
+    || /^[A-Za-z]:[\\/]/u.test(trimmed);
+}
+
+function e2eFlowErrorMessage(...errors: unknown[]): string | undefined {
+  const messages = errors.flatMap((error) => (
+    error instanceof Error && error.message ? [error.message] : []
+  ));
+  return [...new Set(messages)].join("；") || undefined;
+}
+
+function E2eFact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{label}</div>
+      <div className={cn("mt-1 truncate text-xs text-slate-700", mono && "font-mono text-[11px]")} title={value}>
+        {value}
+      </div>
     </div>
   );
 }
@@ -949,6 +1407,11 @@ function PhasePanel({
   onExecute,
   onReview,
   onOpenTickets,
+  standardVerificationLocked = false,
+  verificationE2eStarted = false,
+  verificationE2eStateUncertain = false,
+  verificationE2eReviewReady = false,
+  verificationE2ePanel,
 }: {
   phase: PhaseRun;
   phases: PhaseRun[];
@@ -962,6 +1425,11 @@ function PhasePanel({
   onExecute: (initialOutputKeys?: string[]) => void;
   onReview: (initialArtifactId?: string) => void;
   onOpenTickets: () => void;
+  standardVerificationLocked?: boolean;
+  verificationE2eStarted?: boolean;
+  verificationE2eStateUncertain?: boolean;
+  verificationE2eReviewReady?: boolean;
+  verificationE2ePanel?: ReactNode;
 }) {
   const Icon = roleIcons[role.id] ?? Bot;
   const style = statusStyle[phase.status] ?? statusStyle.pending;
@@ -986,6 +1454,11 @@ function PhasePanel({
     && canReviseArtifacts
     && !resolutionIsReadOnly(phase.resolution)
     && phase.architectureImpact?.mode !== "reuse";
+  const standardVerificationExecutionLocked = phase.phaseId === "verification"
+    && standardVerificationLocked;
+  const linkedVerificationReviewLocked = phase.phaseId === "verification"
+    && standardVerificationLocked
+    && !verificationE2eReviewReady;
   const showsArchitectureImpactAction = Boolean(
     architectureImpactAvailable
     && phase.phaseId === "architecture"
@@ -1032,7 +1505,7 @@ function PhasePanel({
             </div>
           </div>
           <div className="flex flex-wrap justify-end gap-2">
-            {canExecute ? (
+            {canExecute && !standardVerificationExecutionLocked ? (
               <Button variant="primary" onClick={() => onExecute()}>
                 {showsImpactAction ? (
                   <GitBranch className="h-4 w-4" />
@@ -1050,7 +1523,7 @@ function PhasePanel({
                   : phase.phaseId === "implementation"
                     ? "根据反馈重新实施"
                   : phase.phaseId === "verification" && phase.status === "ready"
-                    ? "开始 Tester 独立验证"
+                    ? "普通验证（无需真实浏览器 E2E）"
                   : onlyDeferredDesignVerification || deferredHandoffCleanupRequired
                     ? "整理实现后验证交接"
                   : phase.status === "ready"
@@ -1058,7 +1531,7 @@ function PhasePanel({
                     : "根据反馈重新运行"}
               </Button>
             ) : null}
-            {canReview ? (
+            {canReview && !linkedVerificationReviewLocked ? (
               <Button variant="default" className="animate-pulse-ring" onClick={() => onReview()}>
                 <Eye className="h-4 w-4" aria-hidden />
                 审核 AI 产物
@@ -1069,10 +1542,14 @@ function PhasePanel({
                 查看审核记录
               </Button>
             ) : null}
-            {canRerun && !canExecute ? (
+            {canRerun && !canExecute && !standardVerificationExecutionLocked ? (
               <Button variant="outline" onClick={() => onExecute()}>
                 <RotateCcw className="h-4 w-4" aria-hidden />
-                {phase.phaseId === "implementation" ? "重新实施并刷新全部证据" : "选择产物重跑"}
+                {phase.phaseId === "implementation"
+                  ? "重新实施并刷新全部证据"
+                  : phase.phaseId === "verification"
+                    ? "普通重跑（无需真实浏览器 E2E）"
+                    : "选择产物重跑"}
               </Button>
             ) : null}
           </div>
@@ -1084,6 +1561,28 @@ function PhasePanel({
         ) : null}
         {phase.phaseId === "verification" ? (
           <div className="mb-5"><TesterFlowGuide /></div>
+        ) : null}
+        {phase.phaseId === "verification" && verificationE2ePanel ? (
+          <div className="mb-5 space-y-3">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-700">
+              两条验证路径并列：只有平台已明确确认未配置 linked workspace，且验收标准确实无需真实浏览器 E2E 时，才使用上方“普通验证”；
+              一旦配置 workspace，就必须使用下方独立 E2E 流程。真正未配置的既有非 E2E Run 不必配置 workspace，
+              最终 test-report 仍会按验收标准校验，缺少必需证据时不会放行。
+            </div>
+            {verificationE2eStateUncertain ? (
+              <div role="alert" className="rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs leading-5 text-rose-950">
+                无法确认 linked 状态，请重试加载。为防止覆盖可能已经存在的 linked E2E 证据，
+                普通 Tester 执行、重跑和审核暂时停用。
+              </div>
+            ) : null}
+            {verificationE2eStarted ? (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-950">
+                本 Run 已启动 linked E2E 流程：当前 Verification 必须使用成功的 linked E2E 证据完成，
+                不能再用普通 Tester 报告覆盖。本版不提供取消或退回普通路径的按钮。
+              </div>
+            ) : null}
+            {verificationE2ePanel}
+          </div>
         ) : null}
         {onlyDeferredDesignVerification || deferredHandoffCleanupRequired ? (
           <div className="mb-5 flex flex-col gap-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 sm:flex-row sm:items-center sm:justify-between">
@@ -1373,7 +1872,7 @@ function EngineeringFlowGuide({ compact = false }: { compact?: boolean }) {
         <div>
           <h3 className="text-sm font-semibold text-slate-950">软件工程其实只有四步</h3>
           <p className="mt-1 text-xs leading-5 text-slate-600">
-            七份 Markdown 是 Codex 自动生成的实施证据，不是要你手工完成的七个任务。
+            Engineer 完成后，你只需看实现、测试和风险，再通过并解锁 Tester；七份记录由 Codex 维护，不要求你编辑 Markdown。
           </p>
         </div>
         <Badge variant="info">写代码在第 2 步</Badge>
@@ -1528,6 +2027,7 @@ function ExecuteDialog({
   architectureBaseline,
   definition,
   initialOutputKeys,
+  verificationAction = "standard",
   open,
   onOpenChange,
   onNavigatePhase,
@@ -1545,6 +2045,7 @@ function ExecuteDialog({
   architectureBaseline?: ArchitectureBaseline | null;
   definition: PhaseDefinition;
   initialOutputKeys?: string[];
+  verificationAction?: VerificationE2eAction;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onNavigatePhase: (phaseId: "discovery" | "design" | "architecture") => void;
@@ -1553,6 +2054,8 @@ function ExecuteDialog({
   const candidates = phase.availableArtifacts ?? [];
   const isDesignPhase = phase.phaseId === "design";
   const isImplementationPhase = phase.phaseId === "implementation";
+  const isE2eAuthoring = phase.phaseId === "verification" && verificationAction === "author_e2e";
+  const isE2eExecution = phase.phaseId === "verification" && verificationAction === "run_e2e";
   const executableOutputKeys = definition.outputs.filter((key) => key !== "change-contract");
   const effectiveInputKeys = effectiveRequiredInputKeys(
     definition.inputs,
@@ -1883,6 +2386,14 @@ function ExecuteDialog({
           affectedOutputKeys: architectureImpactChoice === "partial" ? selectedOutputs : [],
         });
       }
+      const e2eSelection = {
+        selectedArtifactIds: selected,
+        ...(selectedModel && selectedReasoningEffort
+          ? { model: selectedModel, reasoningEffort: selectedReasoningEffort }
+          : {}),
+      };
+      if (isE2eAuthoring) return api.authorVerificationE2e(runId, e2eSelection);
+      if (isE2eExecution) return api.executeVerificationE2e(runId, e2eSelection);
       if (!figmaExecutionOptions.valid) {
         throw new Error(
           figmaExecutionOptions.reason === "FIGMA_INTEGRATION_NOT_READY"
@@ -1902,7 +2413,10 @@ function ExecuteDialog({
       setImplementationStartHelp(undefined);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["run", runId] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["run", runId] }),
+        queryClient.invalidateQueries({ queryKey: ["run", runId, "verification", "e2e-flow"] }),
+      ]);
       onOpenChange(false);
     },
     onError: async (mutationError) => {
@@ -2137,6 +2651,10 @@ function ExecuteDialog({
       }}
       title={isImplementationEvidenceRepair
         ? "检查并修复工程证据"
+        : isE2eAuthoring
+          ? "生成独立 E2E 脚本"
+          : isE2eExecution
+            ? "运行真实 Chromium E2E"
         : phase.phaseId === "implementation"
           ? "检查条件并开始写代码"
           : phase.phaseId === "verification"
@@ -2144,6 +2662,10 @@ function ExecuteDialog({
             : `运行 · ${getPhaseName(definition)}`}
       description={isImplementationEvidenceRepair
         ? "本次只修复审核页选中的工程记录；平台会把机器校验反馈交给 Codex。代码与测试作为事实基线，若事实不成立则停止并报告。"
+        : isE2eAuthoring
+          ? "从已批准规格冻结测试意图，在独立 E2E workspace 生成或更新 Playwright 脚本。点击运行即为本 Run 启动 linked E2E 流程；随后当前 Verification 必须使用成功的 linked E2E 证据完成，不能改用普通 Tester 报告。本版不提供取消按钮，生成后的整套可执行脚本基线必须先人工审核。"
+          : isE2eExecution
+            ? "只运行已人工审核且 revision 未变化的脚本，启动真实 Chromium 并保存 report/trace；Vitest、jsdom 或 MCP 结果不能代替本次执行。"
         : phase.phaseId === "implementation"
           ? "选择已批准的上游依据后，Codex 会修改源码、补测试、运行检查；七份证据文档会自动生成。"
           : phase.phaseId === "verification"
@@ -3330,10 +3852,14 @@ function ExecuteDialog({
                     ? "启动局部架构更新"
                     : canAssessArchitectureImpact && architectureImpactChoice === "full"
                       ? "开始完整架构重跑"
-                      : runnerMode === "fake"
+                    : runnerMode === "fake"
                 ? "启动模拟执行"
                 : runnerMode === "real"
-                  ? isImplementationEvidenceRepair
+                  ? isE2eAuthoring
+                    ? "生成脚本并进入人工审核"
+                    : isE2eExecution
+                      ? "运行真实 Chromium 并取证"
+                  : isImplementationEvidenceRepair
                     ? "检查并修复工程证据"
                     : phase.phaseId === "implementation" ? "检查条件并开始写代码" : "启动真实 Codex"
                   : "检测运行模式"}
@@ -3897,7 +4423,7 @@ function ReviewDialog({
       onOpenChange={handleOpenChange}
       title={`人工审核 · ${getPhaseName(definition)}`}
       description={phase.phaseId === "implementation"
-        ? "先看实现说明、独立测试证据和工程七镜；其余四份是可追溯审计明细。通过后会解锁 Tester。"
+        ? "你只需看实现、测试和风险，不要求编辑 Markdown；确认没有阻塞后，通过并解锁 Tester。"
         : phase.phaseId === "verification"
           ? `先确认 ${TEST_REPORT_REVIEW_POINTS.join("；")}。通过只代表 Verification 证据完整，不代表 PR、合并或发布已批准。`
           : "逐份查看或人工修订阶段产物，也可只重跑当前产物。通过后会解锁下一角色。"}
@@ -3918,7 +4444,7 @@ function ReviewDialog({
             <div className="scrollbar-thin shrink-0 overflow-x-auto border-b border-slate-100 p-3">
               {phase.phaseId === "implementation" ? (
                 <div className="mb-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-[11px] leading-4 text-sky-800">
-                  <strong>建议先看 3 份：</strong>实现说明 → 独立测试证据 → 工程七镜。计划、任务、会话日志和 PR 证据链用于追溯，通常不用逐字阅读；审批门仍会自动检查全部 7 份。
+                  <strong>建议先看 3 份：</strong>实现说明 → 独立测试证据 → 工程七镜。计划、任务、会话日志和交付追溯清单由 Codex 维护，通常不用逐字阅读；交付追溯清单不是实际 PR，且明确 Software Engineer 未创建或发布 PR。审批门仍会自动检查全部 7 份。
                 </div>
               ) : null}
               <Tabs value={selectedArtifactId} onValueChange={changeArtifact}>
@@ -4385,6 +4911,8 @@ function ReviewDialog({
                   placeholder={
                     isArchitectureSelectionCheckpoint
                       ? "Selected option: B\n条件：先验证外部依赖的限流能力。"
+                      : phase.phaseId === "implementation"
+                        ? "例如：已核对实现、自动化测试与风险，无未解决工程阻塞，同意进入 Tester。"
                       : "记录你的判断，或者准确描述需要修改的地方…"
                   }
                   value={comment}
@@ -4551,7 +5079,7 @@ function ReviewDialog({
                   onClick={() => submit("approve")}
                 >
                   <CheckCircle2 className="h-4 w-4" aria-hidden />
-                  通过并解锁
+                  {phase.phaseId === "implementation" ? "检查证据并解锁 Tester" : "通过并解锁"}
                 </Button>
               </div>
             </div>

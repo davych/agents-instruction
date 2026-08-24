@@ -304,10 +304,36 @@ export function engineeringEvidenceRepairFeedback(
     return [
       "Machine evidence-gate repair feedback:",
       ...relevant.map((issue) => `- ${issue}`),
+      ...engineeringEvidenceCanonicalRepairInstructions(relevant),
       "Repair only the selected registered outputs. Reopen each canonical .ai-sdlc/templates file and preserve its exact template headings and table columns.",
       "Keep every factual code, test, command, and human-boundary claim honest. Do not edit source or tests merely to make Markdown pass; if a diagnostic reveals a real implementation failure, leave the evidence Blocked and report the owner and next action.",
     ].join("\n");
   }
+}
+
+function engineeringEvidenceCanonicalRepairInstructions(issues: readonly string[]): string[] {
+  const instructions: string[] = [];
+  if (issues.some((issue) => /engineering-test-evidence: acceptance criterion .* has no passing automated-test row/iu.test(issue))) {
+    instructions.push(
+      "Canonical acceptance-row repair: keep the stable AC ID in Trace ID; put the real executable test path and test name in Test path and test ID/name; put a durable artifact, path, URL, or command reference in Evidence; use Result: Pass only when that exact execution passed.",
+    );
+  }
+  if (issues.some((issue) => /engineering-review: section .* none found row contains contradictory finding data/iu.test(issue))) {
+    instructions.push(
+      "Canonical none-found repair: standard lens `| none found | N/A | <durable evidence reference> | N/A | N/A | not-applicable |`; Pre-mortem/Edge-case-hunter `| none found | N/A | N/A | <durable evidence reference> | N/A | N/A | not-applicable |`. Every non-Evidence contract cell must be exactly `N/A`, and Status must be exactly `not-applicable`. If any severity, impact, action, owner, open state, or actionable finding exists, use a complete ENG-REV/ENG-ADV finding row instead.",
+    );
+  }
+  if (issues.some((issue) => /engineering-session-log: Verification gates contains a downstream Tester deferral that must move to Outcome or limitations/iu.test(issue))) {
+    instructions.push(
+      "Canonical Tester deferral repair: remove the downstream Tester row from `Verification gates`; preserve its true `Blocked / deferred`, `Owner: Tester`, and Verification/Release impact under `Outcome`, `Known limitations`, or `Next owner`. Do not change it to Pass and do not hide a real Implementation blocker.",
+    );
+  }
+  if (issues.some((issue) => /engineering-provenance:.*(?:human-owned|Publication boundary|creation|opening)/iu.test(issue))) {
+    instructions.push(
+      "Canonical PR-boundary repair: record `PR created or opened by Software Engineer: No`, `PR published by Software Engineer: No`, and `Merge/deploy/release performed by Software Engineer: No`. Do not claim Software Engineer approval or execution of scope, architecture, security risk, PR, merge, deploy, or release decisions.",
+    );
+  }
+  return instructions;
 }
 
 function validateNoBlockedGateSection(
@@ -321,6 +347,7 @@ function validateNoBlockedGateSection(
   const lines = body.split(/\r?\n/u);
   let resultColumn: number | undefined;
   let blocked = false;
+  let downstreamTesterDeferral = false;
   for (const sourceLine of lines) {
     if (sourceLine.includes("|")) {
       const cells = sourceLine.trim()
@@ -337,7 +364,14 @@ function validateNoBlockedGateSection(
       if (resultColumn !== undefined && cells[resultColumn]) {
         const result = cells[resultColumn] ?? "";
         if (!/^(?:pass(?:ed)?|success(?:ful)?|approved|human waiver)\b/iu.test(result)) {
-          blocked = true;
+          if (
+            artifactKey === "engineering-session-log"
+            && isDownstreamTesterDeferralRow(cells, resultColumn)
+          ) {
+            downstreamTesterDeferral = true;
+          } else {
+            blocked = true;
+          }
         }
       }
     }
@@ -351,9 +385,29 @@ function validateNoBlockedGateSection(
     const ready = /^ready\s+for\s+review\s*(?::|=|\||—|-)\s*(.+)$/iu.exec(line);
     if (ready?.[1] && !/^(?:yes|ready)\b/iu.test(ready[1].trim())) blocked = true;
   }
+  if (downstreamTesterDeferral) {
+    issues.push(
+      `${artifactKey}: ${heading} contains a downstream Tester deferral that must move to Outcome or limitations`,
+    );
+  }
   if (blocked) {
     issues.push(`${artifactKey}: ${heading} contains an explicit blocked or failed gate result`);
   }
+}
+
+function isDownstreamTesterDeferralRow(
+  cells: readonly string[],
+  resultColumn: number,
+): boolean {
+  const result = cells[resultColumn] ?? "";
+  if (!/^(?:blocked\s*\/\s*deferred|deferred)$/iu.test(result.trim())) return false;
+
+  const row = cells.join(" | ");
+  const testerOwned = /\bowner\s*:\s*tester\b/iu.test(row);
+  const downstreamOnly = /\bblocks?\s+verification(?:\s*\/\s*release|\s+and\s+release)?\s+only\b/iu.test(row)
+    || /\bonly\s+blocks?\s+verification(?:\s*\/\s*release|\s+and\s+release)?\b/iu.test(row);
+  const excludesImplementation = /\b(?:does\s+not\s+block|not)\b.{0,60}\bimplementation\b/iu.test(row);
+  return testerOwned && downstreamOnly && excludesImplementation;
 }
 
 function stableAcceptanceCriterionId(criterion: string): string | undefined {
@@ -827,10 +881,11 @@ function validateIndependentTestEvidence(
   for (const acceptanceId of acceptanceIds) {
     const lines = coverage.split(/\r?\n/u)
       .filter((line) => containsExactIdentifier(line, acceptanceId));
-    const passingLines = lines.filter((line) =>
-      hasPassingResult(line) && !hasNonPassingResult(line)
-      && hasAcceptanceTestAndEvidence(line, acceptanceId)
-    );
+    const passingLines = lines.filter((line) => {
+      const result = acceptanceCoverageResult(line);
+      return hasPassingResult(result) && !hasNonPassingResult(result)
+        && hasAcceptanceTestAndEvidence(line, acceptanceId);
+    });
     if (passingLines.length === 0) {
       issues.push(
         `engineering-test-evidence: acceptance criterion ${acceptanceId} has no passing automated-test row`,
@@ -866,6 +921,16 @@ function validateIndependentTestEvidence(
       "engineering-test-evidence: Commands and results contains a failed, skipped, blocked, or unrun command",
     );
   }
+}
+
+function acceptanceCoverageResult(line: string): string {
+  if (!line.includes("|")) return line;
+  const cells = line.trim()
+    .replace(/^\|/u, "")
+    .replace(/\|$/u, "")
+    .split("|")
+    .map((cell) => cell.replace(/[*_`]/gu, "").trim());
+  return cells[cells.length - 1] ?? "";
 }
 
 function commandIdentity(line: string): string | undefined {
@@ -1100,9 +1165,7 @@ function actionableFindingTableRows(
     if (/^none\s+found$/iu.test(first)) {
       noneFound = true;
       noneFoundCount += 1;
-      if (cells.slice(1).some((cell) =>
-        cell.length > 0 && !/^(?:n\/a|not applicable|not-applicable|none)$/iu.test(cell)
-      )) invalidNoneFound = true;
+      if (noneFoundRowContainsContradiction(cells, idPrefix)) invalidNoneFound = true;
       continue;
     }
     if (new RegExp(`^${idPrefix}-\\d{3}$`, "u").test(first)) {
@@ -1117,6 +1180,33 @@ function actionableFindingTableRows(
     invalidRows,
     findings,
   };
+}
+
+function noneFoundRowContainsContradiction(
+  cells: readonly string[],
+  idPrefix: "ENG-REV" | "ENG-ADV",
+): boolean {
+  const isAdversarial = idPrefix === "ENG-ADV";
+  const expectedCells = isAdversarial ? 7 : 6;
+  if (cells.length !== expectedCells) return true;
+
+  const severity = cells[1] ?? "";
+  const adversarialContract = isAdversarial ? cells[2] ?? "" : undefined;
+  const evidence = cells[isAdversarial ? 3 : 2] ?? "";
+  const impact = cells[isAdversarial ? 4 : 3] ?? "";
+  const actionAndOwner = cells[isAdversarial ? 5 : 4] ?? "";
+  const statusAndResolution = cells[isAdversarial ? 6 : 5] ?? "";
+
+  return !isCanonicalNoneContractCell(severity)
+    || (adversarialContract !== undefined && !isCanonicalNoneContractCell(adversarialContract))
+    || !hasDurableEvidenceReference(evidence)
+    || !isCanonicalNoneContractCell(impact)
+    || !isCanonicalNoneContractCell(actionAndOwner)
+    || !/^not-applicable$/iu.test(statusAndResolution.trim());
+}
+
+function isCanonicalNoneContractCell(value: string): boolean {
+  return /^n\/a$/iu.test(value.trim());
 }
 
 function validateActionableFindingTableRow(
@@ -1170,7 +1260,25 @@ function hasExplicitFindingOwner(value: string): boolean {
 }
 
 function hasDurableEvidenceReference(value: string): boolean {
-  return /(?:artifact:|https?:\/\/|(?:[\p{Letter}\p{Number}_.-]+\/)+[\p{Letter}\p{Number}_.\/-]+|[\p{Letter}\p{Number}_.-]+\.(?:md|log|txt|json|xml|ts|tsx|js|jsx|py|go|rs|java)\b|\b(?:npm|npx|pnpm|yarn|node|bun|deno|pytest|python|cargo|go|mvn|gradle|make|dotnet)\b)/iu.test(value);
+  if (/\bartifact:[\p{Letter}\p{Number}][\p{Letter}\p{Number}_.\/@:#-]*/iu.test(value)) return true;
+  if (/https?:\/\/[^\s|)]+/iu.test(value)) return true;
+  if (/\bgit:[0-9a-f]{7,64}\b/iu.test(value)) return true;
+
+  const knownFileExtension = "(?:md|markdown|log|txt|tap|json|jsonl|xml|trx|lcov|html?|ya?ml|toml|csv|tsv|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|swift|rb|php|cs|fs|fsx|c|h|cc|cpp|cxx|hpp|sh|bash|zsh|ps1|sql|feature|snap|lock)";
+  if (new RegExp(
+    `(?:[\\p{Letter}\\p{Number}_@.+-]+/)*[\\p{Letter}\\p{Number}_@+-][\\p{Letter}\\p{Number}_.@+-]*\\.${knownFileExtension}\\b`,
+    "iu",
+  ).test(value)) return true;
+
+  const simpleExactToolCommand = /^(?:\$\s*)?(?:npm|npx|pnpm|yarn|node|bun|deno|pytest|python3?|cargo|go|mvn|gradle|make|dotnet)\s+[\p{Letter}\p{Number}_@.\/:=+-]+$/iu;
+  if (simpleExactToolCommand.test(value.trim())) return true;
+  const fencedExactToolCommand = /^(?:\$\s*)?(?:npm|npx|pnpm|yarn|node|bun|deno|pytest|python3?|cargo|go|mvn|gradle|make|dotnet)\s+\S+(?:\s+\S+)*$/iu;
+  const commandProse = /\b(?:and|assert(?:ed|ion)?|because|but|evidence|fail(?:ed|ure)?|passed|result|was|were|without)\b/iu;
+  const isExactToolCommand = (candidate: string) =>
+    fencedExactToolCommand.test(candidate) && !commandProse.test(candidate);
+  if (isExactToolCommand(value.trim())) return true;
+  return [...value.matchAll(/`([^`\r\n]+)`/gu)]
+    .some((match) => isExactToolCommand((match[1] ?? "").trim()));
 }
 
 function validateSecurityFindingClosure(
@@ -1285,18 +1393,28 @@ function validateEngineeringProvenance(content: string, issues: string[]): void 
     }
   }
 
-  const prBoundary = content.split(/\r?\n/u).some((line) =>
-    /(?:PR published by Software Engineer|PR publication|Pull request)/iu.test(line)
+  const provenanceLines = content.split(/\r?\n/u).map(cleanStructuralLine);
+  const prCreationBoundary = provenanceLines.some((line) =>
+    /(?:PR created(?:\s+or\s+|\s*\/\s*)opened by Software Engineer|PR creation\/opening|Pull request creation\/opening)/iu.test(line)
     && /(?:\bNo\b|not performed|human-owned)/iu.test(line)
   );
-  const mergeBoundary = content.split(/\r?\n/u).some((line) =>
+  const prBoundary = provenanceLines.some((line) =>
+    /(?:PR published by Software Engineer|PR publication|Pull request publication)/iu.test(line)
+    && /(?:\bNo\b|not performed|human-owned)/iu.test(line)
+  );
+  const mergeBoundary = provenanceLines.some((line) =>
     /(?:Merge\/deploy\/release performed by Software Engineer|Merge decision)/iu.test(line)
     && /(?:\bNo\b|not performed|human-owned)/iu.test(line)
   );
-  const releaseBoundary = content.split(/\r?\n/u).some((line) =>
+  const releaseBoundary = provenanceLines.some((line) =>
     /(?:Merge\/deploy\/release performed by Software Engineer|Release decision)/iu.test(line)
     && /(?:\bNo\b|not performed|human-owned)/iu.test(line)
   );
+  if (!prCreationBoundary) {
+    issues.push(
+      "engineering-provenance: Publication boundary must state that PR creation/opening was not performed by Software Engineer",
+    );
+  }
   if (!prBoundary || !mergeBoundary || !releaseBoundary) {
     issues.push(
       "engineering-provenance: Publication boundary must state that PR publication, merge, and release were not performed by Software Engineer",
@@ -1319,7 +1437,8 @@ function namedFieldValue(content: string, expected: string): string | undefined 
 function claimsSoftwareEngineerAuthority(content: string): boolean {
   const action = "(?:approv(?:e|ed|al)|accept(?:ed|ance)?|authori[sz](?:e|ed|ation)|decid(?:e|ed))";
   const boundary = "(?:security|risk|exception|scope|architecture|ADR|DDL|merge|release|deploy|publication|pull request|PR)";
-  return content.split(/\r?\n/u).some((line) => {
+  return content.split(/\r?\n/u).some((sourceLine) => {
+    const line = cleanStructuralLine(sourceLine);
     if (
       /^(?:PR published by Software Engineer|(?:Merge|Deploy|Release|Merge\/deploy\/release) performed by Software Engineer)\s*:\s*Yes\b/iu.test(line.trim())
     ) return true;

@@ -28,6 +28,8 @@
 
 ## Verification gates
 
+> These are Implementation-owned readiness gates only. Keep downstream Tester-owned deferred validation in `Known limitations` and the handoff; do not present future Tester work as a failed or blocked Implementation result when the engineering gates themselves passed.
+
 | Gate | Evidence | Result |
 |---|---|---|
 | Acceptance and regression coverage | `artifact:engineering-test-evidence` | <Pass / Blocked> |
@@ -75,10 +77,12 @@
 
 ## Publication boundary
 
-**PR provenance generated:** <Yes / No; reason>
+**PR provenance generated:** <Yes / No; reason; future-use traceability only>
+
+**PR created or opened by Software Engineer:** No
 
 **PR published by Software Engineer:** No
 
 **Merge/deploy/release performed by Software Engineer:** No
 
-This content is PR-ready provenance only. An outer platform or human owns publication, merge, deployment, release approval, and the external action evidence.
+This content is traceability that may be copied into a future PR; generating it does not create, open, or publish a PR. An outer platform or human owns any future PR action, merge, deployment, release approval, and the resulting external evidence.

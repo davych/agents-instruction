@@ -152,7 +152,7 @@ The seven files are one generated pack, not seven tasks for you to fill in.
 4. Use plan, tasks, session log, and provenance when you need deeper audit. PR provenance is prepared text; it does not mean a PR was published, merged, or released.
 5. Approve Implementation only when the current code and all evidence agree. That unlocks Tester.
 
-Tester then follows `.ai-sdlc/roles/tester/workflow.md`: optionally explore the runnable UI with Playwright MCP, return any missing durable E2E script to Software Engineer for independent crystallization/integration and evidence refresh, run the integrated script with the standalone project runner, and write the Run-scoped `test-report`. DevOps or the authorized repository owner configures the required CI check; a human still owns merge and release.
+Tester then follows `.ai-sdlc/roles/tester/workflow.md`: optionally explore the runnable UI with Playwright MCP; when E2E is required, use only a human-configured separate Linked E2E Workspace, let a fresh spec-only Test Author generate scripts there, review the exact manifest hash, and let the platform run standalone Playwright with a real headless Chromium before writing the Run-scoped `test-report`. The platform never searches for or adopts a sibling/legacy E2E repository. Product-source, product-repository-test, or testability-interface changes still return to Software Engineer and refresh Implementation evidence. DevOps or the authorized repository owner configures the required CI check; a human still owns merge and release.
 
 ## Start the first task
 
@@ -191,7 +191,7 @@ After each phase:
 4. pass the registered artifacts to the next role;
 5. keep evidence in the artifacts or active task file.
 
-For the Implementation-to-Verification handoff, use the exact review order and feedback loop in [After the engineering evidence appears](#after-the-engineering-evidence-appears). A Tester-discovered repository-test change goes back through Software Engineer and Implementation reapproval; it never skips straight to CI with stale evidence.
+For the Implementation-to-Verification handoff, use the exact review order in [After the engineering evidence appears](#after-the-engineering-evidence-appears). A linked-workspace script stays in Tester's fresh-author and exact-hash-review loop. A change to product source, product-repository tests, or a product testability interface goes back through Software Engineer and Implementation reapproval; neither path skips straight to CI without current evidence.
 
 See [End-to-End Workflow](../workflow/README.md) for the complete sequence and [Role Relationships](../roles/README.md) for the handoff map.
 

@@ -2,78 +2,84 @@
 
 ## Verdict
 
-Ready for human review. The final independent adversarial pass found no remaining P0, P1, or P2 issue inside the documented synchronous Verification boundary. Three explicit limits—no process sandbox, exact dependency/cache/build and runtime-evidence exclusions plus snapshot caps, and no provider-authenticated remote CI without a connector—remain human-visible and are not represented as stronger guarantees.
+Ready for human review in the supported POSIX local-execution scope. Final independent Tier B verification found no remaining P1/P2. The implementation retains the fixed six phases and human Verification gate, never connects the identified legacy E2E project, and requires a trusted real-Chromium execution rather than jsdom, MCP, Markdown, or exit-code-only claims.
 
-## 1. Correctness
+## 1. Behaviour Preservation
 
-Finding: none open. The fixed six phases, owners, seven Software Engineer outputs, single Tester `test-report` output, and artifact registry are unchanged. Both E2E and non-E2E paths execute applicable mapped verification before the report and human gate.
+No open finding. Existing Runs without a configured linked workspace retain the ordinary Tester path. The six phase IDs/order, role owners, seven Software Engineer outputs, single registered Tester `test-report`, human approvals, and release boundary remain unchanged. Existing persisted report paths remain pin-compatible.
 
-## 2. Security
+## 2. Hidden Assumptions
 
-- ID: TESTER-REV-SEC-001
-- Severity: high
-- Finding: early workspace protection could miss arbitrary nested untracked paths, unreadable permission changes, Git metadata, linked-worktree metadata, and a selected report overlapping `.git`.
-- Evidence: independent adversarial probes and `platform/apps/api/checks/verification-workspace-runner.check.ts`.
-- Impact: a Verification runner could retain an unauthorized source, control, or repository-state mutation.
-- Required action: protect the whole in-scope tree, restore from baseline without trusting the damaged current tree, fail closed on unsafe Git topology, and reject selected-output overlap; Owner: Platform maintainers.
-- Status: resolved. The final guard suite passes 40/40, including tracked/untracked topology, permissions, symlinks, Git deletion/corruption/commit, linked worktree, nonstandard git-dir, selected-output, and fail-closed cases.
+No open finding. The earlier design implicitly assumed all durable tests lived under the product root and that a sibling E2E repository could be treated as context. The new contract makes the second root explicit, canonical, separate, non-nested, and human-configured. No name, sibling path, repository history, or legacy documentation can auto-bind it.
 
-## 3. Error handling
+## 3. Spec/architecture Drift
 
-Finding: none open. Snapshot, traversal, Git-state, restoration, report-provenance, missing evidence, stale revision, and unsupported command failures reject before approval with no silent fallback. Existing deferred Design validation still runs before the general Verification gate.
+No open finding. The user's explicit decision authorizes Tester-owned scripts in an independent E2E workspace. Product source, in-repository tests, and product testability interfaces remain Software Engineer-owned; CI, secrets, required checks, merge, and release remain DevOps/human-owned. Linked E2E is a Verification subflow, not a second platform Project or seventh phase. No DDL was added.
 
-## 4. Edge cases
+## 4. Confirmation Without Evidence
 
-- ID: TESTER-REV-EDGE-001
-- Severity: high
-- Finding: prose-only validation initially accepted invented revisions/evidence, Playwright text outside the executed command, shell-comment decoys, false `E2E required: no`, an arbitrary existing cwd, stale/human report heads, and incomplete crystallization markers.
-- Evidence: `platform/apps/api/checks/verification-evidence-provenance.check.ts`, `verification-evidence-workflow-service.check.ts`, and `tester-e2e-crystallization-workflow-service.check.ts`.
-- Impact: a reviewer could approve a report that was not produced by the claimed standalone execution or route ambiguous test intent back to Engineer.
-- Required action: parse one canonical command, bind the report head to a real current execution and root cwd, bind workspace/Git/evidence hashes, and strictly parse bounded feedback; Owner: Platform maintainers.
-- Status: resolved. Provenance passes 27/27 and the combined provenance/semantic/feedback suite passes 75/75.
+No open finding. A passing `npm run test:e2e` exit alone is insufficient. Approval requires a trusted completed event with raw test exit 0, approved complete-suite hashes, current product/E2E revisions, exact command/cwd/base URL, real locked-Chromium navigation, HTTP 200–499, matching browser version, new hashed evidence, and successful cleanup. The final temporary smoke launched Chromium 151.0.7922.34 and received HTTP 200; its sanitized manifests are durable platform-runner evidence, not product acceptance evidence.
 
-## 5. Performance
+## 5. Test Independence
 
-Finding: no open regression. Verification snapshotting is intentionally bounded at 512 MiB and 200,000 entries and fails closed above either limit. Exact dependency/cache/build and runtime-evidence exclusions are documented; the full platform suite and production build pass.
+No open finding. A fresh ephemeral Tier B Test Author receives frozen approved AC/regression intent and the E2E staging workspace only. Product implementation, source diff, MCP transcript, DOM dump, and previous Tester transcript are excluded. Generated code cannot execute until a human reviews the complete executable `tests/**` and `fixtures/**` baseline and approves its exact platform-bound hash. Script approval does not approve Verification.
 
-## 6. Maintainability
+## 6. Security Surface
 
-Finding: none open. Tester remains one canonical Agent plus an ordinary installed role pack. The implementation reuses the existing artifact owner/path resolver, review model, execution events, Node test runner, TypeScript, and Web guidance patterns without adding Playwright or a new framework to this repository.
+No open P1/P2. The resolved register below covers raw traversal, symlinks/nested roots, unmanaged imports, package lifecycle hooks, local approval forgery, cross-Run records, stale revisions, browserless passes, old evidence reuse, target substitution, report mutation, child-process survival, and ordinary-Tester bypass. Product and E2E roots are both guarded; unsafe changes are restored and the execution fails closed.
 
-## 7. Spec drift
+## 7. Over-engineering
 
-Finding: none open. Exploration, crystallization, and execution are E2E stages inside Verification, not new global phases. Repository test integration stays with Software Engineer, the engineering evidence is refreshed and reapproved after a new test, CI configuration stays with DevOps/repository owners, and merge/release remain human decisions.
+No open finding. The implementation reuses the current Project/Run, execution events, review model, artifact registry, report head, workspace guards, Node test runner, TypeScript, Zod, React, and Fastify. A sidecar descriptor avoids DDL and a second Project lifecycle. The Web panel adds one state-aware subflow while keeping the ordinary path for verified non-linked Runs.
+
+## Resolved finding register
+
+| ID | Severity | Finding and evidence | Resolution | Status |
+|---|---|---|---|---|
+| E2E-REV-001 | High | Raw paths containing `..` were normalized before rejection; adversarial service probe accepted traversal. | Reject raw `.`/`..` components before resolution; cover POSIX and Windows separators. | Resolved |
+| E2E-REV-002 | High | Authoring could begin after package/browser checks without proving the configured target could start and accept a real browser. | Add supervised target preflight before authoring and execution, including vacancy, HTTP, real Chromium navigation, and cleanup. | Resolved |
+| E2E-REV-003 | High | `npm` pre/post lifecycle hooks could mutate approved tests around the main command. | Reject `pretest:e2e`/`posttest:e2e` and set `npm_config_ignore_scripts=true` on supervised npm processes. | Resolved |
+| E2E-REV-004 | High | A local sidecar approval or a copied Run record could authorize execution. | Make DB execution events latest-wins authority and bind Run, phase, author execution, complete-suite patch hash, product/E2E tokens, and review decision. | Resolved |
+| E2E-REV-005 | High | Reviewing only newly changed files allowed pre-existing executable tests to run unseen. | Materialize, display, size-bound, hash, and approve the complete `tests/**` and `fixtures/**` suite. | Resolved |
+| E2E-REV-006 | High | Exit 0 plus a new report could pass without a verified browser target. | Require locked Playwright Chromium launch, exact browser version, exact base URL, real navigation, acceptable HTTP status, new evidence, and cleanup. | Resolved |
+| E2E-REV-007 | High | A later ordinary Tester report could replace a failed Linked E2E head. | Persist a Run-scoped linked obligation; Verification approval requires the current report to bind the same Run's successful linked event. | Resolved |
+| E2E-REV-008 | High | Product/E2E mutation, stale tokens, script/evidence tampering, or foreign cwd could evade prose-only checks. | Guard both roots and re-hash current revisions, full scripts, copied evidence, exact command/cwd, and report binding. | Resolved |
+| E2E-REV-009 | Medium | HTTP readiness could hang when a socket accepted but never returned headers. | Bound every request by the remaining deadline with `AbortController`; preserve failure evidence and clean the server. | Resolved |
+| E2E-REV-010 | High | An npm leader could exit while a descendant retained the target port. | Wait for leader close, POSIX process-group disappearance, and port release; escalate to SIGKILL and keep the result non-passing. | Resolved |
+| E2E-REV-011 | Medium | UI query failure initially exposed the standard Tester path before linked state was known. | Fail closed unless an independent workspace query explicitly proves unconfigured; hide standard execute/rerun/review while linked state is uncertain. | Resolved |
+| E2E-REV-012 | Medium | Provenance compared only target origin, allowing a same-origin different-path substitution. | Require canonical full `href` equality plus origin and no credentials; add an independent adversarial negative. | Resolved |
+| E2E-REV-013 | Medium | Runtime exceptions could surface only as a generic failure without durable detail. | Write bounded machine failure manifests and bind copied path/hash/bytes plus stage/code/message into `e2e.execution.failed`. | Resolved |
 
 ## Adversarial pass
 
 ### Pre-mortem
 
-- ID: TESTER-ADV-001
-- Severity: high
-- Plausible failure: a transient MCP success or fabricated Markdown is treated as approval evidence without executing the current repository revision.
-- Trigger: the gate trusts prose instead of platform execution provenance, or classifies unexecuted Playwright text as an E2E command.
-- Evidence/detection: canonical-command, current-execution, report-head, workspace/Git revision, cwd, and evidence-hash adversarial tests.
-- Impact: a broken user journey could be approved and later fail in required CI.
-- Required action: keep semantic and provenance validators coupled to the same canonical command classifier and retain the adversarial tests; Owner: Platform maintainers.
-- Status: resolved. Fake, stale, human-authored, MCP-only, ambiguous-shell, false-no, missing-path, and hash-mismatch cases reject.
+| ID | Plausible failure | Detection/evidence | Required action | Status |
+|---|---|---|---|---|
+| E2E-ADV-PM-001 | A jsdom/MCP/unit success is presented as real-browser acceptance. | Report/command semantic checks, trusted linked event, real Chromium target probe, `real-chromium-smoke.json`. | Preserve the browser/version/target/evidence gate and UI distinction. | Resolved |
+| E2E-ADV-PM-002 | Newly generated executable tests run before a human sees malicious or out-of-scope code. | Complete-suite content/hash review, 200 kB fail-closed bound, DB review event, unmanaged-helper rejection. | Keep script review separate from Verification approval and never auto-execute after authoring. | Resolved |
+| E2E-ADV-PM-003 | A failed linked run is hidden by a later ordinary passing report. | Sticky linked obligation and current-report/execution binding tests. | Require a current successful linked completion until the supported workflow defines an explicit human cancellation contract. | Resolved |
+| E2E-ADV-PM-004 | A stale product server remains alive and the next suite tests the wrong revision. | Initial port vacancy, supervised process group, cleanup result, final port release. | Forced cleanup must remain non-passing; preserve orphan-descendant regression coverage. | Resolved |
 
 ### Edge-case-hunter
 
-- ID: TESTER-ADV-002
-- Severity: high
-- Edge condition: Verification changes a protected path to mode `000`, replaces a file with a symlink, commits to Git, deletes `.git`, selects `.git/HEAD` as the report, runs below a parent repository, or uses an external linked worktree.
-- Expected behavior: restoration uses the trusted baseline, unsafe Git topology or output placement blocks before the runner, and protected source/test/control/Git mutations reject the run and are restored. Allowed report/runtime-evidence writes persist; exact documented dependency/cache/build exclusions may also retain ephemeral mutations but are outside approval evidence.
-- Evidence/result: focused guard 40/40 and final independent security review.
-- Impact: without these checks, the Tester boundary could corrupt project or version-control state.
-- Required action: preserve full-tree, Git-state, selected-output, and blind-restoration regression coverage; Owner: Platform maintainers.
-- Status: resolved inside the synchronous runner window.
+| ID | Edge condition | Expected and verified behavior | Evidence | Status |
+|---|---|---|---|---|
+| E2E-ADV-EC-001 | Raw POSIX/Windows traversal, symlink root, nested/identical roots, nonempty unmanaged directory. | Reject before initialization; never inspect or reuse a legacy sibling. | `e2e-workspace-service.check.ts` | Resolved |
+| E2E-ADV-EC-002 | Target accepts TCP but never returns HTTP headers; target returns 5xx; target redirects to a different path/origin. | Time out, reject, retain failure evidence, and clean all supervised processes. | runner and provenance focused checks | Resolved |
+| E2E-ADV-EC-003 | Playwright exits 0 but reuses old evidence or cleanup needs SIGKILL. | Reject stale evidence; effective result remains nonzero/non-passing. | `e2e-automation-runner.check.ts` | Resolved |
+| E2E-ADV-EC-004 | Local JSON says approved, later DB review requests changes, file/token drifts, or record belongs to another Run. | Latest trusted matching review only; otherwise return to author/review state. | `verification-e2e-workflow-service.check.ts` | Resolved |
+| E2E-ADV-EC-005 | Report prose changes command, cwd, browser version, base URL, script hash, evidence hash, or revision. | Markdown cannot authorize machine facts; provenance re-reads current trusted data and rejects mismatch. | `verification-evidence-provenance.check.ts` 45/45 | Resolved |
 
 ## Residual boundaries
 
-- The guard observes and restores the synchronous runner window; it is not an OS process sandbox. Detached/background commands are prohibited, and disposable or recoverable project state is required. Stronger process isolation is a separate architecture/security decision.
-- A remote CI URL/run ID is structurally and revision-traced but cannot be authenticated against the provider without a connector.
-- Exact dependency/cache/build and runtime-evidence trees are excluded, and oversize snapshots block rather than run without protection.
+- Workspace protection is synchronous rollback, not an OS sandbox. The author is Tier B isolation, not container-level non-readability.
+- POSIX process-group cleanup is covered. Windows lacks an equivalent descendant-tree implementation in this change; occupied ports fail closed rather than being reported as a pass.
+- Dependency/browser preparation is explicit and may require operator-approved network access.
+- Script display is bounded to 200 kB and fails closed above the bound.
+- Remote CI references remain unauthenticated without a provider connector.
+- The production build retains an existing large-chunk warning unrelated to this change.
 
 ## Human decision boundary
 
-This review recommends readiness only. It does not approve an architecture/security exception, publish a PR, merge, deploy, or authorize release.
+This review recommends readiness only. It does not approve the generated scripts for a future product Run, approve Verification, create or publish a PR, merge, deploy, or authorize release.

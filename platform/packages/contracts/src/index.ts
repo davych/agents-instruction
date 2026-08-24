@@ -162,6 +162,49 @@ export const codexModelSchema = z.string()
   .max(128)
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/u, "Codex model 标识无效");
 
+export const e2ePackageManagerSchema = z.literal("npm");
+export type E2ePackageManager = z.infer<typeof e2ePackageManagerSchema>;
+
+export const e2eBrowserSchema = z.enum(["chromium"]);
+export type E2eBrowser = z.infer<typeof e2eBrowserSchema>;
+
+const packageScriptNameSchema = z.string()
+  .trim()
+  .min(1)
+  .max(80)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9:_-]*$/u, "脚本名只能包含字母、数字、冒号、下划线或连字符");
+
+const loopbackHttpUrlSchema = z.string().trim().url().max(2_048).refine((value) => {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:"
+      && ["localhost", "127.0.0.1", "[::1]", "::1"].includes(parsed.hostname)
+      && parsed.username === ""
+      && parsed.password === ""
+      && parsed.hash === "";
+  } catch {
+    return false;
+  }
+}, "E2E baseUrl 必须是本机 localhost/loopback HTTP 地址");
+
+export const configureE2eWorkspaceSchema = z.object({
+  rootPath: z.string().trim().min(1).max(4_096)
+    .regex(/^(?:\/|[A-Za-z]:[\\/])/u, "E2E rootPath 必须是绝对路径"),
+  initialize: z.boolean().default(false),
+  baseUrl: loopbackHttpUrlSchema,
+  packageManager: e2ePackageManagerSchema.default("npm"),
+  sourceStartScript: packageScriptNameSchema,
+  testScript: packageScriptNameSchema.default("test:e2e"),
+  browser: e2eBrowserSchema.default("chromium"),
+  playwrightVersion: z.string()
+    .regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u, "Playwright 必须使用精确版本")
+    .default("1.62.1"),
+}).strict();
+export type ConfigureE2eWorkspaceInput = z.infer<typeof configureE2eWorkspaceSchema>;
+
+export const verificationE2eActionSchema = z.enum(["standard", "author_e2e", "run_e2e"]);
+export type VerificationE2eAction = z.infer<typeof verificationE2eActionSchema>;
+
 const figmaPlanKeySchema = z.string()
   .min(1)
   .max(256)
@@ -189,9 +232,42 @@ export const executePhaseSchema = z.object({
   selectedOutputKeys: z.array(artifactKeySchema).min(1).optional(),
   model: codexModelSchema.optional(),
   reasoningEffort: codexReasoningEffortSchema.optional(),
-  figmaTarget: figmaTargetSchema.optional()
+  figmaTarget: figmaTargetSchema.optional(),
+  verificationAction: verificationE2eActionSchema.optional()
 });
 export type ExecutePhaseInput = z.infer<typeof executePhaseSchema>;
+
+const e2eExecutionFields = {
+  selectedArtifactIds: z.array(z.string().uuid()).min(1).max(100)
+    .refine((ids) => new Set(ids).size === ids.length, "selectedArtifactIds 不能重复"),
+  model: codexModelSchema.optional(),
+  reasoningEffort: codexReasoningEffortSchema.optional(),
+};
+
+export const authorVerificationE2eSchema = z.object(e2eExecutionFields).strict();
+export type AuthorVerificationE2eInput = z.infer<typeof authorVerificationE2eSchema>;
+
+export const executeVerificationE2eSchema = z.object({
+  action: z.literal("execute"),
+  ...e2eExecutionFields,
+}).strict();
+
+export const preflightVerificationE2eSchema = z.object({
+  action: z.literal("preflight"),
+}).strict();
+
+export const verificationE2eFlowActionSchema = z.discriminatedUnion("action", [
+  preflightVerificationE2eSchema,
+  executeVerificationE2eSchema,
+]);
+export type VerificationE2eFlowActionInput = z.infer<typeof verificationE2eFlowActionSchema>;
+
+export const reviewVerificationE2eScriptsSchema = z.object({
+  decision: reviewDecisionSchema,
+  expectedPatchHash: z.string().regex(/^[a-f0-9]{64}$/u, "E2E 脚本 manifest hash 无效"),
+  comment: z.string().trim().min(1).max(5_000),
+}).strict();
+export type ReviewVerificationE2eScriptsInput = z.infer<typeof reviewVerificationE2eScriptsSchema>;
 
 export const codexModelCapabilitySchema = z.object({
   id: codexModelSchema,
@@ -551,6 +627,90 @@ export interface ProjectDto {
   runCount: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export type E2eReadinessState =
+  | "ready"
+  | "missing"
+  | "invalid"
+  | "unreachable"
+  | "failed"
+  | "not_checked";
+
+export interface E2eWorkspaceDto {
+  version: 1;
+  productProjectId: string;
+  rootPath: string;
+  descriptorPath: string;
+  baseUrl: string;
+  packageManager: E2ePackageManager;
+  sourceStartScript: string;
+  testScript: string;
+  browser: E2eBrowser;
+  playwrightVersion: string;
+  descriptorHash: string;
+  updatedAt: string;
+}
+
+export interface E2eReadinessItemDto {
+  state: E2eReadinessState;
+  message: string;
+  detail?: string;
+}
+
+export interface E2eWorkspaceReadinessDto {
+  ready: boolean;
+  workspace: E2eReadinessItemDto;
+  playwright: E2eReadinessItemDto;
+  browser: E2eReadinessItemDto;
+  sourceStartScript: E2eReadinessItemDto;
+  target: E2eReadinessItemDto;
+  checkedAt: string;
+}
+
+export interface E2eAuthoredFileDto {
+  path: string;
+  sha256: string;
+  bytes: number;
+  content?: string;
+}
+
+export interface E2eAuthoringDto {
+  runId: string;
+  executionId: string;
+  status: "awaiting_review" | "approved" | "changes_requested";
+  patchHash: string;
+  productRevisionToken: string;
+  e2eRevisionToken: string;
+  criterionIds: string[];
+  files: E2eAuthoredFileDto[];
+  reviewComment: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+}
+
+export type VerificationE2eFlowState =
+  | "unconfigured"
+  | "preflight_blocked"
+  | "needs_authoring"
+  | "authoring"
+  | "awaiting_script_review"
+  | "ready_to_execute"
+  | "executing"
+  | "awaiting_verification_review"
+  | "failed";
+
+export interface VerificationE2eFlowDto {
+  runId: string;
+  state: VerificationE2eFlowState;
+  workspace: E2eWorkspaceDto | null;
+  readiness: E2eWorkspaceReadinessDto | null;
+  blockers: string[];
+  criterionIds: string[];
+  contractSource: "change_contract" | "legacy_approved_artifacts" | "unavailable";
+  authoring: E2eAuthoringDto | null;
+  execution: ExecutionDto | null;
+  recommendedAction: string;
 }
 
 export interface ArtifactDto {

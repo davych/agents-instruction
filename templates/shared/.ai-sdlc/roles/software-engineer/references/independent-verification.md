@@ -17,7 +17,7 @@ A different prompt in the implementation session is not Tier A or B. A code revi
 
 1. Give the independent author only the immutable Change Contract, applicable acceptance and regression evidence, approved observable Design behaviour, relevant public Architecture constraints, and the project's test interface or commands needed to create runnable tests.
 2. Do not provide the implementation diff, implementation-session transcript, private helper design, or the author's proposed solution.
-3. Map every in-scope criterion and targeted regression obligation to at least the configured minimum number of tests. Preserve stable story AC IDs. For an unnumbered Change Contract criterion, derive `CC-AC-001`, `CC-AC-002`, and so on from source array order only for traceability, record the source position, and do not change the contract. Test IDs or names must cite the resulting trace ID in code or adjacent durable metadata.
+3. Map every in-scope criterion and targeted regression obligation to at least the configured minimum number of tests. Preserve stable story AC IDs. For an unnumbered Change Contract criterion, derive `CC-AC-001`, `CC-AC-002`, and so on from source array order only for traceability, record the source position, and do not change the contract. Test IDs or names must cite the resulting trace ID in code or adjacent durable metadata. In `engineering-test-evidence`, every passing criterion row must keep the exact trace ID, real executable test path and test name, durable result evidence, and `Pass` on that same row.
 4. Include relevant core, failure, boundary, authorization, state, compatibility, and regression paths. Do not manufacture irrelevant tests to reach a count.
 5. Freeze and record the authored test intent before revealing the implementation.
 6. Write the tests to the repository and execute them against the implementation with the real project runner.
@@ -41,19 +41,19 @@ Tier C or Limited remains blocked unless the evidence names:
 
 The Agent may request this exception but cannot approve it. Without all fields, record `waiver: none` and keep the engineering gate blocked.
 
-## Tester-returned E2E crystallization
+## Tester E2E feedback boundary
 
-When Tester exploration identifies a missing or invalid durable E2E script, treat the return as a test-only engineering change, not as permission for the Verification phase to mutate repository source after approval.
+The normal platform E2E path no longer asks a human to hand-write a crystallization marker or asks Software Engineer to integrate Tester-owned scripts into the product repository. A fresh spec-only Test Author writes allowlisted tests/fixtures in the explicitly configured Linked E2E Workspace; a human approves the exact manifest hash before platform-supervised standalone execution.
 
-In a platform-managed Run, the current Verification review may use the exact envelope `E2E crystallization request: <nonempty scenario>` on line 1, one `AC: <current Change Contract ID>` line per mapped criterion, and one `Frozen intent: <observable behavior>` line. The platform passes only those validated bounded fields plus reviewed `test-report` head metadata into this rerun as read-only revision feedback; it does not pass the report body or free-form comment. It is diagnostic context, never a new authoritative input or permission to change scope.
+Software Engineer becomes the owner only when Verification evidence shows that the product itself must change:
 
-1. Receive stable AC/scenario IDs, frozen behavior intent, and the stated E2E gap. Do not use Playwright MCP success as the expected result.
-2. Start a Tier A/B authoring context before exposing the implementation or exploration transcript. The author may receive the authoritative behavior contract and minimum public test harness; it must not receive exploration code, the MCP action transcript, copied DOM dumps, the implementation diff, or the implementation-session transcript.
-3. Freeze the test intent, then allow public interface/harness inspection only to adapt the test so it runs. Adaptation cannot weaken the expected behavior.
-4. Integrate the repository-conventional test path, run focused and required regression checks, and classify failures using the normal procedure.
-5. Refresh every stale engineering artifact, including `implementation-notes`, `engineering-test-evidence`, `engineering-review`, and `engineering-provenance`, and obtain Implementation reapproval before Tester resumes standalone execution.
+1. Receive the stable AC/scenario IDs, frozen behavior, failing script/report/trace hash, and classification. Playwright MCP success is never the expected result.
+2. Confirm the requested work is product source, a product-repository test, or a reviewed product testability interface such as an intentional selector. A linked-workspace-only test bug remains with Tester's fresh Test Author.
+3. Use the normal Tier A/B engineering procedure for any new product-repository test. Do not import exploration code, MCP actions/transcript, DOM dumps, or linked test internals as the product specification.
+4. Make and verify only the authorized product change; do not edit the Linked E2E Workspace, approve its manifest, configure CI, or run/claim Tester's gate on Tester's behalf.
+5. Refresh every stale engineering artifact, including `implementation-notes`, `engineering-test-evidence`, `engineering-review`, and `engineering-provenance`, and obtain Implementation reapproval before Tester repeats linked-workspace preflight/script approval/standalone execution.
 
-A candidate `tests/e2e/*.spec.ts` patch outside the refreshed evidence chain is not a CI-ready asset.
+The platform never infers a sibling or legacy E2E repository. Linked-workspace script generation remains Tester-owned; product changes remain Software Engineer-owned.
 
 For a Web approval, the human review comment must carry these exact, independent lines; artifact text cannot grant the exception:
 
@@ -69,4 +69,4 @@ Verification exception revisit: <expiry date or revisit condition>
 
 ## Evidence minimum
 
-The test-evidence artifact records the tier, session/reviewer identity, implementation visibility, frozen test-intent reference, criterion-to-test matrix, changed test paths, exact commands and results, failure classifications, coverage gaps, waiver if any, and final status. “Tests pass” without this evidence is not independent verification.
+The test-evidence artifact records the tier, session/reviewer identity, implementation visibility, frozen test-intent reference, criterion-to-test matrix, changed test paths, exact commands and results, failure classifications, coverage gaps, waiver if any, and final status. “Tests pass” without this evidence is not independent verification. A future Tester-owned validation is preserved as a coverage gap/handoff item; it is not entered as a skipped, failed, unrun, or blocked Implementation command when all Software Engineer-owned checks passed.

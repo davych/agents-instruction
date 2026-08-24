@@ -32,8 +32,8 @@ roles:
     responsibilities: [implementation, acceptance traceability, independent test evidence, engineering review, provenance]
   - id: tester
     name: Tester
-    mission: Turn confirmed requirements and risks into independent, repeatable verification; use Playwright MCP only for exploration and standalone repository tests for reusable E2E evidence.
-    responsibilities: [risk-based test design, browser exploration, E2E evidence audit, standalone execution, defect evidence, release-quality recommendation]
+    mission: Turn confirmed requirements and risks into independent, repeatable verification; use Playwright MCP only for optional exploration and an explicitly linked standalone E2E workspace for independently authored, human-reviewed, real-browser evidence.
+    responsibilities: [risk-based test design, optional browser exploration, linked E2E test assets, generated-script hash review, standalone real-browser execution, defect evidence, release-quality recommendation]
   - id: devops
     name: DevOps
     mission: 建立可重复、可观察、可回滚的交付路径。
@@ -65,7 +65,7 @@ workflow:
       owner: tester
       inputs: [change-contract, prd, user-stories, design-spec, architecture, architecture-nfrs, implementation-notes, engineering-test-evidence, engineering-review]
       outputs: [test-report]
-      gate: Acceptance criteria, targeted regressions, main risks, and every selected deferred Design validation have current execution evidence; Playwright MCP exploration alone never satisfies repeatable E2E or CI evidence.
+      gate: Acceptance criteria, targeted regressions, main risks, and every selected deferred Design validation have current execution evidence; required E2E scripts match a human-approved linked-workspace manifest and a platform-supervised standalone real-browser execution, while Playwright MCP exploration alone never satisfies repeatable E2E or CI evidence.
     - id: release
       owner: devops
       inputs: [architecture, architecture-adrs, architecture-nfrs, architecture-adversarial, test-report]

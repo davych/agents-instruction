@@ -411,6 +411,7 @@ function serviceArtifacts(phaseRunId: string, createdAt: string): ArtifactDto[] 
       `Head commit: ${"2".repeat(40)}`,
       "Pull request: https://github.example/create-ai-native-sdlc/pull/42",
       "## Publication boundary",
+      "PR created or opened by Software Engineer: No",
       "PR published by Software Engineer: No",
       "Merge decision: Human-owned; not performed.",
       "Release decision: Human-owned; not performed.",

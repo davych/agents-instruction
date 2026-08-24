@@ -1,8 +1,16 @@
-# Tester Playwright E2E workflow — PR provenance
+# Tester Playwright E2E workflow — delivery provenance
 
 ## Summary
 
-Explain how to review the Software Engineer evidence pack, distinguish initialized Run artifacts from this repository's maintainer Markdown, add an ordinary Tester role pack for Playwright MCP exploration, independent E2E crystallization, and standalone execution, make `test-report` Run-scoped, surface the lifecycle in the Web Verification UI, enforce Verification workspace/evidence boundaries at runtime, carry a current marked crystallization gap back to Engineer as bounded feedback, and document the complete W01-W21 workflow and failure loops.
+- Add an explicitly configured Linked E2E Workspace that is separate from the product repository and is never inferred from a sibling or legacy E2E project.
+- Add a fresh spec-only Test Author that writes only managed tests/fixtures, followed by human review of the complete executable suite and exact hashes.
+- Add platform-supervised product startup, real headless Chromium target probing, standalone Playwright execution, durable success/failure evidence, process-group/port cleanup, and dual-workspace provenance.
+- Add a state-aware Verification UI for configure → preflight → generate → review scripts → run Chromium → review Verification, while retaining the ordinary path for Runs explicitly proven unconfigured.
+- Keep the fixed six phases, existing phase owners, registered artifacts, human Verification approval, and release boundary unchanged.
+
+## Human-owned architecture/scope decision
+
+The user explicitly chose a separately maintained E2E project whose scripts are produced and maintained by the testing flow. The implementation applies that decision through a Linked E2E Workspace. No Agent approved an architecture/security exception, DDL, CI/secrets change, merge, deploy, or release.
 
 ## Evidence links
 
@@ -12,16 +20,39 @@ Explain how to review the Software Engineer evidence pack, distinguish initializ
 - Session log: `sessions/tester-playwright-e2e-workflow/session-log.md`
 - Tests: `changes/tester-playwright-e2e-workflow/test-evidence.md`
 - Review: `reviews/tester-playwright-e2e-workflow/review.md`
+- Real Chromium smoke: `changes/tester-playwright-e2e-workflow/artifacts/real-chromium-smoke.json`
+- Sanitized runner manifest: `changes/tester-playwright-e2e-workflow/artifacts/real-chromium-runner-manifest.json`
 
-## Provenance
+## Verification
 
-- Context: canonical Agent/role packs, fixed workflow and artifact registry, engineering handoff, verification report, initializer, task-scoped path resolver, and Run Web UI.
-- Verification: independent 13/13 acceptance suite, workspace guard 40/40, provenance 27/27, combined approval/feedback 75/75, root 16/16, platform 574/574, typecheck, build, package dry-run, and diff hygiene.
-- Isolation: Tier A acceptance-contract test authored before implementation by a fresh subagent; separate read-only seven-lens, documentation, compatibility, and final adversarial/security reviews. The last review found no remaining P0/P1/P2 inside the stated synchronous Verification boundary.
-- Known limitations: this repository installs workflow policy and guidance; it does not contain the example checkout application or a Playwright harness, so no real target E2E or remote CI run is claimed. The workspace guard is synchronous rollback rather than an OS process sandbox. Exact dependency/cache/build and runtime-evidence exclusions may retain ephemeral mutations and cannot serve as approval evidence; oversize snapshots block. Remote CI references are not provider-authenticated without a connector.
+- Independent acceptance contract: 20/20 pass.
+- Linked E2E focused gate suite: 93/93 pass.
+- Root suite: 23/23 pass.
+- Platform suite: 683/683 pass.
+- Typecheck, production build, package dry-run, and diff hygiene: Pass.
+- True-browser platform smoke: Playwright 1.62.1; Chromium 151.0.7922.34; target HTTP 200; test exit 0; server exit 0; cleanup `sigterm`.
+- Final independent Tier B adversarial verdict: Pass, with no remaining P1/P2 in the supported POSIX local-execution scope.
+
+## Isolation and provenance
+
+- AC-TESTER-001 through AC-TESTER-013 began with a Tier A acceptance-contract authoring session before implementation.
+- AC-TESTER-014 through AC-TESTER-020 received a Tier B spec-only adversarial matrix frozen before repository inspection, followed by independent failure reproduction and re-verification.
+- Product and E2E revision tokens, full script contents/hashes, DB script review, fixed commands/cwd/base URL, browser/version/target result, raw exit code, cleanup, reports/traces/screenshots, and evidence hashes are bound by machine events rather than Markdown claims.
+- The final real-browser fixture was temporary, did not use the legacy E2E project, and was deleted after sanitized machine evidence was retained.
+
+## Known limitations
+
+- The real-browser smoke validates the platform runner, not any user's product acceptance criteria.
+- The workspace guard is synchronous rollback protection rather than an OS sandbox; authoring is Tier B isolation.
+- POSIX descendant-process cleanup is covered. Windows does not yet have equivalent process-tree coverage, but retained port occupancy fails closed.
+- Dependency/browser setup is explicit and may need operator-approved network access.
+- The complete script-review payload is bounded to 200 kB and fails closed above that size.
+- Remote CI references are not provider-authenticated without a connector.
+- The Web production build retains an existing large-chunk warning unrelated to this change.
 
 ## Publication boundary
 
+- PR created or opened by Software Engineer: No
 - PR published by Software Engineer: No
 - Merge performed or approved by Software Engineer: No
 - Deploy or release performed or approved by Software Engineer: No

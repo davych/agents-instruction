@@ -65,4 +65,4 @@ State `None` or identify any Product, Design, or Architecture impact discovered 
 - **Changed areas to inspect:** <real repository paths>
 - **Evidence starting point:** `artifact:implementation-notes` -> Evidence index
 - **Blocked items / human actions:** <items or None>
-- **Publication boundary:** Engineering provenance is PR-ready content only; Software Engineer did not publish a PR, merge, deploy, or approve release.
+- **Publication boundary:** Engineering provenance is future-use traceability only; Software Engineer did not create, open, or publish a PR, merge, deploy, or approve release.

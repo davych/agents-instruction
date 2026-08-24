@@ -8,10 +8,12 @@ Keep the six-phase and artifact ownership model intact. Add an ordinary Tester r
 
 1. A human reviews the Software Engineer evidence pack in the documented order and either returns a concrete gap or approves Implementation.
 2. Tester maps authoritative criteria and risks, optionally explores the runnable UI with Playwright MCP, and records that exploration as diagnostic only.
-3. If a durable E2E test is missing, Tester returns the gap to Software Engineer. A fresh Tier A/B authoring session freezes intent from the specification, produces the repository test, and refreshes engineering evidence.
-4. The platform snapshots the protected synchronous Verification tree, rejects and restores unauthorized tracked/untracked source, test, control, and in-project Git changes outside the exact documented exclusions, and carries a current marked crystallization request to the later Engineer rerun as bounded read-only feedback.
-5. Tester runs the integrated test with one canonical standalone command, records traceable evidence in the Run-scoped `test-report`, and routes failures to the owning role. Verification approval binds the current report head to the real successful execution, exact project-root command, workspace/Git revision, hashed local evidence, AC/regression mapping, open gaps, and any remote CI claim.
-6. DevOps or the authorized repository owner enforces the applicable repository suite as a required CI check; when E2E applies, it reuses the standalone command. A human retains release approval.
+3. If durable E2E coverage is selected, the human explicitly configures a separate linked E2E workspace; the platform never scans for or adopts a sibling legacy repository.
+4. The platform freezes intent from approved specification evidence and launches a fresh Test Author in only the linked E2E root. Product source stays read-only and implementation/exploration context is excluded.
+5. The human reviews the complete executable `tests/**` and `fixtures/**` baseline and approves its exact manifest hash through a platform-owned review event. This approves executable test code only, not Verification, release, merge, or CI configuration.
+6. The platform performs dependency/browser/start-script readiness, rejects an already occupied loopback target, supervises the current product server, launches real headless Chromium from the linked root with fixed argv, and persists target, command, exit, cleanup, report, trace, screenshot, and hash evidence.
+7. Tester writes the Run-scoped `test-report` from the machine execution evidence and routes failures to the owning role. Verification approval binds the product and E2E revisions, the successful command event, evidence hashes, AC/regression mapping, and open gaps.
+8. DevOps or the authorized repository owner enforces the applicable repository suite as a required CI check; when E2E applies, it reuses the standalone command. A human retains release approval.
 
 ## Constraints
 
@@ -20,7 +22,11 @@ Keep the six-phase and artifact ownership model intact. Add an ordinary Tester r
 - Do not add a Tester client-native Skill or second canonical Agent.
 - Do not register exploration notes as a Web artifact.
 - Do not require Playwright for a Run where risk-based test design selects another valid evidence level.
-- Do not add Playwright to this initializer repository; target projects must use their real existing runner or obtain explicit dependency approval.
+- Do not add Playwright to the product repository or this initializer repository. The explicitly initialized linked E2E workspace owns its Playwright package and lockfile; dependency/browser installation remains an explicit human setup action.
+- Do not execute newly generated E2E code before its exact manifest hash receives a separate human script review.
+- Do not let a linked Run fall back to an ordinary Tester report after Linked E2E has been selected; it must finish with a current successful linked execution.
+- Do not accept raw shell commands from Web/API. Persist only validated package-manager and script identifiers, and spawn fixed argv with `shell: false`.
+- Do not infer an E2E root by name, sibling location, repository history, or legacy documentation.
 - Preserve existing persisted artifact paths when a Run already has a `test-report` revision.
 - Treat the workspace guard as synchronous rollback, not a process sandbox: prohibit background/detached commands and require disposable or recoverable project state.
 - Do not claim provider-authenticated remote CI proof without a provider connector.

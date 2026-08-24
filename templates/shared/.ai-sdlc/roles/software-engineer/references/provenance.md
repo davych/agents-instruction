@@ -6,12 +6,12 @@ Provenance lets a reviewer reconstruct what was requested, what evidence was tru
 
 - **Tool/model:** actual implementation and independent-review tools/models, or `Unknown` with a reason.
 - **Context loaded:** exact hot, warm, cold, configured Markdown, and upstream artifact revisions used.
-- **Verification gates:** project checks, independent-test status and isolation tier, seven-lens verdict, and unresolved blockers.
+- **Verification gates:** Implementation-owned project checks, independent-test status and isolation tier, seven-lens verdict, and unresolved Implementation blockers. Put downstream Tester-owned deferred validation in limitations/handoff instead of marking the Implementation gate failed or blocked.
 - **Human decisions:** approval, waiver, override, or decision evidence with owner and durable reference; use `None` when there was none.
 - **Known limitations:** untested scope, unavailable environment, uncertainty, and residual risk.
 - **Session timing:** start, end, or duration when the platform provides it; never invent timestamps.
 - **SDD approach:** `greenfield`, `brownfield`, or `hybrid`, with the preserved-behaviour or boundary reference.
-- **Publication boundary:** state that Software Engineer generated provenance but did not publish a PR, merge, deploy, or approve release.
+- **Publication boundary:** state that Software Engineer generated future-use traceability but did not create, open, or publish a PR, merge, deploy, or approve release.
 
 ## Evidence links
 
@@ -32,10 +32,11 @@ Resolve paths through the registry. Do not hardcode `docs`, link an ambiguous â€
 
 - Use `Not run`, `Not available`, `Unknown`, or `Blocked` instead of implying evidence exists.
 - Separate facts, measured results, assumptions, recommendations, and human decisions.
+- Never word a Software Engineer recommendation as its approval of scope, architecture, a security/risk exception, PR publication, merge, deployment, or release; those decisions remain human-owned.
 - Never include secrets, credentials, production data, private prompt content, or raw logs that violate the sensitivity classification.
 - A link is evidence only when its target exists, is non-empty, belongs to the current Run or has valid imported provenance, and actually supports the claim.
 - Every changed criterion and targeted regression obligation must be traceable through plan, task, implementation, test, and review evidence.
 
 ## PR boundary
 
-The provenance document may be copied into a future PR body. Software Engineer does not create, publish, approve, merge, or close a PR under this workflow. If an outer platform later performs one of those actions, it owns and records the resulting external provenance separately.
+The provenance document is only traceability that may be copied into a future PR body. Producing it does not create or open a PR. Software Engineer does not create, open, publish, approve, merge, or close a PR under this workflow. If an outer platform or human later performs one of those actions, that actor owns and records the resulting external provenance separately.
