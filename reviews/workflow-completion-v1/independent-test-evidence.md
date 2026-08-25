@@ -44,6 +44,19 @@ All commands ran from the final integrated working tree on 2026-08-25.
 
 An intermediate full API run exposed two old unit fixtures that copied the fresh `ai-native.yaml` capability declaration without installing its DevOps V1 pack. Production correctly failed closed. The fixtures were explicitly made legacy/minimal, the final loader/fake/legacy replay passed 33/33, and the full API and aggregate suites were rerun to the final counts above. No production gate was weakened.
 
+### Clean-checkout CI regression
+
+The failed PR #6 platform job was reproduced from its Actions log: `@ai-sdlc/contracts` exposes runtime JavaScript from `dist/index.js`, while type declarations resolve from `src/index.ts`; therefore `yarn typecheck --noEmit` passed in a clean checkout but could not supply the runtime file required by API tests. The platform test command now builds Contracts before starting the parallel workspace tests.
+
+Positive evidence used two independent clean-state replays:
+
+- The integrated workspace began with `packages/contracts/dist/index.js` absent. `yarn typecheck` passed and left it absent, then `yarn test` built it and passed Contracts 24/24, Web 90/90, and API 734/734 (848/848 total); `yarn build` subsequently passed.
+- A separate repository copy excluded `.git`, `node_modules`, and every `dist`, ran `yarn install --immutable`, confirmed the Contracts runtime was absent, then passed `yarn test` 848/848 and `import("@ai-sdlc/contracts")`.
+
+The full replay also exposed a pre-existing test-only scheduling race: an orphan-process cleanup check allowed only 40 × 10 ms for two nested Node processes to become ready. The fixture now writes its own PID only after installing its signal handler and waits on that ready file using the runner-provided timeout and abort signal. Ten concurrent focused invocations passed both forced-cleanup cases (20/20), followed by the green 848/848 aggregate run.
+
+The integrated clean-state replay used Node 24.11.1; the independent clean copy reported Node 25.8.0. A final compatibility reviewer also passed Node 20.19.6 with root 33/33, the full E2E runner file 20/20, Contracts build/test/runtime import, and API typecheck. The failed GitHub runner used Node 20.20.2; at the time of this local evidence snapshot, a positive result on that exact remote environment still required the existing PR branch to be updated and CI rerun.
+
 ## Adversarial evidence highlights
 
 | Attack or failure | Expected result | Evidence in final suite |
@@ -60,6 +73,8 @@ An intermediate full API run exposed two old unit fixtures that copied the fresh
 | Runbook wraps a trusted path/hash as a substring, binds another Run, omits digest, assigns any owner field to an AI/model, or claims past/future deployment/go-no-go authority | Reject before review persistence | Structured Release validator and service acceptance checks |
 | Database completion fails after selected-output writes | Restore prior workspace bytes | Workflow completion service acceptance check |
 | Web disconnect arrives after the initializer filesystem commit | Complete project registration; if an INSERT response is uncertain, expose refresh-and-reconcile guidance rather than claim distributed rollback | Workflow completion service Tier A commit-boundary check and project-dialog copy |
+| Clean checkout has no ignored Contracts build output | Platform `yarn test` builds Contracts before parallel runtime imports; typecheck remains a non-emitting gate | No-dist integrated replay and independent immutable-install copy, both 848/848 |
+| Nested Node startup exceeds a fixed scheduler budget under parallel load | Wait for the child-authored PID readiness signal within the runner deadline, or abort explicitly | Ten concurrent focused runs (20/20) plus the full aggregate replay |
 | Malformed successful Web API response | Surface `INVALID_API_RESPONSE`, never invent an empty list | Web response-parser checks |
 | Review closes while pending/dirty, or approves unseen current heads | Block or require confirmation; bind progress to current ID/hash | Web artifact-review and UI-safety checks |
 
@@ -90,7 +105,7 @@ The formats match the official [GitHub Copilot custom-agent](https://docs.github
 
 ## Evidence boundary
 
-- No production deployment, merge, publication, provider API mutation, secret use, or remote CI run was performed.
+- No production deployment, merge, publication, provider API mutation, secret use, or remote CI rerun was performed. The existing failed Actions job was inspected as diagnostic evidence only.
 - Release validates current platform-selected input bytes and the runbook's required evidence shape. It does not cryptographically authenticate a remote CI, artifact registry, signature, SBOM, or deployment provider.
 - A Web request can be cancelled before the filesystem commit point. After that point registration completes; an HTTP disconnect racing an already-started database insert has an uncertain response and is reconciled by refreshing the project list, not by a claimed distributed rollback.
 - Workspace guards are bounded synchronous detection/rollback controls, not an OS sandbox. Detached processes, parent-directory swap races, authentication, credential isolation, and network policy require a separately approved runner architecture.

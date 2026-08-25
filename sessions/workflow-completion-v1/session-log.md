@@ -38,6 +38,9 @@
 21. Re-exercised the review dialog in the real in-app browser at 650×900 and 320×720 and verified dirty-draft cancellation for both Browser Back and Forward. Wide Markdown tables remain locally scrollable and approval actions reachable.
 22. Defined the Web project-creation commit boundary. Cancellation remains effective before CLI filesystem commit; after a successful initializer return, registration completes despite a late disconnect so a valid initialized tree is not stranded. An already-started database insert is explicitly refresh-and-reconcile, not a claimed distributed rollback.
 23. Recorded the frozen command ledger, browser measurements, adversarial cases, client evidence, residual boundaries, and final independent seven-lens verdict in `reviews/workflow-completion-v1/independent-test-evidence.md` and `reviews/workflow-completion-v1/review.md`.
+24. Investigated the failed PR #6 platform job from its GitHub Actions log. A clean checkout had no ignored Contracts `dist`, `typecheck --noEmit` did not create it, and the parallel API tests resolved the package runtime export before any build. Made the platform-level `yarn test` command build Contracts first so CI, IDE, and local use share one self-contained command.
+25. Replayed the Actions order from an explicitly absent Contracts `dist`: typecheck passed without creating output, the amended test command built the runtime package and passed 848/848, and the production build passed. A separate clean copy excluding `.git`, `node_modules`, and every `dist` also passed immutable install, all 848 tests, and a runtime Contracts import.
+26. Removed a scheduling assumption exposed during that replay. The POSIX orphan-cleanup test now uses the runner's deadline and cancellation signal plus a child-authored PID ready file instead of a fixed 400 ms polling budget; ten concurrent focused replays passed 20/20 before the complete platform replay.
 
 ## Alternatives rejected or deferred
 

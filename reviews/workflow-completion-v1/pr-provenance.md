@@ -20,14 +20,14 @@ Material change groups:
 - runner prompt, workspace mutation, control-resource, and persistence rollback contracts;
 - DevOps V1 and the task-scoped, current-Run/current-input-bound Release evidence gate;
 - Web client selection, core response validation, review safety, navigation, and responsive layout;
-- CI, prompt/SDLC evaluation, README, role guidance, and Mermaid workflow diagrams.
+- clean-checkout CI/IDE test bootstrapping and deterministic E2E readiness;
+- prompt/SDLC evaluation, README, role guidance, and Mermaid workflow diagrams.
 
 ## Authority and external-side-effect record
 
-- No commit was created.
-- No files were staged.
-- No branch was pushed.
-- No pull request was created or updated.
+- The existing `codex/workflow-completion-v1` branch and PR #6 were present when the follow-up CI remediation began.
+- Any remediation commit/push updates only that existing PR so its required checks can rerun; GitHub's commit and Actions records are the authoritative external ledger.
+- No new branch or pull request was created by this follow-up.
 - No merge, npm publication, artifact publication, deployment, rollback, production smoke test, secret/environment change, branch-policy change, DDL, or risk acceptance was performed.
 - The local Web development server used for responsive inspection was stopped after testing.
 - The Release runbook contract prepares evidence for a later human go/no-go; this document is not a go/no-go record.

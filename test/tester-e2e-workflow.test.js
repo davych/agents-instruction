@@ -322,7 +322,10 @@ test("AC-TESTER-013: repository validation contracts stay executable without add
 
   assert.equal(rootPackage.scripts.test, "node --test");
   assert.equal(platformPackage.scripts.typecheck, "yarn workspaces foreach --all --parallel --interlaced run typecheck");
-  assert.equal(platformPackage.scripts.test, "yarn workspaces foreach --all --parallel --interlaced run test");
+  assert.equal(
+    platformPackage.scripts.test,
+    "yarn workspace @ai-sdlc/contracts build && yarn workspaces foreach --all --parallel --interlaced run test",
+  );
   assert.equal(platformPackage.scripts.build, "yarn workspaces foreach --all --topological run build");
   assert.match(validationGuide, /root tests plus platform typecheck, tests, and build/iu);
   assert.match(await source("README.md"), /npm test[\s\S]{0,120}npm pack --dry-run/u);
