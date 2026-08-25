@@ -33,7 +33,7 @@ export function Field({
 export function ErrorState({ error, retry }: { error: unknown; retry?: () => void }) {
   const message = error instanceof Error ? error.message : "发生了未知错误";
   return (
-    <Card className="border-rose-200 bg-rose-50/60 p-8 text-center">
+    <Card role="alert" aria-live="assertive" className="border-rose-200 bg-rose-50/60 p-8 text-center">
       <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-white text-rose-600 shadow-sm">
         <AlertTriangle className="h-5 w-5" aria-hidden />
       </span>
@@ -72,7 +72,8 @@ export function EmptyState({
 
 export function PageSkeleton() {
   return (
-    <div className="space-y-7">
+    <div role="status" aria-live="polite" aria-busy="true" className="space-y-7">
+      <span className="sr-only">正在加载页面…</span>
       <div className="space-y-3">
         <Skeleton className="h-4 w-28" />
         <Skeleton className="h-10 w-80 max-w-full" />

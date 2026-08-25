@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -355,7 +356,7 @@ for (const [label, protectedRelativePath] of [
 test("AC-ENG-008: a new root environment symlink escaping the project is rejected and removed", async () => {
   const fixture = await runnerFixture();
   const root = fixture.project.rootPath;
-  const outsideRoot = await mkdtemp(path.join("/private/tmp", "ai-sdlc-engineering-outside-"));
+  const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "ai-sdlc-engineering-outside-"));
   roots.push(outsideRoot);
   const outsideSentinel = path.join(outsideRoot, "sentinel.txt");
   const outsideBefore = "outside target must remain unchanged\n";

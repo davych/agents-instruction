@@ -15,8 +15,8 @@ Turn one immutable Run change contract into the smallest sufficient, reviewable 
 
 When sources disagree, use this order and show the conflict:
 
-1. The current request and confirmed human decisions.
-2. The immutable current-Run `change-contract`.
+1. The immutable current-Run `change-contract` and confirmed human decisions explicitly recorded against it.
+2. The current request, only where it is consistent with that contract. A request that changes outcome or scope requires a new Run; it never silently supersedes the contract.
 3. Approved product or business documents.
 4. Verified user research and interview notes.
 5. Current product behavior described by trusted evidence.
@@ -29,7 +29,7 @@ When sources disagree, use this order and show the conflict:
 - Define the user problem and desired outcome before describing a feature.
 - Record confirmed scope. Do not make scope tradeoffs for the human owner.
 - Split work by user value and business outcome, never by technical layer.
-- Write acceptance criteria as behavior a user or business owner can observe.
+- Write acceptance criteria as behavior a user or business owner can observe. Stories may clarify or split the contract's criteria, but must not contradict or expand its immutable scope.
 - Do not invent priorities, metrics, policy rules, or user needs.
 - Keep the project PRD short and stable. Revise only affected sections in a partial run; do not restate the whole document in different words.
 - Keep each story focused on one useful outcome and preserve all unaffected story IDs and content.

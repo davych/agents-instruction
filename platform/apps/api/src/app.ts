@@ -139,8 +139,24 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
 
   app.get("/api/projects", async () => ({ projects: await service.listProjects() }));
   app.post("/api/projects", async (request, reply) => {
-    const result = await service.createProject(createProjectSchema.parse(request.body));
-    return reply.status(201).send(result);
+    const controller = new AbortController();
+    const abortDisconnectedRequest = () => {
+      if (!controller.signal.aborted && !reply.raw.writableEnded) {
+        controller.abort(new Error("project creation request disconnected"));
+      }
+    };
+    request.raw.once("aborted", abortDisconnectedRequest);
+    reply.raw.once("close", abortDisconnectedRequest);
+    try {
+      const result = await service.createProject(
+        createProjectSchema.parse(request.body),
+        controller.signal,
+      );
+      return reply.status(201).send(result);
+    } finally {
+      request.raw.off("aborted", abortDisconnectedRequest);
+      reply.raw.off("close", abortDisconnectedRequest);
+    }
   });
   app.get("/api/projects/:id", async (request) => {
     const { id } = idParamsSchema.parse(request.params);

@@ -81,7 +81,7 @@ export function ProjectPage({
             </span>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="truncate text-3xl font-bold tracking-[-0.03em] text-slate-950">
+                <h1 tabIndex={-1} className="truncate text-3xl font-bold tracking-[-0.03em] text-slate-950 focus:outline-none">
                   {project.name}
                 </h1>
                 <Badge variant="success">工作流已就绪</Badge>
@@ -378,7 +378,7 @@ function CreateRunDialog({
             </div>
           </div>
           {error ? (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-700">
+            <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-700">
               {error}
             </div>
           ) : null}

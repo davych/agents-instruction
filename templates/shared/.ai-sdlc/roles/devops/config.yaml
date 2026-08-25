@@ -1,0 +1,22 @@
+# ai-sdlc:release-evidence-v1
+version: 1
+
+# Artifact IDs are resolved through ai-native.yaml and the artifact owner's config.
+# A valid Architecture skip/reuse clearance may replace absent architecture files;
+# never manufacture placeholders merely because an ID appears in this vocabulary.
+inputs:
+  artifacts:
+    - change-contract
+    - architecture
+    - architecture-adrs
+    - architecture-nfrs
+    - architecture-adversarial
+    - implementation-notes
+    - engineering-provenance
+    - test-report
+  # Add only project-relative release, environment, support, or operating documents.
+  markdown: []
+
+# The global output root and artifact filename come from ai-native.yaml.
+output:
+  subdirectory: ai-native/operations

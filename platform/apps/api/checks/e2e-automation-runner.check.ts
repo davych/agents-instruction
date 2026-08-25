@@ -339,9 +339,12 @@ test("target preflight rejects a missing product start script before spawn", asy
 
 test("target preflight fails when cleanup requires SIGKILL and still reaps the server", async () => {
   const fixture = await executionFixture();
+  const serverReadyPath = path.join(fixture.parent, "sigterm-handler.ready");
   await writeFile(path.join(fixture.productRoot, "server.mjs"), [
-    "setInterval(() => undefined, 1_000);",
+    'import { writeFileSync } from "node:fs";',
     'process.on("SIGTERM", () => undefined);',
+    `writeFileSync(${JSON.stringify(serverReadyPath)}, "ready", "utf8");`,
+    "setInterval(() => undefined, 1_000);",
     "",
   ].join("\n"), "utf8");
   let serverProcess: ReturnType<typeof spawn> | undefined;
@@ -352,8 +355,13 @@ test("target preflight fails when cleanup requires SIGKILL and still reaps the s
       return child;
     },
     targetVacancyProbe: async () => undefined,
-    readinessProbe: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    readinessProbe: async (_url, timeoutMs, signal) => {
+      await waitUntilFileReadable(
+        serverReadyPath,
+        timeoutMs,
+        signal,
+        "SIGTERM handler did not become ready",
+      );
     },
     browserTargetProbe: async ({ baseUrl, browser }) => ({
       url: baseUrl,
@@ -361,6 +369,7 @@ test("target preflight fails when cleanup requires SIGKILL and still reaps the s
       browserVersion: browser.version,
     }),
     cleanupTimeoutMs: 10,
+    serverReadyTimeoutMs: 5_000,
   });
   await assert.rejects(
     () => runner.preflight({
@@ -379,19 +388,16 @@ test("cleanup detects an orphan descendant after the npm leader exits and force-
     return;
   }
   const fixture = await executionFixture();
-  const childPidPath = path.join(fixture.parent, "descendant.pid");
   const childReadyPath = path.join(fixture.parent, "descendant.ready");
   const descendantProgram = [
     'import { writeFileSync } from "node:fs";',
     'process.on("SIGTERM", () => undefined);',
-    `writeFileSync(${JSON.stringify(childReadyPath)}, "ready", "utf8");`,
+    `writeFileSync(${JSON.stringify(childReadyPath)}, String(process.pid), "utf8");`,
     "setInterval(() => undefined, 1_000);",
   ].join(" ");
   await writeFile(path.join(fixture.productRoot, "server.mjs"), [
     'import { spawn } from "node:child_process";',
-    'import { writeFileSync } from "node:fs";',
-    `const child = spawn(process.execPath, ["--input-type=module", "--eval", ${JSON.stringify(descendantProgram)}], { stdio: "ignore" });`,
-    `writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid), "utf8");`,
+    `spawn(process.execPath, ["--input-type=module", "--eval", ${JSON.stringify(descendantProgram)}], { stdio: "ignore" });`,
     "setInterval(() => undefined, 1_000);",
     'process.on("SIGTERM", () => process.exit(0));',
     "",
@@ -401,16 +407,13 @@ test("cleanup detects an orphan descendant after the npm leader exits and force-
       spawn(process.execPath, [path.join(fixture.productRoot, "server.mjs")], options)
     ),
     targetVacancyProbe: async () => undefined,
-    readinessProbe: async () => {
-      for (let attempt = 0; attempt < 40; attempt += 1) {
-        try {
-          await readFile(childReadyPath, "utf8");
-          return;
-        } catch {
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-      }
-      throw new Error("descendant did not start");
+    readinessProbe: async (_url, timeoutMs, signal) => {
+      await waitUntilFileReadable(
+        childReadyPath,
+        timeoutMs,
+        signal,
+        "descendant did not start",
+      );
     },
     browserTargetProbe: async ({ baseUrl, browser }) => ({
       url: baseUrl,
@@ -418,6 +421,7 @@ test("cleanup detects an orphan descendant after the npm leader exits and force-
       browserVersion: browser.version,
     }),
     cleanupTimeoutMs: 25,
+    serverReadyTimeoutMs: 5_000,
   });
   await assert.rejects(
     () => runner.preflight({
@@ -425,9 +429,18 @@ test("cleanup detects an orphan descendant after the npm leader exits and force-
       config: fixture.config,
       browser: { executablePath: "/locked/chromium", version: "130.0" },
     }),
-    { code: "E2E_SOURCE_SERVER_CLEANUP_FAILED" },
+    (error: unknown) => {
+      assert.ok(error && typeof error === "object");
+      assert.equal((error as { code?: unknown }).code, "E2E_SOURCE_SERVER_CLEANUP_FAILED");
+      assert.equal(
+        (error as { details?: { serverCleanup?: unknown } }).details?.serverCleanup,
+        "sigkill",
+      );
+      return true;
+    },
   );
-  const descendantPid = Number(await readFile(childPidPath, "utf8"));
+  const descendantPid = Number(await readFile(childReadyPath, "utf8"));
+  assert.ok(Number.isSafeInteger(descendantPid) && descendantPid > 0);
   await waitUntilProcessGone(descendantPid, 2_000);
   assert.throws(() => process.kill(descendantPid, 0), { code: "ESRCH" });
 });
@@ -808,4 +821,43 @@ async function waitUntilProcessGone(pid: number, timeoutMs: number): Promise<voi
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+}
+
+async function waitUntilFileReadable(
+  filePath: string,
+  timeoutMs: number,
+  signal: AbortSignal,
+  timeoutMessage: string,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (signal.aborted) throw new Error("readiness probe was aborted");
+    try {
+      await readFile(filePath, "utf8");
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const delayMs = Math.min(25, Math.max(0, deadline - Date.now()));
+      if (delayMs > 0) await abortableDelay(delayMs, signal);
+    }
+  }
+  throw new Error(timeoutMessage);
+}
+
+async function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error("readiness probe was aborted"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("readiness probe was aborted"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }

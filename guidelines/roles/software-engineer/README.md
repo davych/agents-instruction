@@ -41,6 +41,7 @@ The reference pack separates reusable concerns:
 | Upstream | Architecture clearance | Provides the skipped, reused, partially updated, or fully accepted architecture contract. |
 | Current role | Software Engineer | Plans, implements, tests, reviews, and records the confirmed slice. |
 | Next phase | Tester | Independently verifies the change using the evidence-pack index, test evidence, and engineering review. |
+| Later consumer | DevOps | Uses `implementation-notes` and `engineering-provenance`, with the Change Contract and Verification result, to bind the task-scoped release runbook. |
 
 Software Engineer starts only after Product, Design, and Architecture have valid current-Run clearances. `direct`, `skip`, and `reuse` are legitimate structured evidence and do not require placeholder PRDs, design specs, or architecture documents.
 
@@ -182,7 +183,7 @@ Every in-scope acceptance criterion and targeted regression obligation maps to a
 
 ### Tester E2E product feedback
 
-Tester-owned E2E scripts now live in a human-configured Linked E2E Workspace. A fresh spec-only Test Author writes there, a human approves the exact script manifest hash, and the platform runs standalone Playwright. The normal path does not require a handwritten crystallization comment or product-repository integration by Software Engineer.
+Tester-owned E2E scripts now live in a human-configured Linked E2E Workspace. In the Web platform, a fresh spec-only Test Author writes there, a human approves the exact script manifest hash, and the platform runs standalone Playwright. The normal path does not require a handwritten crystallization comment or product-repository integration by Software Engineer. A direct IDE session cannot claim these platform-trusted events or equivalent Linked E2E supervision.
 
 Return to Software Engineer only when the evidence requires product source, a product-repository test, or a reviewed product testability-interface change:
 
@@ -239,6 +240,8 @@ Tester receives these declared engineering inputs from the same Run:
 
 The handoff also points to the real source/test change and the remaining four engineering artifacts. Tester independently verifies acceptance, regressions, NFRs, and risk; it does not merely approve the Software Engineer's self-report.
 
+After Verification, DevOps reads the same current-Run `implementation-notes` and `engineering-provenance`. These artifacts must identify the actual implementation revision, checks, provenance links, limitations, and explicitly unperformed actions so Release can detect stale or contradictory evidence. Software Engineer does not prepare the release runbook or authorize any deployment action.
+
 ## Human-owned decisions and boundaries
 
 Software Engineer returns or escalates:
@@ -253,6 +256,10 @@ Software Engineer returns or escalates:
 
 Software Engineer does not invent missing behaviour, weaken tests to get green, access production data or secrets, claim a command or external action that did not complete, approve its own evidence pack, or replace Tester. It may prepare PR provenance, but publication and merge remain human- or workflow-owned actions outside this role.
 
+## Client and runtime contract
+
+The Software Engineer Agent is rendered from one canonical source into GitHub Copilot, Claude Code, or Codex native files. Direct IDE and Web operation share the Implementation owner and seven-artifact evidence contract. Web jobs still use the local Codex runner and add selected-output mutation guards, persisted reviews, task-scoped paths, and semantic gates; a direct IDE session must not claim those Web controls or trusted runner events. Neither mode grants this role merge, deployment, secret, or release authority.
+
 ## Source files
 
 - [Canonical Software Engineer Agent](../../../templates/agents/software-engineer.md)
@@ -262,5 +269,7 @@ Software Engineer does not invent missing behaviour, weaken tests to get green, 
 - [Software Engineer workflow](../../../templates/shared/.ai-sdlc/roles/software-engineer/workflow.md)
 - [Software Engineer references](../../../templates/shared/.ai-sdlc/roles/software-engineer/references)
 - [Engineering artifact templates](../../../templates/shared/.ai-sdlc/templates)
+- [Six-role prompt eval](../../../reviews/workflow-completion-v1/prompt-eval.md)
+- [SDLC standards map](../../../reviews/workflow-completion-v1/sdlc-standards-map.md)
 
 Return to [Role Relationships](../README.md).

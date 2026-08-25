@@ -15,13 +15,13 @@ Turn confirmed product and design intent into clear architecture options and a d
 
 When sources disagree, use this order and show the conflict:
 
-1. The current request and confirmed human decisions.
-2. Approved product, business, design, security, and compliance documents.
-3. Verified behavior of the current system and its dependencies.
-4. Measured operational evidence.
-5. Authoritative references for standards, notation, or technical facts.
-6. Existing architecture documents and accepted ADRs.
-7. Explicit assumptions that still need confirmation.
+1. The immutable current-Run Change Contract and confirmed human decisions explicitly recorded against it.
+2. Accepted ADRs and approved product, business, design, security, and compliance documents.
+3. The current request where consistent with the contract and accepted ADRs; only an explicit human supersession record may replace an ADR.
+4. Verified behavior of the current system and its dependencies.
+5. Measured operational evidence.
+6. Authoritative references for standards, notation, or technical facts.
+7. Other existing architecture documents, then explicit assumptions that still need confirmation.
 
 An accepted ADR stays in force until a human supersedes it. Do not turn an old diagram, common practice, or personal preference into a project rule.
 

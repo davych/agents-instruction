@@ -11,7 +11,7 @@ You need:
 - permission to create files in that directory;
 - an AI coding tool that can read project files.
 
-The repository keeps one canonical Markdown source for each role. During initialization, you choose GitHub Copilot, Claude Code, or Codex. The CLI then installs exactly one native Agent set for that client.
+The repository keeps one canonical Markdown source for each role. During initialization, you choose GitHub Copilot, Claude Code, or Codex. The CLI then renders and installs exactly one native Agent set for that client from the same six sources.
 
 ## Run the initializer
 
@@ -53,6 +53,14 @@ The CLI collects five values:
 
 The project name and summary are collected interactively. There are no `--name` or `--summary` flags.
 
+For automation, the optional client flag can answer only the client question:
+
+```bash
+npx create-ai-native-sdlc@latest init . --client codex
+```
+
+Valid values are `github-copilot`, `claude-code`, and `codex`. Name, summary, and any Designer inputs remain interactive.
+
 You do not enter an Agent directory. The initializer uses the selected client's native project directory and installs only that client's Agent set.
 
 ## Write safety
@@ -67,11 +75,11 @@ It stops when:
 - a parent path is a file or a symbolic link;
 - a path could escape the target project.
 
-It does not merge, overwrite, or partly initialize a conflicting project. Resolve the conflict, then run the command again.
+It does not merge or overwrite a conflicting project. Initialization is create-only, abort-safe, and transactionally all-or-nothing at its reported outcome: staged files are published exclusively, and a failed, timed-out, or cancelled attempt removes the files and newly empty directories that attempt created before reporting failure. A process crash can leave a journaled partial transaction; the next invocation verifies inode and content identities and removes only unchanged transaction-owned remnants before retrying. Externally replaced or modified remnants are preserved, and a hidden staging remainder created before the canonical journal was published is detected but not auto-deleted; both cases fail closed for human inspection. This is crash recovery, not simultaneous multi-file visibility. Resolve an ordinary conflict, then run the command again.
 
 ### Updating an already initialized project
 
-The initializer is create-only, not an in-place upgrader. Do not rerun it over an existing project or replace project-owned workflow files wholesale. To adopt this Tester lifecycle in an older initialized project, make one reviewed incremental backfill: merge the current canonical Tester responsibilities into that project's selected native Tester Agent, add `.ai-sdlc/roles/tester/workflow.md` and `.ai-sdlc/roles/tester/references/e2e-playwright.md`, and reconcile `.ai-sdlc/templates/test-report.md` plus `.ai-sdlc/workflows/default.md`. Keep the existing six phase IDs, owners, artifact IDs, and local project conventions. Diff each file, run the project's initializer/platform checks, and obtain human approval before using the updated gate.
+The initializer is create-only, not an in-place upgrader. Do not rerun it over an existing project or replace project-owned workflow files wholesale. Adopt newer role procedures and artifact contracts through an explicit, reviewed incremental backfill. For this V1 that includes Tester's linked-workspace lifecycle and DevOps's config, workflow, Release inputs, task-scoped runbook, template, and semantic contract. Keep the existing six phase IDs and owners, preserve project-owned content and local conventions, add or reconcile only the affected artifacts, diff every file, run the applicable root and platform checks, and obtain human approval before using the updated gates.
 
 ## Generated project structure
 
@@ -99,6 +107,9 @@ ai-native.yaml
       workflow.md
       references/
         e2e-playwright.md
+    devops/
+      config.yaml
+      workflow.md
   workflows/
     default.md
   templates/
@@ -114,11 +125,13 @@ It also receives exactly one native Agent set:
 | Claude Code | `.claude/agents/<role>.md` |
 | Codex | `.codex/agents/<role>.toml` |
 
-Codex TOML is generated from the same six canonical Markdown sources during initialization. The repository does not maintain a second Codex role source.
+Every native format is generated from the same six canonical Markdown sources during initialization. The repository does not maintain client-specific role identities.
 
-PM / BA, Designer, Architect, Software Engineer, and Tester have role packs because they need longer procedures, role-specific inputs, references, or validation rules. Their `workflow.md` and reference files are ordinary Markdown read explicitly by the canonical Agent. They are not client-native Skills or additional Agent definitions. DevOps keeps its shorter procedure in the canonical Agent file.
+All six roles have supporting `workflow.md` procedures. PM / BA, Designer, Architect, Software Engineer, and DevOps also have role configs; focused reference files exist only where the procedure needs them. These files are ordinary project Markdown read explicitly by the canonical Agent. They are not client-native Skills or additional Agent definitions.
 
 The initializer does not create product deliverables under `docs/`. In the platform, creating a Run creates its immutable Change Contract; selected Agents create only the artifacts required by the Run's impact dispositions. For a non-platform local workflow, a human starts `.ai-sdlc/templates/change-contract.md` before invoking a role.
+
+Platform-resolved output paths must remain beneath `paths.outputs`, beneath the artifact owner's configured namespace where one exists, and outside workflow controls, Git control state, and the selected native Agent directory. Unsafe traversal, absolute or backslash forms, symlink escape, case/Unicode-equivalent collisions, and file/directory overlap are rejected.
 
 ## Software Engineer evidence pack
 
@@ -152,7 +165,17 @@ The seven files are one generated pack, not seven tasks for you to fill in.
 4. Use plan, tasks, session log, and provenance when you need deeper audit. PR provenance is prepared text; it does not mean a PR was published, merged, or released.
 5. Approve Implementation only when the current code and all evidence agree. That unlocks Tester.
 
-Tester then follows `.ai-sdlc/roles/tester/workflow.md`: optionally explore the runnable UI with Playwright MCP; when E2E is required, use only a human-configured separate Linked E2E Workspace, let a fresh spec-only Test Author generate scripts there, review the exact manifest hash, and let the platform run standalone Playwright with a real headless Chromium before writing the Run-scoped `test-report`. The platform never searches for or adopts a sibling/legacy E2E repository. Product-source, product-repository-test, or testability-interface changes still return to Software Engineer and refresh Implementation evidence. DevOps or the authorized repository owner configures the required CI check; a human still owns merge and release.
+Tester then follows `.ai-sdlc/roles/tester/workflow.md`: optionally explore the runnable UI with Playwright MCP; when E2E is required, use only a human-configured separate Linked E2E Workspace, let a fresh spec-only Test Author generate scripts there, review the exact manifest hash, and let the platform run standalone Playwright with a real headless Chromium before writing the Run-scoped `test-report`. The platform never searches for or adopts a sibling/legacy E2E repository. Product-source, product-repository-test, or testability-interface changes still return to Software Engineer and refresh Implementation evidence.
+
+After Verification passes, DevOps reads the current `change-contract`, accepted architecture evidence, `implementation-notes`, `engineering-provenance`, and `test-report`. It prepares and validates only the task-scoped `release-runbook`: the exact Run ID and selected-input artifact/path/content-hash manifest, revision or digest binding, provenance and SBOM applicability, preconditions, ordered rollout, health and smoke checks, monitoring thresholds/windows/owners/actions, rollback triggers/RTO/data compatibility/recovery verification, incident escalation, risks, and the named human go/no-go owner. Web approval re-resolves current approved heads and refuses simulated/legacy Release executions. `Ready for human go/no-go` is a preparation result, not a release. The Agent does not deploy, configure CI or secrets, change branch policy, commit, push, merge, publish, roll back, or make the decision.
+
+## Direct IDE and Web operation
+
+The selected native Agent files support direct use from GitHub Copilot, Claude Code, or Codex. The Web new-project flow can select the same three targets and uses the same initializer, role ownership, phase order, and artifact registry. Web execution itself still uses the local Codex runner; selecting another native client does not make the server launch that client.
+
+The Web platform adds persisted clearances, task-scoped artifact pins, semantic gates, and supervised Linked E2E events. A direct IDE session can follow the same role and artifact contract, but it must not claim Web-produced manifest approvals, trusted runner events, or equivalent Linked E2E guarantees unless those events actually came from the platform.
+
+The current Web platform is only for local, trusted, disposable or otherwise recoverable projects. Its API has no authentication, and the Codex runner is not isolated by an OS sandbox. Do not expose it remotely or register untrusted repositories; authenticated access and an isolated worktree/container runner remain security-architecture blockers.
 
 ## Start the first task
 
@@ -191,7 +214,7 @@ After each phase:
 4. pass the registered artifacts to the next role;
 5. keep evidence in the artifacts or active task file.
 
-For the Implementation-to-Verification handoff, use the exact review order in [After the engineering evidence appears](#after-the-engineering-evidence-appears). A linked-workspace script stays in Tester's fresh-author and exact-hash-review loop. A change to product source, product-repository tests, or a product testability interface goes back through Software Engineer and Implementation reapproval; neither path skips straight to CI without current evidence.
+For the Implementation-to-Verification handoff, use the exact review order in [After the engineering evidence appears](#after-the-engineering-evidence-appears). A linked-workspace script stays in Tester's fresh-author and exact-hash-review loop. A change to product source, product-repository tests, or a product testability interface goes back through Software Engineer and Implementation reapproval. After Verification, DevOps prepares the current task's runbook and the Release semantic gate checks it before a human decides go/no-go. No Agent path skips to CI, merge, deployment, or publication.
 
 See [End-to-End Workflow](../workflow/README.md) for the complete sequence and [Role Relationships](../roles/README.md) for the handoff map.
 
@@ -202,6 +225,13 @@ From this repository:
 ```bash
 npm test
 npm pack --dry-run
+
+cd platform
+yarn typecheck
+yarn test
+yarn build
 ```
 
-The publish workflow runs tests before `npm publish`. It requires a repository secret named `NPM_TOKEN`.
+CI runs the root initializer checks and the platform checks as separate jobs. The publish workflow runs tests before `npm publish`; it requires a repository secret named `NPM_TOKEN` and remains outside DevOps Agent authority.
+
+For the rationale and open gaps, read the [six-role prompt eval](../../reviews/workflow-completion-v1/prompt-eval.md) and [NIST SSDF / OWASP SAMM / SLSA map](../../reviews/workflow-completion-v1/sdlc-standards-map.md). The standards map is an implementation review, not a compliance certification.

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -15,13 +15,34 @@ import { EmptyState, ErrorState, Field, PageSkeleton } from "@/components/states
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { CreateProjectInput, Project } from "@/lib/types";
-import { formatDate, initials, truncate } from "@/lib/utils";
+import { cn, formatDate, initials, truncate } from "@/lib/utils";
+
+const AGENT_CLIENT_OPTIONS = [
+  {
+    id: "codex",
+    label: "Codex",
+    description: "生成适合 Codex CLI 与 IDE 客户端读取的项目入口。",
+  },
+  {
+    id: "claude",
+    label: "Claude Code",
+    description: "生成适合 Claude Code 读取的项目入口。",
+  },
+  {
+    id: "copilot",
+    label: "GitHub Copilot",
+    description: "生成适合 GitHub Copilot 读取的项目入口。",
+  },
+] as const satisfies ReadonlyArray<{
+  id: NonNullable<CreateProjectInput["agentClient"]>;
+  label: string;
+  description: string;
+}>;
 
 export function ProjectsPage({ onSelectProject }: { onSelectProject: (id: string) => void }) {
   const [createOpen, setCreateOpen] = useState(false);
@@ -47,7 +68,7 @@ export function ProjectsPage({ onSelectProject }: { onSelectProject: (id: string
             <Sparkles className="h-3 w-3" aria-hidden />
             Local-first AI delivery
           </Badge>
-          <h1 className="max-w-3xl text-balance text-3xl font-bold tracking-[-0.035em] text-slate-950 sm:text-4xl">
+          <h1 tabIndex={-1} className="max-w-3xl text-balance text-3xl font-bold tracking-[-0.035em] text-slate-950 focus:outline-none sm:text-4xl">
             把每一次 AI 交付，变成
             <span className="text-teal-600"> 看得见的工作流</span>
           </h1>
@@ -71,7 +92,7 @@ export function ProjectsPage({ onSelectProject }: { onSelectProject: (id: string
         <div className="mb-4 flex items-center justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold tracking-tight text-slate-950">你的项目</h2>
-            <p className="mt-1 text-sm text-slate-500">项目代码不会上传；平台只在你选择的本地目录中工作。</p>
+            <p className="mt-1 text-sm text-slate-500">项目文件保留在所选本地目录；真实 Codex 执行会把完成任务所需的上下文发送给已配置的模型服务。</p>
           </div>
           {projects.length ? (
             <Button variant="outline" size="sm" onClick={() => setCreateOpen(true)}>
@@ -201,21 +222,51 @@ function CreateProjectDialog({
     summary: "",
     rootPath: "",
     initialize: false,
+    agentClient: "codex",
   });
   const [error, setError] = useState<string>();
+  const createControllerRef = useRef<AbortController>();
+  useEffect(() => () => {
+    createControllerRef.current?.abort(new DOMException("项目创建界面已卸载", "AbortError"));
+  }, []);
   const mutation = useMutation({
-    mutationFn: api.createProject,
+    mutationFn: async (input: CreateProjectInput) => {
+      const controller = new AbortController();
+      createControllerRef.current = controller;
+      try {
+        const project = await api.createProject(input, { signal: controller.signal });
+        controller.signal.throwIfAborted();
+        return project;
+      } finally {
+        if (createControllerRef.current === controller) createControllerRef.current = undefined;
+      }
+    },
     onSuccess: async (project) => {
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
-      setForm({ name: "", summary: "", rootPath: "", initialize: false });
+      setForm({
+        name: "",
+        summary: "",
+        rootPath: "",
+        initialize: false,
+        agentClient: "codex",
+      });
       setError(undefined);
       onOpenChange(false);
       onCreated(project);
     },
     onError: (mutationError) => {
+      if (mutationError instanceof Error && mutationError.name === "AbortError") return;
       setError(mutationError instanceof Error ? mutationError.message : "创建项目失败");
     },
   });
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen && mutation.isPending) {
+      createControllerRef.current?.abort(new DOMException("用户取消项目创建", "AbortError"));
+      mutation.reset();
+    }
+    onOpenChange(nextOpen);
+  };
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -235,7 +286,7 @@ function CreateProjectDialog({
   return (
     <Dialog
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={handleOpenChange}
       title="创建本地项目"
       description="连接已有目录，或选择在该目录中初始化现有 AI SDLC 模板。"
     >
@@ -269,16 +320,17 @@ function CreateProjectDialog({
               }
             />
           </Field>
-          <div
-            onClick={() =>
-              setForm((current) => ({ ...current, initialize: !current.initialize }))
-            }
-            className="flex w-full items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-left transition hover:border-slate-300"
+          <label
+            className="flex w-full cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-left transition hover:border-slate-300 focus-within:ring-2 focus-within:ring-teal-500 focus-within:ring-offset-2"
           >
-            <Checkbox
+            <input
+              type="checkbox"
               checked={form.initialize}
-              onCheckedChange={(initialize) => setForm((current) => ({ ...current, initialize }))}
-              aria-label="初始化 AI SDLC"
+              className="mt-0.5 h-4 w-4 shrink-0 accent-teal-600"
+              onChange={(event) => setForm((current) => ({
+                ...current,
+                initialize: event.target.checked,
+              }))}
             />
             <span>
               <span className="block text-sm font-semibold text-slate-800">初始化 AI SDLC</span>
@@ -286,15 +338,58 @@ function CreateProjectDialog({
                 仅在目录尚未安装时启用。已有配置会被直接读取，不会改变原有初始化行为。
               </span>
             </span>
-          </div>
+          </label>
+          {form.initialize ? (
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium text-slate-700">智能体客户端</legend>
+              <p className="text-xs leading-5 text-slate-500">
+                选择初始化时生成的原生入口；标准角色定义与六阶段工作流保持一致。
+              </p>
+              <div className="grid gap-2 sm:grid-cols-3">
+                {AGENT_CLIENT_OPTIONS.map((option) => {
+                  const selected = (form.agentClient ?? "codex") === option.id;
+                  return (
+                    <label
+                      key={option.id}
+                      className={cn(
+                        "cursor-pointer rounded-xl border p-3 text-left transition focus-within:ring-2 focus-within:ring-teal-500 focus-within:ring-offset-2",
+                        selected
+                          ? "border-teal-500 bg-teal-50 text-teal-950"
+                          : "border-slate-200 bg-white text-slate-700 hover:border-slate-300",
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="agent-client"
+                        value={option.id}
+                        checked={selected}
+                        className="sr-only"
+                        onChange={() => setForm((current) => ({
+                          ...current,
+                          agentClient: option.id,
+                        }))}
+                      />
+                      <span className="block text-sm font-semibold">{option.label}</span>
+                      <span className="mt-1 block text-[11px] leading-4 text-slate-500">
+                        {option.description}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </fieldset>
+          ) : null}
           {error ? (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-700">
+            <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-700">
               {error}
             </div>
           ) : null}
+          <p className="text-xs leading-5 text-slate-500">
+            若取消或断线恰逢文件或数据库提交，已提交结果不会被反向删除；请刷新项目列表确认状态后再重试。
+          </p>
         </div>
         <div className="mt-7 flex justify-end gap-3 border-t border-slate-100 pt-5">
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+          <Button type="button" variant="ghost" onClick={() => handleOpenChange(false)}>
             取消
           </Button>
           <Button type="submit" variant="primary" loading={mutation.isPending}>

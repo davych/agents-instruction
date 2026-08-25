@@ -13,7 +13,7 @@
   "scripts": {
     "dev": "yarn workspace @ai-sdlc/contracts build && yarn workspaces foreach --all --parallel --interlaced run dev",
     "build": "yarn workspaces foreach --all --topological run build",
-    "test": "yarn workspaces foreach --all --parallel --interlaced run test",
+    "test": "yarn workspace @ai-sdlc/contracts build && yarn workspaces foreach --all --parallel --interlaced run test",
     "typecheck": "yarn workspaces foreach --all --parallel --interlaced run typecheck",
     "db:up": "node scripts/db.mjs up",
     "db:down": "node scripts/db.mjs down",

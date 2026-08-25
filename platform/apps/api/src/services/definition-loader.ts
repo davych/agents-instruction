@@ -15,15 +15,49 @@ import { AppError } from "../domain/errors.js";
 import { isWithin } from "./project-paths.js";
 
 const identifierSchema = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u);
+const definitionAgentClientSchema = z.enum(["github-copilot", "claude-code", "codex"]);
+const expectedRoleIds = [
+  "pm-ba",
+  "designer",
+  "architect",
+  "software-engineer",
+  "tester",
+  "devops",
+] as const;
+const nativeAgentContracts = {
+  "github-copilot": {
+    directory: ".github/agents",
+    fileName: (roleId: string) => `${roleId}.agent.md`,
+  },
+  "claude-code": {
+    directory: ".claude/agents",
+    fileName: (roleId: string) => `${roleId}.md`,
+  },
+  codex: {
+    directory: ".codex/agents",
+    fileName: (roleId: string) => `${roleId}.toml`,
+  },
+} as const;
+const canonicalOwnerNamespaces: Record<(typeof expectedRoleIds)[number], string> = {
+  "pm-ba": "product",
+  designer: "design",
+  architect: "architecture",
+  "software-engineer": "engineering",
+  tester: "testing",
+  devops: "operations",
+};
 
 const configSchema = z.object({
   version: z.number().int().positive(),
+  capabilities: z.object({
+    release_evidence: z.literal("v1").optional(),
+  }).optional(),
   project: z.object({
     name: z.string(),
     summary: z.string(),
     locale: z.string().optional()
   }),
-  agent: z.object({ client: z.string() }),
+  agent: z.object({ client: definitionAgentClientSchema }),
   paths: z.object({ agents: z.string(), outputs: z.string() }),
   roles: z.array(z.object({
     id: identifierSchema,
@@ -53,6 +87,7 @@ export interface LoadedDefinition extends WorkflowDefinition {
   agentClient: string;
   agentDirectory: string;
   outputRoot: string;
+  releaseEvidenceValidationRequired: boolean;
   artifacts: LoadedArtifactDefinition[];
   configPath: string;
 }
@@ -62,6 +97,8 @@ export interface LoadedArtifactDefinition {
   owner: string;
   relativePath: string;
   absolutePath: string;
+  /** Optional output injected in memory for an older project definition. */
+  platformInjected?: boolean;
 }
 
 export async function loadDefinition(projectRoot: string): Promise<LoadedDefinition> {
@@ -78,10 +115,11 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
   } catch (error) {
     throw new AppError("ai-native.yaml 格式无效", 400, "CONFIG_INVALID", error);
   }
-  registerPlatformChangeContract(config);
-  registerPlatformDesignOutputs(config);
+  const platformInjectedArtifactIds = new Set<string>();
+  registerPlatformChangeContract(config, platformInjectedArtifactIds);
+  registerPlatformDesignOutputs(config, platformInjectedArtifactIds);
   registerPlatformVerificationDesignInput(config);
-  registerPlatformArchitectureOutputs(config);
+  registerPlatformArchitectureOutputs(config, platformInjectedArtifactIds);
 
   const phaseIds = config.workflow.phases.map((phase) => phase.id);
   if (phaseIds.length !== PHASE_IDS.length || phaseIds.some((id, index) => id !== PHASE_IDS[index])) {
@@ -91,7 +129,7 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
       "UNSUPPORTED_WORKFLOW"
     );
   }
-  const expectedOwners = ["pm-ba", "designer", "architect", "software-engineer", "tester", "devops"];
+  const expectedOwners = expectedRoleIds;
   const roleIds = new Set(config.roles.map((role) => role.id));
   if (roleIds.size !== config.roles.length) {
     throw new AppError("roles 包含重复 id", 400, "CONFIG_INVALID");
@@ -105,13 +143,30 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
     }
   }
 
-  safeProjectPath(projectRoot, config.paths.agents);
+  const agentContract = nativeAgentContracts[config.agent.client];
+  if (config.paths.agents !== agentContract.directory) {
+    throw new AppError(
+      `agent.client ${config.agent.client} 必须使用标准 Agent 目录 ${agentContract.directory}`,
+      400,
+      "CONFIG_INVALID",
+    );
+  }
+  const agentRoot = safeProjectPath(projectRoot, config.paths.agents);
   const outputRoot = safeProjectPath(projectRoot, config.paths.outputs);
-  const subdirectories = await readRoleSubdirectories(projectRoot, roleIds);
+  await validateConfiguredOutputRoot(projectRoot, outputRoot);
+  await validateNativeAgentFiles(
+    projectRoot,
+    config.agent.client,
+    agentRoot,
+    false,
+  );
+  const subdirectories = await readRoleSubdirectories(projectRoot, outputRoot, roleIds);
   registerPlatformEngineeringOutputs(
     config,
     subdirectories.has("software-engineer"),
+    platformInjectedArtifactIds,
   );
+  registerPlatformReleaseInputs(config, subdirectories.has("devops"));
   const artifactIds = new Set(config.artifacts.map((artifact) => artifact.id));
   if (artifactIds.size !== config.artifacts.length) {
     throw new AppError("artifacts 包含重复 id", 400, "CONFIG_INVALID");
@@ -120,20 +175,43 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
     if (!roleIds.has(artifact.owner)) {
       throw new AppError(`产物 ${artifact.id} 的角色 ${artifact.owner} 未定义`, 400, "CONFIG_INVALID");
     }
+    assertSafeArtifactPath(artifact.id, artifact.path);
     const subdirectory = subdirectories.get(artifact.owner);
-    const relativePath = subdirectory
-      ? path.posix.join(config.paths.outputs, subdirectory, artifact.path)
-      : path.posix.join(config.paths.outputs, artifact.path);
+    const ownerRoot = subdirectory
+      ? resolveWithinOutputRoot(outputRoot, subdirectory, `角色 ${artifact.owner} 的 output.subdirectory`)
+      : outputRoot;
+    const absolutePath = path.resolve(ownerRoot, ...artifact.path.split("/"));
+    if (!isWithin(outputRoot, absolutePath) || !isWithin(ownerRoot, absolutePath)) {
+      throw new AppError(
+        `产物 ${artifact.id} 的路径逃逸 owner 输出目录：${artifact.path}`,
+        400,
+        "CONFIG_INVALID",
+      );
+    }
+    assertOwnerNamespace(artifact.id, artifact.owner, outputRoot, absolutePath);
+    assertArtifactDoesNotOverlapControls(
+      artifact.id,
+      absolutePath,
+      [
+        path.join(projectRoot, "ai-native.yaml"),
+        path.join(projectRoot, ".ai-sdlc"),
+        path.join(projectRoot, ".git"),
+        agentRoot,
+      ],
+    );
+    const relativePath = path.relative(projectRoot, absolutePath).split(path.sep).join("/");
     return {
       id: artifact.id,
       owner: artifact.owner,
       relativePath,
-      absolutePath: safeProjectPath(projectRoot, relativePath)
+      absolutePath,
+      platformInjected: platformInjectedArtifactIds.has(artifact.id),
     };
   });
   const artifactByPath = new Map<string, string>();
   for (const artifact of artifacts) {
-    const existing = artifactByPath.get(artifact.absolutePath);
+    const physicalKey = comparablePhysicalPath(artifact.absolutePath);
+    const existing = artifactByPath.get(physicalKey);
     if (existing) {
       throw new AppError(
         `产物 ${existing} 与 ${artifact.id} 指向同一路径 ${artifact.relativePath}`,
@@ -141,13 +219,13 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
         "CONFIG_INVALID"
       );
     }
-    artifactByPath.set(artifact.absolutePath, artifact.id);
+    artifactByPath.set(physicalKey, artifact.id);
   }
   for (const [index, left] of artifacts.entries()) {
     for (const right of artifacts.slice(index + 1)) {
       if (
-        isWithin(left.absolutePath, right.absolutePath)
-        || isWithin(right.absolutePath, left.absolutePath)
+        comparablePathIsWithin(left.absolutePath, right.absolutePath)
+        || comparablePathIsWithin(right.absolutePath, left.absolutePath)
       ) {
         throw new AppError(
           `产物 ${left.id} 与 ${right.id} 的路径不能互相嵌套`,
@@ -183,6 +261,11 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
     }
   }
 
+  const releaseEvidenceValidationRequired = await hasCompleteReleaseEvidencePack(
+    projectRoot,
+    config.capabilities?.release_evidence === "v1",
+  );
+
   return {
     version: config.version,
     project: config.project,
@@ -191,6 +274,7 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
     agentClient: config.agent.client,
     agentDirectory: config.paths.agents,
     outputRoot,
+    releaseEvidenceValidationRequired,
     artifacts,
     configPath
   };
@@ -212,6 +296,7 @@ const changeContractInputPhaseIds = [
   "architecture",
   "implementation",
   "verification",
+  "release",
 ] as const;
 
 /**
@@ -219,9 +304,10 @@ const changeContractInputPhaseIds = [
  * Extend their parsed definition in memory so routing has one canonical input,
  * while leaving the project-owned ai-native.yaml byte-for-byte unchanged.
  */
-function registerPlatformChangeContract(config: RawConfig): void {
+function registerPlatformChangeContract(config: RawConfig, injected: Set<string>): void {
   if (!config.artifacts.some((artifact) => artifact.id === platformChangeContractArtifact.id)) {
     config.artifacts.push({ ...platformChangeContractArtifact });
+    injected.add(platformChangeContractArtifact.id);
   }
 
   const discovery = config.workflow.phases.find((phase) => phase.id === "discovery");
@@ -292,12 +378,13 @@ const platformEngineeringArtifacts = [
  * Treat these two platform capabilities as a backwards-compatible extension so
  * existing runs do not need their project-owned ai-native.yaml rewritten.
  */
-function registerPlatformDesignOutputs(config: RawConfig): void {
+function registerPlatformDesignOutputs(config: RawConfig, injected: Set<string>): void {
   const design = config.workflow.phases.find((phase) => phase.id === "design");
   if (!design) return;
   for (const artifact of platformDesignArtifacts) {
     if (!config.artifacts.some((candidate) => candidate.id === artifact.id)) {
       config.artifacts.push({ ...artifact });
+      injected.add(artifact.id);
     }
     if (!design.outputs.includes(artifact.id)) design.outputs.push(artifact.id);
   }
@@ -329,12 +416,13 @@ function registerPlatformVerificationDesignInput(config: RawConfig): void {
  * platform now treats the complete architecture pack as one canonical contract,
  * while keeping the project-owned YAML immutable for backwards compatibility.
  */
-function registerPlatformArchitectureOutputs(config: RawConfig): void {
+function registerPlatformArchitectureOutputs(config: RawConfig, injected: Set<string>): void {
   const architecture = config.workflow.phases.find((phase) => phase.id === "architecture");
   if (!architecture) return;
   for (const artifact of platformArchitectureArtifacts) {
     if (!config.artifacts.some((candidate) => candidate.id === artifact.id)) {
       config.artifacts.push({ ...artifact });
+      injected.add(artifact.id);
     }
     if (!architecture.outputs.includes(artifact.id)) architecture.outputs.push(artifact.id);
   }
@@ -349,6 +437,7 @@ function registerPlatformArchitectureOutputs(config: RawConfig): void {
 function registerPlatformEngineeringOutputs(
   config: RawConfig,
   hasRoleOutputSubdirectory: boolean,
+  injected: Set<string>,
 ): void {
   const implementation = config.workflow.phases.find((phase) => phase.id === "implementation");
   if (!implementation) return;
@@ -363,6 +452,7 @@ function registerPlatformEngineeringOutputs(
         ...artifact,
         path: hasRoleOutputSubdirectory ? path.posix.basename(artifact.path) : artifact.path,
       });
+      injected.add(artifact.id);
     }
     if (!implementation.outputs.includes(artifact.id)) implementation.outputs.push(artifact.id);
   }
@@ -375,8 +465,53 @@ function registerPlatformEngineeringOutputs(
   }
 }
 
+/**
+ * Released project definitions before the DevOps v1 pack did not route the
+ * immutable Run contract or the implementation provenance into Release. Keep
+ * the project-owned YAML unchanged while making the effective Release input
+ * contract complete and deterministic.
+ */
+function registerPlatformReleaseInputs(
+  config: RawConfig,
+  hasRoleOutputSubdirectory: boolean,
+): void {
+  const release = config.workflow.phases.find((phase) => phase.id === "release");
+  if (!release) return;
+  const releaseRunbook = config.artifacts.find((artifact) => artifact.id === "release-runbook");
+  if (
+    releaseRunbook
+    && hasRoleOutputSubdirectory
+    && releaseRunbook.path === "ai-native/operations/release-runbook.md"
+  ) {
+    releaseRunbook.path = "release-runbook.md";
+  }
+  const requiredInputs = [
+    "change-contract",
+    "implementation-notes",
+    "engineering-provenance",
+  ] as const;
+  for (const artifactId of requiredInputs) {
+    if (release.inputs.includes(artifactId)) continue;
+    if (artifactId === "change-contract") {
+      release.inputs.unshift(artifactId);
+      continue;
+    }
+    const testReportIndex = release.inputs.indexOf("test-report");
+    release.inputs.splice(
+      testReportIndex >= 0 ? testReportIndex : release.inputs.length,
+      0,
+      artifactId,
+    );
+  }
+}
+
 function safeProjectPath(projectRoot: string, relative: string): string {
-  if (path.isAbsolute(relative) || relative.includes("\\")) {
+  if (
+    path.isAbsolute(relative)
+    || /^[a-z]:\//iu.test(relative)
+    || relative.includes("\\")
+    || /[\u0000-\u001f\u007f]/u.test(relative)
+  ) {
     throw new AppError(`配置包含不安全路径：${relative}`, 400, "UNSAFE_CONFIG_PATH");
   }
   const resolved = path.resolve(projectRoot, relative);
@@ -386,18 +521,355 @@ function safeProjectPath(projectRoot: string, relative: string): string {
   return resolved;
 }
 
-async function readRoleSubdirectories(projectRoot: string, roleIds: Set<string>): Promise<Map<string, string>> {
+function assertSafeArtifactPath(artifactId: string, relative: string): void {
+  const segments = relative.split("/");
+  if (
+    !relative
+    || path.isAbsolute(relative)
+    || /^[a-z]:\//iu.test(relative)
+    || relative.includes("\\")
+    || /[\u0000-\u001f\u007f]/u.test(relative)
+    || segments.some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    throw new AppError(
+      `产物 ${artifactId} 包含不安全的原始路径：${JSON.stringify(relative)}`,
+      400,
+      "CONFIG_INVALID",
+    );
+  }
+}
+
+function normalizeRoleSubdirectory(roleId: string, relative: string): string {
+  const segments = relative.split("/");
+  if (segments.at(-1) === "") segments.pop();
+  if (
+    segments.length === 0
+    || path.isAbsolute(relative)
+    || /^[a-z]:\//iu.test(relative)
+    || relative.includes("\\")
+    || /[\u0000-\u001f\u007f]/u.test(relative)
+    || segments.some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    throw new AppError(
+      `角色 ${roleId} 的 output.subdirectory 无效`,
+      400,
+      "CONFIG_INVALID",
+    );
+  }
+  return segments.join("/");
+}
+
+function resolveWithinOutputRoot(outputRoot: string, relative: string, label: string): string {
+  const resolved = path.resolve(outputRoot, ...relative.split("/"));
+  if (!isWithin(outputRoot, resolved)) {
+    throw new AppError(`${label} 逃逸 paths.outputs`, 400, "CONFIG_INVALID");
+  }
+  return resolved;
+}
+
+function assertOwnerNamespace(
+  artifactId: string,
+  owner: string,
+  outputRoot: string,
+  absolutePath: string,
+): void {
+  const relative = path.relative(outputRoot, absolutePath).split(path.sep).join("/");
+  const [namespaceRoot, namespace] = relative.split("/");
+  if (namespaceRoot?.normalize("NFC").toLowerCase() !== "ai-native") return;
+  const expected = canonicalOwnerNamespaces[owner as keyof typeof canonicalOwnerNamespaces];
+  if (!expected || namespace?.normalize("NFC").toLowerCase() !== expected) {
+    throw new AppError(
+      `产物 ${artifactId} 不能写入其他角色的 ai-native 命名空间`,
+      400,
+      "CONFIG_INVALID",
+    );
+  }
+}
+
+function assertArtifactDoesNotOverlapControls(
+  artifactId: string,
+  absolutePath: string,
+  controls: string[],
+): void {
+  for (const control of controls) {
+    if (
+      comparablePathIsWithin(control, absolutePath)
+      || comparablePathIsWithin(absolutePath, control)
+    ) {
+      throw new AppError(
+        `产物 ${artifactId} 不能与项目控制路径重叠`,
+        400,
+        "CONFIG_INVALID",
+      );
+    }
+  }
+}
+
+function comparablePhysicalPath(value: string): string {
+  return path.resolve(value)
+    .split(path.sep)
+    .join("/")
+    .normalize("NFC")
+    .toLowerCase();
+}
+
+function comparablePathIsWithin(parent: string, child: string): boolean {
+  const comparableParent = comparablePhysicalPath(parent).replace(/\/+$/u, "");
+  const comparableChild = comparablePhysicalPath(child).replace(/\/+$/u, "");
+  return comparableChild === comparableParent
+    || comparableChild.startsWith(`${comparableParent}/`);
+}
+
+async function readRoleSubdirectories(
+  projectRoot: string,
+  outputRoot: string,
+  roleIds: Set<string>,
+): Promise<Map<string, string>> {
   const result = new Map<string, string>();
   for (const roleId of roleIds) {
     const configPath = path.join(projectRoot, ".ai-sdlc", "roles", roleId, "config.yaml");
-    if (!existsSync(configPath)) continue;
-    const roleConfig = z.object({
-      output: z.object({ subdirectory: z.string() }).optional()
-    }).passthrough().parse(YAML.parse(await readFile(configPath, "utf8")));
+    const stats = await lstatOrNull(configPath);
+    if (!stats) continue;
+    let roleConfig: { output?: { subdirectory: string } };
+    try {
+      await assertNoSymbolicLinkSegments(projectRoot, configPath);
+      if (!stats.isFile()) throw new Error("config.yaml 不是普通文件");
+      roleConfig = z.object({
+        output: z.object({ subdirectory: z.string().min(1) }).optional(),
+      }).passthrough().parse(YAML.parse(await readFile(configPath, "utf8")));
+    } catch (error) {
+      throw new AppError(
+        `角色 ${roleId} 的 config.yaml 格式或文件类型无效`,
+        400,
+        "CONFIG_INVALID",
+        error,
+      );
+    }
     if (roleConfig.output?.subdirectory) {
-      safeProjectPath(projectRoot, roleConfig.output.subdirectory);
-      result.set(roleId, roleConfig.output.subdirectory);
+      const normalized = normalizeRoleSubdirectory(roleId, roleConfig.output.subdirectory);
+      resolveWithinOutputRoot(outputRoot, normalized, `角色 ${roleId} 的 output.subdirectory`);
+      result.set(roleId, normalized);
     }
   }
   return result;
+}
+
+export async function assertDefinitionAgentFiles(
+  projectRoot: string,
+  definition: Pick<LoadedDefinition, "agentClient" | "agentDirectory">,
+): Promise<void> {
+  const parsedClient = definitionAgentClientSchema.safeParse(definition.agentClient);
+  if (!parsedClient.success) {
+    throw new AppError("agent.client 不是受支持的客户端", 400, "CONFIG_INVALID");
+  }
+  const contract = nativeAgentContracts[parsedClient.data];
+  if (definition.agentDirectory !== contract.directory) {
+    throw new AppError(
+      `agent.client ${parsedClient.data} 必须使用标准 Agent 目录 ${contract.directory}`,
+      400,
+      "CONFIG_INVALID",
+    );
+  }
+  const agentRoot = safeProjectPath(projectRoot, definition.agentDirectory);
+  await validateNativeAgentFiles(projectRoot, parsedClient.data, agentRoot, true);
+}
+
+async function validateNativeAgentFiles(
+  projectRoot: string,
+  agentClient: keyof typeof nativeAgentContracts,
+  agentRoot: string,
+  required: boolean,
+): Promise<void> {
+  const rootStats = await lstatOrNull(agentRoot);
+  if (!rootStats) {
+    if (!required) return;
+    throw new AppError(
+      `缺少 ${agentClient} 标准 Agent 目录`,
+      400,
+      "CONFIG_INVALID",
+    );
+  }
+  try {
+    await assertNoSymbolicLinkSegments(projectRoot, agentRoot);
+    if (!rootStats.isDirectory()) throw new Error("Agent 路径不是目录");
+    const contract = nativeAgentContracts[agentClient];
+    for (const roleId of expectedRoleIds) {
+      const rolePath = path.join(agentRoot, contract.fileName(roleId));
+      await assertNoSymbolicLinkSegments(projectRoot, rolePath);
+      const roleStats = await lstatOrNull(rolePath);
+      if (!roleStats?.isFile()) {
+        throw new Error(`缺少普通 Agent 文件 ${contract.fileName(roleId)}`);
+      }
+    }
+  } catch (error) {
+    throw new AppError(
+      `${agentClient} 的六角色 Agent 契约无效`,
+      400,
+      "CONFIG_INVALID",
+      error,
+    );
+  }
+}
+
+async function assertNoSymbolicLinkSegments(projectRoot: string, target: string): Promise<void> {
+  if (!isWithin(projectRoot, target)) throw new Error("路径逃逸项目目录");
+  const relative = path.relative(projectRoot, target);
+  let cursor = projectRoot;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    cursor = path.join(cursor, segment);
+    const stats = await lstatOrNull(cursor);
+    if (!stats) return;
+    if (stats.isSymbolicLink()) throw new Error(`路径经过符号链接：${segment}`);
+  }
+}
+
+async function validateConfiguredOutputRoot(
+  projectRoot: string,
+  outputRoot: string,
+): Promise<void> {
+  try {
+    await assertNoSymbolicLinkSegments(projectRoot, outputRoot);
+    const stats = await lstatOrNull(outputRoot);
+    if (stats && !stats.isDirectory()) throw new Error("paths.outputs 不是普通目录");
+  } catch (error) {
+    throw new AppError(
+      "paths.outputs 必须位于项目内，且现有路径链不能包含符号链接或非目录节点",
+      400,
+      "CONFIG_INVALID",
+      error,
+    );
+  }
+}
+
+async function lstatOrNull(target: string) {
+  try {
+    return await lstat(target);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return null;
+    if (code === "ENOTDIR") {
+      throw new AppError(
+        "配置路径的父节点不是目录",
+        400,
+        "CONFIG_INVALID",
+        error,
+      );
+    }
+    throw error;
+  }
+}
+
+const releaseEvidenceCapabilityMarker = "ai-sdlc:release-evidence-v1";
+
+async function hasCompleteReleaseEvidencePack(
+  projectRoot: string,
+  declaredByDefinition: boolean,
+): Promise<boolean> {
+  const requiredFiles = [
+    {
+      requiredFile: path.join(projectRoot, ".ai-sdlc", "roles", "devops", "config.yaml"),
+      semantic: (content: string) => z.object({
+        version: z.literal(1),
+        output: z.object({ subdirectory: z.literal("ai-native/operations") }),
+      }).passthrough().safeParse(YAML.parse(content)).success,
+    },
+    {
+      requiredFile: path.join(projectRoot, ".ai-sdlc", "roles", "devops", "workflow.md"),
+      semantic: (content: string) => {
+        const visible = stripHtmlComments(content);
+        return visible.length >= 1_200
+          && /^# DevOps workflow\s*$/mu.test(visible)
+          && hasSubstantiveMarkdownSections(visible, [
+            "Evidence contract",
+            "Completion gate",
+            "Execution boundary",
+          ])
+          && visible.includes("Human: <role/name reference>")
+          && visible.includes("SHA-256")
+          && visible.includes("Ready for human go/no-go");
+      },
+    },
+    {
+      requiredFile: path.join(projectRoot, ".ai-sdlc", "templates", "release-runbook.md"),
+      semantic: (content: string) => {
+        const visible = stripHtmlComments(content);
+        return visible.length >= 2_000
+          && /^# Release Runbook:/mu.test(visible)
+          && hasSubstantiveMarkdownSections(visible, [
+            "Status and immutable bindings",
+            "Trusted upstream input bindings",
+            "Evidence and supply-chain applicability",
+            "Release preconditions",
+            "Ordered rollout",
+            "Health and smoke checks",
+            "Monitoring and response",
+            "Rollback and recovery",
+            "Incident and escalation",
+            "Risks, exceptions, and open decisions",
+            "Human go/no-go and execution boundary",
+          ])
+          && visible.includes("**Human release owner:** Human:")
+          && visible.includes("**Rollback decision owner:** Human:")
+          && visible.includes("**Go/no-go owner and decision record location:** Human:")
+          && visible.includes("**Deployment execution:** Not executed by preparing this runbook.");
+      },
+    },
+  ];
+  const files = await Promise.all(requiredFiles.map(async ({ requiredFile, semantic }) => {
+    const stats = await lstatOrNull(requiredFile);
+    if (!stats?.isFile() || stats.isSymbolicLink()) {
+      return { requiredFile, valid: false, marked: false };
+    }
+    try {
+      await assertNoSymbolicLinkSegments(projectRoot, requiredFile);
+      const content = await readFile(requiredFile, "utf8");
+      const marked = content.includes(releaseEvidenceCapabilityMarker);
+      return {
+        requiredFile,
+        valid: marked && semantic(content),
+        marked,
+      };
+    } catch {
+      return { requiredFile, valid: false, marked: false };
+    }
+  }));
+  const capabilityClaimed = declaredByDefinition || files.some(({ marked }) => marked);
+  if (!capabilityClaimed) return false;
+
+  const invalid = files.filter(({ valid, marked }) => !valid || !marked);
+  if (invalid.length > 0) {
+    throw new AppError(
+      "Release evidence v1 已声明，但 DevOps 能力包缺失、非普通文件或版本标记不一致",
+      400,
+      "CONFIG_INVALID",
+      {
+        invalidFiles: invalid.map(({ requiredFile }) => path.relative(projectRoot, requiredFile)),
+      },
+    );
+  }
+  return true;
+}
+
+function hasSubstantiveMarkdownSections(content: string, headings: string[]): boolean {
+  const lines = content.split(/\r?\n/u);
+  for (const heading of headings) {
+    const start = lines.findIndex((line) => line.trim() === `## ${heading}`);
+    if (start < 0) return false;
+    const body: string[] = [];
+    for (const line of lines.slice(start + 1)) {
+      if (/^##\s+/u.test(line)) break;
+      body.push(line);
+    }
+    const meaningfulBody = stripHtmlComments(body.join("\n")).trim();
+    const distinctTokens = new Set(
+      (meaningfulBody.match(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu) ?? [])
+        .map((token) => token.toLocaleLowerCase("en-US")),
+    );
+    if (meaningfulBody.length < 20 || distinctTokens.size < 3) return false;
+  }
+  return true;
+}
+
+function stripHtmlComments(content: string): string {
+  return content.replace(/<!--[\s\S]*?-->/gu, "");
 }

@@ -1,6 +1,6 @@
 # End-to-End Workflow
 
-The default workflow moves one immutable Run Change Contract to release guidance. The six phases remain ordered, but a role runs only when its impact disposition requires new work. Skipping an Agent execution never skips the evidence or gate.
+The default workflow moves one immutable Run Change Contract to release guidance. Its six phases and owners are fixed in this V1, but a role runs only when its impact disposition requires new work. Skipping an Agent execution never skips the evidence or gate.
 
 ## Complete flow
 
@@ -35,8 +35,11 @@ flowchart TD
   ArchPartial --> Engineer
   ArchFull --> Engineer
   Engineer --> Tester["Tester: engineering evidence + independent verification"]
-  Tester --> DevOps["DevOps"]
-  DevOps --> ReleaseDecision{"Human release decision"}
+  Tester --> DevOps["DevOps prepares task-scoped runbook"]
+  DevOps --> ReleaseGate{"Release semantic gate"}
+  ReleaseGate -->|"blocked"| ReleaseRework["Name missing evidence and owner"]
+  ReleaseRework --> DevOps
+  ReleaseGate -->|"ready"| ReleaseDecision{"Human go/no-go decision"}
 ```
 
 Rectangles are roles or work products. Diamonds are gates or human decisions. A failed gate loops back to the role that owns the incomplete work. It never silently advances.
@@ -49,8 +52,8 @@ Rectangles are roles or work products. Diamonds are gates or human decisions. A 
 4. **Architecture Impact** — Choose `skip`, `reuse`, `partial`, or `full`. Architect runs only for partial/full; Full retains its human selection checkpoint.
 5. **Clearances to Software Engineer** — Product, design, and architecture provide complementary conditional contracts: what must change, which experience evidence applies, and which technical constraints remain active.
 6. **Software Engineer to Tester** — A Run-scoped evidence pack links the plan, task ledger, implementation, independent-test evidence, seven-lens review, provenance, known limits, and risks. Tester consumes its index, test evidence, review, and the applicable design spec while independently verifying the Change Contract criteria, targeted regressions, and every post-implementation deferred design validation.
-7. **Tester and Architecture to DevOps** — DevOps uses accepted decisions, NFRs, risks, the Run-scoped test report, and Tester's real command/report contract to prepare the runbook and authorized CI required check.
-8. **DevOps to human release decision** — The runbook and current required checks make release, observation, and rollback repeatable. A human still decides merge and release timing.
+7. **Verification and engineering evidence to DevOps** — DevOps consumes the current `change-contract`, accepted architecture evidence, `implementation-notes`, `engineering-provenance`, and Run-scoped `test-report`. It prepares only the task-scoped runbook, copies the exact selected-input artifact/path/content-hash manifest, and records missing provider evidence honestly.
+8. **DevOps through Release gate to human** — The semantic gate re-resolves current approved heads, requires a real Release execution, and checks Run/input hashes, revision/digest bindings, provenance and SBOM applicability, preconditions, ordered rollout, health/smoke checks, monitoring, rollback, recovery, incident escalation, risks, authority boundaries, and unresolved blockers. Passing means `Ready for human go/no-go`; the human decides and any merge/deployment/release action happens outside the Agent.
 
 ## Phase contract
 
@@ -61,9 +64,11 @@ Rectangles are roles or work products. Diamonds are gates or human decisions. A 
 | Architecture | Architect | Change Contract plus applicable product/design evidence | Architecture clearance and applicable indexed pack | Skip/reuse/partial evidence is valid, or full selection and acceptance evidence is complete. |
 | Implementation | Software Engineer | Change Contract plus active product, design, and architecture clearances | Seven Run-scoped outputs: `implementation-notes`, `implementation-plan`, `implementation-tasks`, `engineering-session-log`, `engineering-test-evidence`, `engineering-review`, and `engineering-provenance` | The confirmed implementation and necessary tests are complete; criterion coverage, independent-test evidence, seven-lens/adversarial review, and provenance have no unresolved blocker. |
 | Verification | Tester | Change Contract, applicable `design-spec` and acceptance/NFR evidence, `implementation-notes`, `engineering-test-evidence`, `engineering-review`, and an explicit Linked E2E Workspace binding when E2E is required | Run-scoped `test-report`; transient exploration notes and linked-workspace script hashes are supporting evidence | Acceptance, regression, risk, and deferred checks have current evidence; required scripts match a human-approved manifest and a platform-supervised real-browser run. MCP alone cannot satisfy E2E/CI. |
-| Release | DevOps | Accepted architecture, test evidence, and Tester command/report contract | `release-runbook`; authorized CI required-check configuration | Release, monitoring, rollback, and repeatable CI guidance are prepared. |
+| Release | DevOps | `change-contract`; accepted architecture/ADR/NFR/adversarial evidence; `implementation-notes`; `engineering-provenance`; `test-report` | Task-scoped `release-runbook` only | A real execution binds current approved input paths/hashes plus Run, implementation, verification, revision/digest, provenance/SBOM applicability, rollout, health/smoke, monitoring threshold/window/owner/action, rollback trigger/RTO/data compatibility/recovery verification, incident escalation, risks, and human owner with no unresolved blocker; semantic readiness does not approve or execute release. |
 
 The artifact lists in `ai-native.yaml` describe the complete evidence vocabulary. In a platform-managed Run, the persisted disposition and active execution contract resolve which input alternative is required. This avoids fake PRDs or design specs while keeping old initialized project definitions compatible. The CLI itself does not inspect or approve a gate.
+
+The three supported native clients are renderings of the same canonical role sources and consume this same phase/artifact contract. The Web new-project form can choose any of them, but Web execution still uses the local Codex runner. Persisted clearances, semantic gates, task-scoped path pins, Linked E2E bindings, exact-manifest reviews, and trusted runner events are Web capabilities; a direct IDE session must not invent or claim them.
 
 ## After Software Engineer: the human operating sequence
 
@@ -83,7 +88,8 @@ The root [complete workflow and node table](../../README.md#complete-workflow-an
 flowchart LR
   Intake["Approved implementation + authoritative spec"] --> Map["Risk and AC map"]
   Map --> Need{"Durable E2E required?"}
-  Need -->|"no"| Execute["Execute selected non-E2E verification"]
+  Need -->|"no"| NonE2E["Execute selected non-E2E verification"]
+  NonE2E --> Evidence["Capture applicable revision(s) and durable evidence"]
   Need -->|"yes"| Linked{"Linked E2E Workspace configured?"}
   Linked -->|"no"| Configure["Human configures separate root<br/>never infer legacy sibling"]
   Configure --> Preflight["Package + real Chromium + server preflight"]
@@ -97,10 +103,10 @@ flowchart LR
   Manifest --> ScriptReview{"Human approves exact manifest hash?"}
   ScriptReview -->|"changes"| Freeze
   ScriptReview -->|"approve scripts"| Browser["E2E Stage 3 · Platform standalone Playwright<br/>real headless Chromium; no MCP"]
-  Browser --> Execute["Capture dual revisions and durable evidence"]
-  Execute --> Report["Run-scoped test-report"]
+  Browser --> Evidence
+  Evidence --> Report["Run-scoped test-report"]
   Report --> Gate{"Verification gate"}
-  Gate -->|"pass"| DevOps["DevOps required-check/runbook handoff"]
+  Gate -->|"pass"| DevOps["DevOps runbook handoff"]
   Gate -->|"fail/blocked"| Owner["Classify and return to owning role"]
 ```
 
@@ -108,6 +114,8 @@ flowchart LR
 - **Exploration** is optional diagnostic work. Its “ran through” result cannot pass repeatable E2E/CI, and its actions/transcript/DOM dump never enter the author context.
 - **Crystallization and script review** start from frozen authoritative intent in a fresh Tier A/B subprocess that sees only the linked harness, not the product implementation or exploration. It writes allowlisted test/fixture assets and records exact hashes but cannot execute them until a human approves the current aggregate manifest hash.
 - **Execution** is platform-supervised, uses fixed argv with `shell: false`, manages the product server, and runs the approved linked scripts through standalone Playwright with a real headless Chromium. Tester records exact command/cwd, exit, product and E2E revisions, and report/trace/screenshot hashes. CI contains no MCP dependency.
+
+This trusted-event chain exists only when the Web platform performs it. Direct IDE work may produce locally reviewed test evidence under the same Tester contract, but it cannot claim platform-supervised mutation guards, manifest approval events, or a remote CI result.
 
 This is a Verification subflow, not a seventh phase. Tester owns the separately linked harness; Software Engineer continues to own product source, product-repository tests, and testability interfaces. Only a failure that changes those product assets returns through Implementation reapproval. Script-hash approval authorizes test execution only, not Verification or Release. See the [Tester guide](../roles/tester/README.md).
 
@@ -177,7 +185,9 @@ Change Contract
 → Architecture skip (no architecture impact) or reuse (accepted pack applies)
 → Software Engineer
 → Tester targeted regression
-→ Release decision
+→ DevOps task-scoped runbook
+→ Release semantic gate
+→ Human go/no-go decision
 ```
 
 This skips up to three Codex role executions, not their gates. The Run still needs observable fix criteria, an expected-behavior source, reproduction evidence when available, and targeted regression evidence. Production code never bypasses Verification.
@@ -215,9 +225,15 @@ flowchart TD
   TestEvidence --> Tester
   Review --> Tester
   Tester --> Report["test-report"]
+  CC --> DevOps["DevOps"]
   Architecture --> DevOps["DevOps"]
+  Notes --> DevOps
+  Provenance --> DevOps
   Report --> DevOps
-  DevOps --> Runbook["release-runbook"]
+  DevOps --> Runbook["task-scoped release-runbook"]
+  Runbook --> ReleaseGate{"Release semantic gate"}
+  ReleaseGate -->|"ready"| Human["Human go/no-go"]
+  ReleaseGate -->|"blocked"| ReleaseOwner["Named evidence owner"]
 ```
 
 The arrows show declared consumption, not file copying. The Architecture node groups the index and its active registered child artifacts. Every role resolves each artifact through `ai-native.yaml` and the artifact owner's role config. See [Configuration](../configuration/README.md).
@@ -231,9 +247,10 @@ AI roles prepare evidence and recommendations. Humans retain:
 - architecture option selection and final architecture acceptance;
 - trust-boundary placement, irreversible migration, vendor lock-in, and risk acceptance;
 - Tier C or Limited verification exceptions and other verification-gate waivers;
-- PR publication and merge decisions;
+- CI configuration, secret access, branch policy, and external provider authorization;
+- commit, push, PR publication, and merge decisions;
 - exceptions to failed or blocked verification;
-- final release approval and timing.
+- final release go/no-go, deployment, rollback, publication, and timing.
 
 An Agent should stop or mark its artifact blocked when one of these decisions changes the work materially.
 
@@ -252,7 +269,7 @@ The workflow is ordered, but it is not one-way.
 - A required Linked E2E Workspace is configured explicitly by a human; no Agent or platform scan may infer or reuse a sibling legacy project.
 - A Playwright MCP exploration success never bypasses the standalone runner or CI evidence contract.
 - Missing or invalid engineering test evidence, review findings, or provenance returns to Software Engineer; Tester still owns the independent Verification conclusion.
-- Missing deployment evidence returns to DevOps or the authorized operator.
+- Missing runbook content returns to DevOps. Missing external provider, CI, credential, or environment evidence returns to its named authorized human/system owner and keeps the runbook blocked; the Agent does not manufacture or fetch it through unauthorized side effects.
 
 When an upstream artifact changes, downstream roles should re-read it, record the new revision or date, and re-check affected gates. Do not assume an old approval covers changed content.
 
@@ -271,3 +288,7 @@ Child architecture artifacts listed as phase inputs give a role the exact eviden
 - [Software Engineer](../roles/software-engineer/README.md)
 - [Tester](../roles/tester/README.md)
 - [DevOps](../roles/devops/README.md)
+- [Six-role prompt eval](../../reviews/workflow-completion-v1/prompt-eval.md)
+- [SDLC standards map](../../reviews/workflow-completion-v1/sdlc-standards-map.md)
+
+The current Web runner is suitable only for local, trusted, disposable or otherwise recoverable project state. Its unauthenticated API and lack of OS process isolation are unresolved security-architecture blockers, so this workflow does not claim safe remote, multi-user, or untrusted-repository execution. The standards map records coverage and gaps; it is not a compliance certification.

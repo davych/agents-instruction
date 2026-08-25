@@ -24,9 +24,13 @@ flowchart LR
   Engineer -->|"Evidence index, test evidence, and review"| Tester
   E2E --> Tester
   Tester -->|"Product/testability defect only"| Engineer
+  Contract --> DevOps["DevOps"]
   Architect -->|"ADRs, NFRs, and premortem"| DevOps["DevOps"]
+  Engineer -->|"Implementation notes + provenance"| DevOps
   Tester -->|"Test report"| DevOps
-  DevOps -->|"Release runbook"| Human
+  DevOps -->|"Task-scoped release runbook"| ReleaseGate{"Release semantic gate"}
+  ReleaseGate -->|"blocked"| EvidenceOwner["Named evidence owner"]
+  ReleaseGate -->|"ready"| Human
 ```
 
 The diagram has three kinds of handoff:
@@ -44,7 +48,7 @@ The diagram has three kinds of handoff:
 | [Architect](architect/README.md) | Which system direction best fits the evidence and constraints? | Indexed architecture pack | Software Engineer, Tester, DevOps | Final option approval or risk acceptance |
 | [Software Engineer](software-engineer/README.md) | How do we implement the confirmed contracts with independently reviewable evidence? | Code, tests, and seven Run-scoped engineering evidence outputs | Tester | Product, design, architecture, verification-exception, publication, or merge decisions |
 | [Tester](tester/README.md) | What current, repeatable evidence shows the change meets acceptance and risk expectations? | Risk map, optional MCP exploration, linked-workspace E2E assets, standalone real-browser evidence, defects, and Run-scoped test report | Software Engineer for product/testability repair; DevOps and human release owner | Product source/tests, CI policy, requirement changes, or release approval |
-| [DevOps](devops/README.md) | How can the release be repeated, observed, and reversed? | Release runbook and operational evidence | Human release owner | Product approval or final release decision |
+| [DevOps](devops/README.md) | Is the current release path evidence-bound, repeatable, observable, and reversible enough for a human decision? | Task-scoped runbook and readiness evidence | Release semantic gate, named evidence owners, and human release owner | Deploy, CI/secrets/branch policy, commit/push/merge/publish, rollback execution, or go/no-go |
 
 ## One role, one Agent
 
@@ -58,6 +62,8 @@ The repository keeps six canonical Markdown role sources. Initialization install
 
 The initializer never installs all three sets together. For Codex, it generates TOML from the same canonical Markdown source in memory. `ai-native.yaml` records the selected client and its native directory.
 
+The selected native set supports direct IDE use. The Web new-project flow can choose the same three client targets, but real Web jobs still run through the local Codex runner; the selection controls generated discovery files, not the server's execution engine. Both modes share the six phase owners, role bodies, and registered artifact contract. Persisted clearances, semantic gates, task-scoped path pins, Linked E2E binding, exact manifest review, and trusted command events are Web capabilities and must not be claimed by a direct IDE session unless the platform produced them.
+
 ## Agent and role workflow
 
 The two files have different jobs:
@@ -65,7 +71,7 @@ The two files have different jobs:
 - The selected client's native Agent file under `paths.agents` defines the role identity, working rules, boundaries, output contract, and handoff.
 - `.ai-sdlc/roles/<role>/workflow.md` contains a longer step-by-step procedure when that role needs one.
 
-The role workflow is ordinary Markdown loaded explicitly by the Agent. It is not a second Agent, a duplicate role definition, or a client-native Skill. PM / BA, Designer, Architect, Software Engineer, and Tester have role packs. The Software Engineer pack has ordinary `references/*.md` for layered context, contract-driven planning, independent verification, seven-lens review, CI evidence, provenance, and replay guidance. The Tester pack has a Playwright E2E reference for the exploration/crystallization/execution boundary. DevOps keeps its shorter procedure in the Agent file.
+The role workflow is ordinary Markdown loaded explicitly by the Agent. It is not a second Agent, a duplicate role definition, or a client-native Skill. All six roles have supporting workflows; PM / BA, Designer, Architect, Software Engineer, and DevOps also have configs. The Software Engineer pack has ordinary `references/*.md` for layered context, contract-driven planning, independent verification, seven-lens review, CI evidence, provenance, and replay guidance. The Tester pack has a Playwright E2E reference for the exploration/crystallization/execution boundary. DevOps's config and workflow define its evidence inputs, task-scoped operations namespace, runbook procedure, semantic readiness, and side-effect boundary.
 
 Do not confuse a role workflow with `.ai-sdlc/workflows/default.md`: the default workflow controls the shared phase order and artifact resolution, while a role workflow explains how one role completes its own phase.
 
@@ -85,7 +91,9 @@ A valid `direct`, `skip`, or `reuse` disposition is also a durable handoff when 
 
 Software Engineer has a stricter delivery handoff. The Web execution owns seven Run-scoped outputs: `implementation-notes` as the evidence-pack index, `implementation-plan`, `implementation-tasks`, `engineering-session-log`, `engineering-test-evidence`, `engineering-review`, and `engineering-provenance`. Tester receives the index plus the test-evidence and review artifacts as declared inputs. Tier A or B test authoring may satisfy the normal engineering gate; Tier C or Limited requires a recorded human verification exception. The engineering review must cover all seven lenses and both adversarial passes. PR-ready provenance is evidence only; Software Engineer does not publish or merge the PR.
 
-Tester uses Playwright MCP only as optional transient exploration. For required E2E, a human explicitly configures a separate Linked E2E Workspace; the platform freezes spec-only intent, a fresh Tier A/B Test Author writes only there, a human approves the exact manifest hash, and the platform runs standalone Playwright with a real headless Chromium. The platform never infers a sibling or legacy repository. Product source, product-repository tests, and testability interfaces remain Software Engineer-owned; only changes to those assets return through refreshed engineering evidence and Implementation reapproval. DevOps or an authorized owner configures the required CI check.
+Tester uses Playwright MCP only as optional transient exploration. For required E2E, a human explicitly configures a separate Linked E2E Workspace; the platform freezes spec-only intent, a fresh Tier A/B Test Author writes only there, a human approves the exact manifest hash, and the platform runs standalone Playwright with a real headless Chromium. The platform never infers a sibling or legacy repository. Product source, product-repository tests, and testability interfaces remain Software Engineer-owned; only changes to those assets return through refreshed engineering evidence and Implementation reapproval. A direct IDE session can follow the same evidence schema but cannot claim these Web-trusted events or a CI pass.
+
+DevOps receives `change-contract`, applicable architecture evidence, `implementation-notes`, `engineering-provenance`, and `test-report`. It prepares the current task's `release-runbook` and leaves it blocked when required evidence is missing or contains unresolved placeholders. The Web Release gate requires a real execution, re-resolves the current approved heads, binds the exact Run plus selected artifact/path/content hashes, and validates revision/digest, provenance/SBOM applicability, rollout, health/smoke, monitoring, rollback/recovery, incident, risk, authority, and human-owner contracts. Passing prepares a human go/no-go; it does not configure CI, use secrets, deploy, merge, publish, or decide.
 
 ## Escalation rule
 
@@ -99,9 +107,10 @@ Return a missing decision to the owner who can make it:
 | Incorrect or incomplete implementation | Software Engineer |
 | Missing linked-workspace E2E evidence or a test-script defect | Tester/fresh Test Author plus exact manifest-hash review |
 | Product implementation, product-repository test, or testability-interface defect | Software Engineer, with refreshed engineering evidence and Implementation reapproval |
-| Environment, Playwright runner, CI report, or required-check issue | DevOps or authorized operator |
+| Environment, Playwright runner, CI report, credential, or required-check issue | Authorized human or repository/provider system; DevOps records the evidence gap and expected contract |
 | Tier C/Limited isolation or another engineering verification-gate exception | Human owner; Software Engineer records but cannot approve it |
-| Environment access, deployment step, monitoring, or rollback evidence | DevOps or authorized operator |
+| Missing runbook guidance | DevOps |
+| Environment access, deployment execution, monitoring-provider evidence, or rollback authorization | Authorized human/operator; DevOps records but does not perform the action |
 | Final scope, architecture acceptance, risk acceptance, or release approval | Human owner |
 
 No role should silently fill a material gap owned by another role.
@@ -119,3 +128,5 @@ Use these files for different questions:
 7. Registered output artifacts — current project evidence and decisions.
 
 See [Configuration](../configuration/README.md) for artifact path resolution and [End-to-End Workflow](../workflow/README.md) for the phase graph.
+
+The current Web platform is limited to local, trusted, disposable or otherwise recoverable project state. Its unauthenticated API and non-sandboxed Codex runner are unresolved security-architecture blockers for remote, multi-user, or untrusted-repository operation. See the [six-role prompt eval](../../reviews/workflow-completion-v1/prompt-eval.md) and [SDLC standards map](../../reviews/workflow-completion-v1/sdlc-standards-map.md); the latter records coverage and gaps, not compliance certification.

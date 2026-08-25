@@ -34,22 +34,59 @@ import type {
   VerificationE2eSelectionInput,
 } from "@/lib/types";
 import { parseApiErrorBody } from "@/lib/api-error";
+import {
+  ApiError,
+  hasStringFields,
+  isRecord,
+  parseCollectionResponse,
+  parseDirectResponse,
+  parseEntityResponse,
+} from "@/lib/api-response";
+
+export { ApiError } from "@/lib/api-response";
 
 const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:4100").replace(/\/$/, "");
 
-export class ApiError extends Error {
-  status: number;
-  code?: string;
-  details?: unknown;
+const isProject = (value: unknown): value is Project =>
+  hasStringFields(value, ["id", "name", "rootPath"]);
 
-  constructor(message: string, status: number, code?: string, details?: unknown) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-    this.code = code;
-    this.details = details;
-  }
-}
+const isWorkflowRun = (value: unknown): value is WorkflowRun =>
+  hasStringFields(value, ["id", "projectId", "title"]);
+
+const isTicketSummary = (value: unknown): value is TicketSummary =>
+  hasStringFields(value, ["id", "workflowRunId", "identifier", "title", "status"]) &&
+  ["backlog", "todo", "in_progress", "done"].includes(value.status as string);
+
+const isTicketDetail = (value: unknown): value is TicketDetail =>
+  isTicketSummary(value) &&
+  typeof (value as TicketSummary & { content?: unknown }).content === "string";
+
+const isRunEvent = (value: unknown): value is RunEvent =>
+  hasStringFields(value, ["id"]);
+
+const isWorkflowDefinition = (
+  value: unknown,
+): value is ProjectDetail["definition"] =>
+  isRecord(value) && Array.isArray(value.roles) && Array.isArray(value.phases);
+
+const isProjectDetail = (value: unknown): value is ProjectDetail =>
+  isRecord(value) &&
+  isProject(value.project) &&
+  isWorkflowDefinition(value.definition);
+
+const isPhaseRun = (value: unknown): boolean =>
+  hasStringFields(value, ["phaseId", "status"]) &&
+  ["artifacts", "reviews", "executions", "events"].every((field) =>
+    Array.isArray(value[field]),
+  );
+
+const isRunDetail = (value: unknown): value is RunDetail =>
+  isRecord(value) &&
+  isWorkflowRun(value.run) &&
+  isProject(value.project) &&
+  isWorkflowDefinition(value.definition) &&
+  Array.isArray(value.phases) &&
+  value.phases.every(isPhaseRun);
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
@@ -61,7 +98,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         ...init?.headers,
       },
     });
-  } catch {
+  } catch (error) {
+    if (init?.signal?.aborted) throw error;
     throw new ApiError(`无法连接本地服务（${API_URL}）`, 0);
   }
 
@@ -118,16 +156,20 @@ export const api = {
   },
 
   async listProjects(): Promise<Project[]> {
-    const response = await request<{ projects: Project[] } | Project[]>("/api/projects");
-    return Array.isArray(response) ? response : response.projects ?? [];
+    const response = await request<unknown>("/api/projects");
+    return parseCollectionResponse(response, "projects", "项目列表响应", isProject);
   },
 
-  async createProject(input: CreateProjectInput): Promise<Project> {
-    const response = await request<{ project: Project } | Project>("/api/projects", {
+  async createProject(
+    input: CreateProjectInput,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<Project> {
+    const response = await request<unknown>("/api/projects", {
       method: "POST",
       body: JSON.stringify(input),
+      signal: options.signal,
     });
-    return "project" in response ? response.project : response;
+    return parseEntityResponse(response, "project", "项目响应", isProject);
   },
 
   async getE2eWorkspace(projectId: string): Promise<E2eWorkspace | null> {
@@ -160,30 +202,34 @@ export const api = {
     return "readiness" in response ? response.readiness : response;
   },
 
-  getProject(projectId: string): Promise<ProjectDetail> {
-    return request<ProjectDetail>(`/api/projects/${encodeURIComponent(projectId)}`);
+  async getProject(projectId: string): Promise<ProjectDetail> {
+    const response = await request<unknown>(
+      `/api/projects/${encodeURIComponent(projectId)}`,
+    );
+    return parseDirectResponse(response, "项目详情响应", isProjectDetail);
   },
 
   async listRuns(projectId: string): Promise<WorkflowRun[]> {
-    const response = await request<{ runs: WorkflowRun[] } | WorkflowRun[]>(
+    const response = await request<unknown>(
       `/api/projects/${encodeURIComponent(projectId)}/runs`,
     );
-    return Array.isArray(response) ? response : response.runs ?? [];
+    return parseCollectionResponse(response, "runs", "工作流列表响应", isWorkflowRun);
   },
 
   async createRun(projectId: string, input: CreateRunInput): Promise<WorkflowRun> {
-    const response = await request<{ run: WorkflowRun } | WorkflowRun>(
+    const response = await request<unknown>(
       `/api/projects/${encodeURIComponent(projectId)}/runs`,
       {
         method: "POST",
         body: JSON.stringify(input),
       },
     );
-    return "run" in response ? response.run : response;
+    return parseEntityResponse(response, "run", "工作流响应", isWorkflowRun);
   },
 
-  getRun(runId: string): Promise<RunDetail> {
-    return request<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`);
+  async getRun(runId: string): Promise<RunDetail> {
+    const response = await request<unknown>(`/api/runs/${encodeURIComponent(runId)}`);
+    return parseDirectResponse(response, "工作流详情响应", isRunDetail);
   },
 
   async getVerificationE2eFlow(runId: string): Promise<VerificationE2eFlow> {
@@ -259,17 +305,17 @@ export const api = {
   },
 
   async listTickets(runId: string): Promise<TicketSummary[]> {
-    const response = await request<{ tickets: TicketSummary[] } | TicketSummary[]>(
+    const response = await request<unknown>(
       `/api/runs/${encodeURIComponent(runId)}/tickets`,
     );
-    return Array.isArray(response) ? response : response.tickets ?? [];
+    return parseCollectionResponse(response, "tickets", "工单列表响应", isTicketSummary);
   },
 
   async getTicket(runId: string, ticketId: string): Promise<TicketDetail> {
-    const response = await request<{ ticket: TicketDetail } | TicketDetail>(
+    const response = await request<unknown>(
       `/api/runs/${encodeURIComponent(runId)}/tickets/${encodeURIComponent(ticketId)}`,
     );
-    return "ticket" in response ? response.ticket : response;
+    return parseEntityResponse(response, "ticket", "工单详情响应", isTicketDetail);
   },
 
   async updateTicketStatus(
@@ -277,11 +323,11 @@ export const api = {
     ticketId: string,
     status: TicketStatus,
   ): Promise<TicketSummary> {
-    const response = await request<{ ticket: TicketSummary } | TicketSummary>(
+    const response = await request<unknown>(
       `/api/runs/${encodeURIComponent(runId)}/tickets/${encodeURIComponent(ticketId)}/status`,
       { method: "PATCH", body: JSON.stringify({ status }) },
     );
-    return "ticket" in response ? response.ticket : response;
+    return parseEntityResponse(response, "ticket", "工单状态响应", isTicketSummary);
   },
 
   async executePhase(
@@ -381,9 +427,9 @@ export const api = {
   },
 
   async getExecutionEvents(executionId: string): Promise<RunEvent[]> {
-    const response = await request<{ events: RunEvent[] } | RunEvent[]>(
+    const response = await request<unknown>(
       `/api/executions/${encodeURIComponent(executionId)}/events`,
     );
-    return Array.isArray(response) ? response : response.events ?? [];
+    return parseCollectionResponse(response, "events", "执行事件响应", isRunEvent);
   },
 };

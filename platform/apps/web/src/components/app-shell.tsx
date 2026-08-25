@@ -13,9 +13,11 @@ interface Crumb {
 export function AppShell({
   children,
   crumbs = [],
+  onHome,
 }: {
   children: ReactNode;
   crumbs?: Crumb[];
+  onHome: () => void;
 }) {
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-slate-50">
@@ -27,10 +29,7 @@ export function AppShell({
         <div className="mx-auto flex h-16 max-w-[1480px] items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
           <button
             type="button"
-            onClick={() => {
-              window.history.pushState({}, "", window.location.pathname);
-              window.dispatchEvent(new PopStateEvent("popstate"));
-            }}
+            onClick={onHome}
             className="group flex items-center gap-3 rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-4"
           >
             <span className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-slate-950 text-white shadow-sm transition group-hover:-rotate-3 group-hover:scale-105">
@@ -59,7 +58,10 @@ export function AppShell({
                       {crumb.label}
                     </button>
                   ) : (
-                    <span className="max-w-64 truncate px-1.5 font-medium text-slate-800">
+                    <span
+                      aria-current={index === crumbs.length - 1 ? "page" : undefined}
+                      className="max-w-64 truncate px-1.5 font-medium text-slate-800"
+                    >
                       {crumb.label}
                     </span>
                   )}

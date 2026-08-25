@@ -528,6 +528,7 @@ export interface CreateProjectInput {
   summary: string;
   rootPath: string;
   initialize: boolean;
+  agentClient?: "codex" | "claude" | "copilot";
 }
 
 export type CreateRunInput =

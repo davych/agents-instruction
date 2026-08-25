@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +9,7 @@ import test from "node:test";
 import { run } from "../bin/cli.js";
 
 const temporaryDirectories = [];
+const transactionMarkerName = ".ai-native-sdlc-init-transaction.json";
 const roleIds = ["pm-ba", "designer", "architect", "software-engineer", "tester", "devops"];
 const engineeringEvidenceKeys = [
   "implementation-notes",
@@ -67,7 +68,7 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
     new RegExp(`owner: software-engineer\\n      inputs: \\[change-contract[^\\n]+\\]\\n      outputs: \\[${engineeringEvidenceKeys.join(", ")}\\]`, "u")
   );
   assert.match(config, /owner: tester\n      inputs: \[change-contract, prd, user-stories, design-spec, architecture, architecture-nfrs, implementation-notes, engineering-test-evidence, engineering-review\]/u);
-  assert.match(config, /owner: devops\n      inputs: \[architecture, architecture-adrs, architecture-nfrs, architecture-adversarial, test-report\]/u);
+  assert.match(config, /owner: devops\n      inputs: \[change-contract, architecture, architecture-adrs, architecture-nfrs, architecture-adversarial, implementation-notes, engineering-provenance, test-report\]/u);
   assert.match(config, /id: design-baseline, owner: designer, path: DESIGN_BASELINE\.md/u);
   assert.match(config, /id: design-spec, owner: designer, path: design-spec\.md/u);
   assert.match(config, /id: architecture, owner: architect, path: architecture\.md/u);
@@ -624,7 +625,377 @@ test("init rejects unsafe output paths before writing anything", async () => {
   );
   assert.equal(existsSync(path.join(collisionTarget, "ai-native.yaml")), false);
   assert.equal(existsSync(path.join(collisionTarget, ".ai-sdlc")), false);
+  assert.equal(await readFile(path.join(collisionTarget, ".codex"), "utf8"), "not a directory");
 });
+
+test("AC4/Tier A: an aborted init preserves pre-existing files and removes only its own output", async () => {
+  const target = await temporaryDirectory();
+  const sentinel = path.join(target, "project-owned.md");
+  await writeFile(sentinel, "keep this project-owned content", "utf8");
+  const controller = new AbortController();
+  controller.abort(new Error("test cancellation"));
+
+  await assert.rejects(
+    run(["init", target], {
+      signal: controller.signal,
+      prompt: answers(["Cancelled project", "Must not write", "3", "", ""]),
+      output: () => {}
+    }),
+    /abort|cancel/i,
+  );
+
+  assert.equal(await readFile(sentinel, "utf8"), "keep this project-owned content");
+  assert.equal(existsSync(path.join(target, "ai-native.yaml")), false);
+  assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
+  assert.equal(existsSync(path.join(target, ".codex")), false);
+  assert.equal(existsSync(path.join(target, transactionMarkerName)), false);
+});
+
+test("AC4 adversarial: abort after the first created file rolls back the partial transaction", async () => {
+  const target = await temporaryDirectory();
+  const sentinel = path.join(target, "project-owned.md");
+  await writeFile(sentinel, "keep this project-owned content", "utf8");
+  const controller = new AbortController();
+  const operation = run(["init", target], {
+    signal: controller.signal,
+    prompt: answers(["Cancelled project", "Abort after writing starts", "3", "", ""]),
+    output: () => {}
+  });
+
+  while (!existsSync(path.join(target, "ai-native.yaml"))) {
+    const completed = await Promise.race([
+      operation.then(() => true, () => true),
+      new Promise((resolve) => setImmediate(() => resolve(false)))
+    ]);
+    assert.equal(completed, false, "initializer completed before the mid-write abort could be injected");
+  }
+  controller.abort(new Error("mid-write cancellation"));
+  await assert.rejects(operation, /abort|cancel/i);
+
+  assert.equal(await readFile(sentinel, "utf8"), "keep this project-owned content");
+  assert.equal(existsSync(path.join(target, "ai-native.yaml")), false);
+  assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
+  assert.equal(existsSync(path.join(target, ".codex")), false);
+  assert.equal(existsSync(path.join(target, transactionMarkerName)), false);
+});
+
+test("AC4 adversarial: rollback preserves a concurrently replaced inode and reports the mismatch", async () => {
+  const target = await temporaryDirectory();
+  const destination = path.join(target, "ai-native.yaml");
+  const replacement = path.join(target, "replacement.yaml");
+  const replacementContent = "externally replaced content\n";
+  await writeFile(replacement, replacementContent, "utf8");
+
+  const controller = new AbortController();
+  const nativeThrowIfAborted = controller.signal.throwIfAborted.bind(controller.signal);
+  let replaced = false;
+  controller.signal.throwIfAborted = () => {
+    if (!replaced && existsSync(destination)) {
+      renameSync(replacement, destination);
+      replaced = true;
+      controller.abort(new Error("abort after concurrent replacement"));
+    }
+    nativeThrowIfAborted();
+  };
+
+  await assert.rejects(
+    run(["init", target], {
+      signal: controller.signal,
+      prompt: answers(["Replaced project", "Preserve the replacement", "3", "", ""]),
+      output: () => {}
+    }),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.match(error.message, /无法完整回滚/u);
+      assert.match(error.message, /inode 不匹配/u);
+      assert.match(error.errors[1].errors[0].message, /inode 不匹配/u);
+      return true;
+    },
+  );
+
+  assert.equal(replaced, true);
+  assert.equal(await readFile(destination, "utf8"), replacementContent);
+});
+
+test("AC4 adversarial: rollback preserves content modified in place on the same inode", async () => {
+  const target = await temporaryDirectory();
+  const destination = path.join(target, "ai-native.yaml");
+  const replacementContent = "EXTERNAL IN-PLACE EDIT\n";
+  const controller = new AbortController();
+  const nativeThrowIfAborted = controller.signal.throwIfAborted.bind(controller.signal);
+  let modified = false;
+
+  controller.signal.throwIfAborted = () => {
+    if (!modified && existsSync(destination)) {
+      const before = lstatSync(destination, { bigint: true });
+      writeFileSync(destination, replacementContent, "utf8");
+      const after = lstatSync(destination, { bigint: true });
+      assert.equal(after.dev, before.dev);
+      assert.equal(after.ino, before.ino);
+      modified = true;
+      controller.abort(new Error("abort after same-inode content modification"));
+    }
+    nativeThrowIfAborted();
+  };
+
+  await assert.rejects(
+    run(["init", target], {
+      signal: controller.signal,
+      prompt: answers(["Modified project", "Preserve the external edit", "3", "", ""]),
+      output: () => {}
+    }),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.match(error.message, /无法完整回滚/u);
+      assert.match(error.message, /内容已修改/u);
+      assert.ok(error.errors[1].errors.some((failure) => /内容已修改/u.test(failure.message)));
+      return true;
+    },
+  );
+
+  assert.equal(modified, true);
+  assert.equal(await readFile(destination, "utf8"), replacementContent);
+});
+
+test("AC4 adversarial: abort observed after all files publish but before commit rolls back", async () => {
+  const target = await temporaryDirectory();
+  const markerPath = path.join(target, transactionMarkerName);
+  const controller = new AbortController();
+  const nativeThrowIfAborted = controller.signal.throwIfAborted.bind(controller.signal);
+  let postPublishChecks = 0;
+  controller.signal.throwIfAborted = () => {
+    if (!controller.signal.aborted && existsSync(markerPath)) {
+      const journal = JSON.parse(readFileSync(markerPath, "utf8"));
+      const allPublished = journal.entries.every((entry) =>
+        existsSync(path.join(target, entry.path)));
+      if (allPublished) {
+        postPublishChecks += 1;
+        if (postPublishChecks === 2) {
+          controller.abort(new Error("abort inside pre-commit cleanup"));
+        }
+      }
+    }
+    nativeThrowIfAborted();
+  };
+
+  await assert.rejects(
+    run(["init", target], {
+      signal: controller.signal,
+      prompt: answers(["Commit race", "Abort before marker commit", "3", "", ""]),
+      output: () => {}
+    }),
+    /abort inside pre-commit cleanup/u,
+  );
+
+  assert.equal(postPublishChecks, 2);
+  assert.equal(existsSync(path.join(target, "ai-native.yaml")), false);
+  assert.equal(existsSync(markerPath), false);
+  assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
+  assert.equal(existsSync(path.join(target, ".codex")), false);
+  assert.equal(
+    (await readdir(target)).some((name) => /^\.ai-native-sdlc-init-/u.test(name)),
+    false,
+  );
+});
+
+for (const { signalName, exitCode } of [
+  { signalName: "SIGINT", exitCode: 130 },
+  { signalName: "SIGTERM", exitCode: 143 }
+]) {
+  test(`direct CLI converts ${signalName} into an abort and exits after cleanup`, {
+    skip: process.platform === "win32"
+  }, async () => {
+    const target = await temporaryDirectory();
+    const child = spawn(process.execPath, [path.join(process.cwd(), "bin/cli.js"), "init", target], {
+      cwd: process.cwd(),
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    let stdoutText = "";
+    let stderrText = "";
+    let signalSent = false;
+
+    const result = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error(`direct CLI did not finish after ${signalName}`));
+      }, 5_000);
+      child.stdout.on("data", (chunk) => {
+        stdoutText += chunk;
+        if (!signalSent && stdoutText.includes("项目名称")) {
+          signalSent = true;
+          child.kill(signalName);
+        }
+      });
+      child.stderr.on("data", (chunk) => {
+        stderrText += chunk;
+      });
+      child.once("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.once("close", (code, signal) => {
+        clearTimeout(timeout);
+        resolve({ code, signal });
+      });
+    });
+
+    assert.equal(signalSent, true);
+    assert.deepEqual(result, { code: exitCode, signal: null });
+    assert.match(stderrText, new RegExp(signalName, "u"));
+    assert.equal(existsSync(path.join(target, "ai-native.yaml")), false);
+    assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
+  });
+}
+
+test("an init killed after its first published file is recovered and can be retried", {
+  skip: process.platform === "win32"
+}, async () => {
+  const target = await temporaryDirectory();
+  const interruption = await killInitializerAfterFirstPublishedFile(target);
+
+  assert.deepEqual(interruption, { code: null, signal: "SIGKILL" });
+  assert.equal(existsSync(path.join(target, transactionMarkerName)), true);
+  assert.equal(existsSync(path.join(target, "ai-native.yaml")), true);
+
+  assert.equal(await run(["init", target, "--client", "codex"], {
+    prompt: answers(["Recovered project", "Retry after SIGKILL", "", ""]),
+    output: () => {}
+  }), 0);
+
+  assert.equal(existsSync(path.join(target, transactionMarkerName)), false);
+  assert.match(await readFile(path.join(target, "ai-native.yaml"), "utf8"), /name: "Recovered project"/u);
+  assert.equal(
+    (await readdir(target)).some((name) => /^\.ai-native-sdlc-init-.*\.staging$/u.test(name)),
+    false,
+  );
+});
+
+test("an unjournaled initializer staging remainder fails closed before prompting", async () => {
+  const target = await temporaryDirectory();
+  const remainder = path.join(
+    target,
+    ".ai-native-sdlc-init-550e8400-e29b-41d4-a716-446655440000.staging",
+  );
+  await mkdir(remainder);
+  await writeFile(path.join(remainder, "payload-0000"), "unverified staged bytes\n", "utf8");
+  let promptCount = 0;
+
+  await assert.rejects(
+    run(["init", target, "--client", "codex"], {
+      prompt: async () => {
+        promptCount += 1;
+        return "";
+      },
+      output: () => {},
+    }),
+    /恢复已拒绝.*没有可验证事务 marker.*原样保留/u,
+  );
+
+  assert.equal(promptCount, 0);
+  assert.equal(await readFile(path.join(remainder, "payload-0000"), "utf8"), "unverified staged bytes\n");
+});
+
+test("recovery preserves externally modified transaction content and fails closed", {
+  skip: process.platform === "win32"
+}, async () => {
+  const target = await temporaryDirectory();
+  await killInitializerAfterFirstPublishedFile(target);
+  const markerPath = path.join(target, transactionMarkerName);
+  const journal = JSON.parse(await readFile(markerPath, "utf8"));
+  const stagingPath = path.join(target, journal.staging.path);
+  const stagedEntriesBefore = (await readdir(stagingPath)).sort();
+  const modifiedContent = "externally modified after SIGKILL\n";
+  await writeFile(path.join(target, "ai-native.yaml"), modifiedContent, "utf8");
+  let promptCount = 0;
+
+  await assert.rejects(
+    run(["init", target, "--client", "codex"], {
+      prompt: async () => {
+        promptCount += 1;
+        return "";
+      },
+      output: () => {}
+    }),
+    /恢复已拒绝.*内容已修改/u,
+  );
+
+  assert.equal(promptCount, 0);
+  assert.equal(await readFile(path.join(target, "ai-native.yaml"), "utf8"), modifiedContent);
+  assert.equal(existsSync(markerPath), true);
+  assert.deepEqual((await readdir(stagingPath)).sort(), stagedEntriesBefore);
+});
+
+async function killInitializerAfterFirstPublishedFile(target) {
+  const markerPath = path.join(target, transactionMarkerName);
+  const firstOutput = path.join(target, "ai-native.yaml");
+  const child = spawn(process.execPath, [
+    path.join(process.cwd(), "bin/cli.js"),
+    "init",
+    target,
+    "--client",
+    "codex"
+  ], {
+    cwd: process.cwd(),
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  const promptAnswers = [
+    { marker: "项目名称", answer: "Killed project\n" },
+    { marker: "项目简介", answer: "Interrupted before commit\n" },
+    { marker: "Designer 额外输入", answer: "\n" },
+    { marker: "Designer 组件清单", answer: "\n" }
+  ];
+  let answeredPrompts = 0;
+  let stdoutText = "";
+  let stderrText = "";
+  let killSent = false;
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (operation) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearInterval(poll);
+      operation();
+    };
+    const poll = setInterval(() => {
+      if (killSent) return;
+      if (!existsSync(markerPath) || !existsSync(firstOutput)) return;
+      const stopped = child.kill("SIGSTOP");
+      killSent = stopped && child.kill("SIGKILL");
+    }, 1);
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(() => reject(new Error(
+        `initializer did not reach a recoverable published file; stdout=${stdoutText}; stderr=${stderrText}`,
+      )));
+    }, 15_000);
+
+    child.stdout.on("data", (chunk) => {
+      stdoutText += chunk;
+      while (answeredPrompts < promptAnswers.length
+        && stdoutText.includes(promptAnswers[answeredPrompts].marker)) {
+        child.stdin.write(promptAnswers[answeredPrompts].answer);
+        answeredPrompts += 1;
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      stderrText += chunk;
+    });
+    child.once("error", (error) => finish(() => reject(error)));
+    child.once("close", (code, signal) => {
+      finish(() => {
+        if (!killSent) {
+          reject(new Error(
+            `initializer exited before SIGKILL; code=${code}; signal=${signal}; stderr=${stderrText}`,
+          ));
+          return;
+        }
+        resolve({ code, signal });
+      });
+    });
+  });
+}
 
 function answers(values, questions) {
   const queue = [...values];

@@ -74,6 +74,8 @@ export interface VerificationWorkspaceRevision {
 export interface VerificationWorkspaceProtectionInput {
   projectRoot: string;
   selectedOutputPaths: string[];
+  /** Release has no runtime-evidence write allowance and snapshots generated directories too. */
+  mode?: "verification" | "release";
   /** Canonical in-project git-dir/common-dir values resolved before the guard. */
   protectedGitMetadataPaths?: string[];
   maxBytes?: number;
@@ -105,13 +107,16 @@ interface WorkspaceScanPolicy {
   allowedRoots: string[];
   allowedAncestors: Set<string>;
   excludedRelativeDirectories: string[];
+  excludedDirectoryNames: Set<string>;
   maxBytes: number;
   maxEntries: number;
 }
 
 const DEFAULT_MAX_VERIFICATION_SNAPSHOT_BYTES = 512 * 1024 * 1024;
 const DEFAULT_MAX_VERIFICATION_SNAPSHOT_ENTRIES = 200_000;
-const excludedDirectoryNames = new Set<string>(VERIFICATION_SNAPSHOT_EXCLUDED_DIRECTORY_NAMES);
+const verificationExcludedDirectoryNames = new Set<string>(
+  VERIFICATION_SNAPSHOT_EXCLUDED_DIRECTORY_NAMES,
+);
 
 /**
  * Calculates the exact revision token used by the Verification mutation guard.
@@ -225,8 +230,17 @@ async function resolveWorkspacePolicy(
   const projectRoot = await realpath(requestedProjectRoot);
   const selectedOutputPaths = await Promise.all(input.selectedOutputPaths.map((candidate) =>
     resolveProtectedCandidate(requestedProjectRoot, projectRoot, candidate)));
-  const runtimeEvidenceRoots = VERIFICATION_RUNTIME_EVIDENCE_PATHS.map((relativePath) =>
-    path.join(projectRoot, relativePath));
+  const runtimeEvidenceRoots = (input.mode === "release" ? [] : VERIFICATION_RUNTIME_EVIDENCE_PATHS)
+    .map((relativePath) =>
+      path.join(projectRoot, relativePath));
+  const policyExcludedDirectoryNames = input.mode === "release"
+    ? new Set<string>()
+    : new Set(verificationExcludedDirectoryNames);
+  const excludedRelativeDirectories = input.mode === "release"
+    ? []
+    : VERIFICATION_SNAPSHOT_EXCLUDED_RELATIVE_DIRECTORIES.map(
+      (relativePath) => path.resolve(projectRoot, ...relativePath.split("/")),
+    );
   const protectedGitMetadataPaths = await Promise.all(
     (input.protectedGitMetadataPaths ?? []).map((candidate) =>
       resolveProtectedCandidate(requestedProjectRoot, projectRoot, candidate)),
@@ -248,6 +262,8 @@ async function resolveWorkspacePolicy(
     selectedOutputPaths,
     runtimeEvidenceRoots,
     protectedGitMetadataPaths,
+    excludedDirectoryNames: policyExcludedDirectoryNames,
+    excludedRelativeDirectories,
   });
 
   const allowedAncestors = new Set<string>();
@@ -265,9 +281,8 @@ async function resolveWorkspacePolicy(
     runtimeEvidenceRoots,
     allowedRoots,
     allowedAncestors,
-    excludedRelativeDirectories: VERIFICATION_SNAPSHOT_EXCLUDED_RELATIVE_DIRECTORIES.map(
-      (relativePath) => path.resolve(projectRoot, ...relativePath.split("/")),
-    ),
+    excludedRelativeDirectories,
+    excludedDirectoryNames: policyExcludedDirectoryNames,
     maxBytes: input.maxBytes ?? DEFAULT_MAX_VERIFICATION_SNAPSHOT_BYTES,
     maxEntries: input.maxEntries ?? DEFAULT_MAX_VERIFICATION_SNAPSHOT_ENTRIES,
   };
@@ -307,6 +322,8 @@ async function assertSelectedOutputPolicy(input: {
   selectedOutputPaths: string[];
   runtimeEvidenceRoots: string[];
   protectedGitMetadataPaths: string[];
+  excludedDirectoryNames: Set<string>;
+  excludedRelativeDirectories: string[];
 }): Promise<void> {
   const staticControlRoots = [
     "ai-native.yaml",
@@ -317,9 +334,7 @@ async function assertSelectedOutputPolicy(input: {
     ".claude",
     ".github",
   ].map((relativePath) => path.join(input.projectRoot, relativePath));
-  const exactExcludedRoots = VERIFICATION_SNAPSHOT_EXCLUDED_RELATIVE_DIRECTORIES.map(
-    (relativePath) => path.join(input.projectRoot, ...relativePath.split("/")),
-  );
+  const exactExcludedRoots = input.excludedRelativeDirectories;
 
   for (const selectedOutput of input.selectedOutputPaths) {
     const relativePath = path.relative(input.projectRoot, selectedOutput);
@@ -332,7 +347,7 @@ async function assertSelectedOutputPolicy(input: {
       ...exactExcludedRoots.map((candidate) => ({ candidate, label: "snapshot exclusion" })),
     ].find(({ candidate }) => pathsOverlap(selectedOutput, candidate));
     const forbiddenComponent = components.find((component) =>
-      component === ".git" || excludedDirectoryNames.has(component));
+      component === ".git" || input.excludedDirectoryNames.has(component));
     const protectedEnvironment = components.length > 0
       && /^\.env(?:\.|$)/u.test(rootName);
     const existingStats = await lstatOrNull(selectedOutput);
@@ -489,7 +504,7 @@ function isExcludedPath(
   isDirectory: boolean,
 ): boolean {
   const name = path.basename(absolutePath);
-  if (isDirectory && excludedDirectoryNames.has(name)) return true;
+  if (isDirectory && policy.excludedDirectoryNames.has(name)) return true;
   return isDirectory && policy.excludedRelativeDirectories.some(
     (excludedRoot) => isWithin(excludedRoot, absolutePath),
   );
