@@ -121,10 +121,12 @@ import {
   validateEngineeringEvidencePack,
 } from "./engineering-evidence-validator.js";
 import {
+  assertDefinitionAgentFiles,
   loadDefinition,
   type LoadedArtifactDefinition,
   type LoadedDefinition,
 } from "./definition-loader.js";
+import { validateReleaseEvidence } from "./release-evidence-validator.js";
 import type { FigmaMcpIntegration } from "./figma-mcp-integration.js";
 import { initializeCodexProject } from "./project-initializer.js";
 import { ProjectPathPolicy } from "./project-paths.js";
@@ -188,16 +190,24 @@ export class WorkflowService {
     return this.store.listProjects();
   }
 
-  async createProject(input: CreateProjectInput) {
+  async createProject(input: CreateProjectInput, signal?: AbortSignal) {
+    assertProjectCreationActive(signal);
     const summary = input.summary || "由 AI SDLC 平台管理的项目";
     let rootPath = await this.paths.resolveProjectPath(input.rootPath, input.initialize);
+    assertProjectCreationActive(signal);
     if (input.initialize) {
       await initializeCodexProject(rootPath, input.name, summary, {
-        cliPath: this.cliPath
+        agentClient: input.agentClient,
+        cliPath: this.cliPath,
+        signal,
       });
+      // A successful initializer return is the filesystem commit point. From
+      // here registration must finish even if the HTTP client disconnects;
+      // cancelling now would strand a valid initialized tree outside the DB.
       rootPath = await this.paths.resolveProjectPath(rootPath);
     }
     const definition = await loadDefinition(rootPath);
+    if (!input.initialize) assertProjectCreationActive(signal);
     const project = await this.store.createProject({
       name: input.name,
       summary: summary || definition.project.summary,
@@ -318,8 +328,9 @@ export class WorkflowService {
       let persistedChangeContractArtifact;
       if (changeContractArtifact) {
         const content = renderChangeContract(changeContract);
+        await assertRuntimePath(project.rootPath, changeContractArtifact.absolutePath);
         await mkdir(path.dirname(changeContractArtifact.absolutePath), { recursive: true });
-        await assertRuntimePath(project.rootPath, path.dirname(changeContractArtifact.absolutePath));
+        await assertRuntimePath(project.rootPath, changeContractArtifact.absolutePath);
         await writeFile(changeContractArtifact.absolutePath, content, {
           encoding: "utf8",
           flag: "wx",
@@ -1116,6 +1127,9 @@ export class WorkflowService {
     const releaseWorkspace = this.acquireWorkspaceMutation(bundle.project.rootPath);
     try {
     const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+    if (this.runner.mode() === "real") {
+      await assertDefinitionAgentFiles(bundle.project.rootPath, definition);
+    }
     const phaseDefinition = definition.phases.find((phase) => phase.id === phaseId);
     if (!phaseDefinition) throw new AppError("阶段不在工作流定义中", 404, "PHASE_NOT_FOUND");
     const currentPhase = bundle.phases.find((phase) => phase.phaseId === phaseId);
@@ -1377,10 +1391,13 @@ export class WorkflowService {
     const latestCompletedExecution = currentPhase.executions.find(
       (execution) => execution.status === "completed",
     );
+    const requiresReleaseEvidenceGate = phaseId === "release"
+      && input.decision === "approve"
+      && definition.releaseEvidenceValidationRequired;
     const needsExecutionInputs = hasPriorRoutedPhase
       || (
         input.decision === "approve"
-        && (phaseId === "implementation" || phaseId === "verification")
+        && (phaseId === "implementation" || phaseId === "verification" || requiresReleaseEvidenceGate)
       );
     const executionInputs = needsExecutionInputs
       && latestCompletedExecution?.selectedArtifactIds.length
@@ -1390,7 +1407,41 @@ export class WorkflowService {
         latestCompletedExecution.selectedArtifactIds,
       )
       : [];
-    if (hasPriorRoutedPhase && executionInputs.length > 0) {
+    if (requiresReleaseEvidenceGate && executionInputs.length === 0) {
+      throw new AppError(
+        "Release approval requires the completed execution's current approved input snapshots",
+        409,
+        "RELEASE_EVIDENCE_BINDINGS_REQUIRED",
+      );
+    }
+    if (requiresReleaseEvidenceGate && latestCompletedExecution?.runnerMode !== "real") {
+      throw new AppError(
+        "Release readiness cannot be approved from a simulated or legacy runner execution",
+        409,
+        "RELEASE_EVIDENCE_REAL_EXECUTION_REQUIRED",
+      );
+    }
+    if (requiresReleaseEvidenceGate) {
+      const requiredInputs = effectiveRequiredInputKeys(
+        "release",
+        phaseDefinition.inputs,
+        current.phases,
+        Boolean(current.run.changeContract),
+        outputKeysByPhase(definition),
+      );
+      validateArtifactSelection(
+        "release",
+        requiredSelectionKeys("release", requiredInputs),
+        executionInputs.map((artifact) => ({
+          id: artifact.id,
+          artifactKey: artifact.artifactKey,
+          sourcePosition: artifact.sourcePosition,
+          sourceStatus: artifact.sourceStatus,
+          reviewStatus: artifact.reviewStatus,
+        })),
+      );
+    }
+    if ((hasPriorRoutedPhase || requiresReleaseEvidenceGate) && executionInputs.length > 0) {
       await this.validateArtifactWorkspaceSnapshots(
         current.project.rootPath,
         executionInputs,
@@ -1516,6 +1567,21 @@ export class WorkflowService {
         riskFlags: current.run.changeContract?.riskFlags,
       });
     }
+    if (requiresReleaseEvidenceGate) {
+      const releaseArtifacts = await this.store.currentArtifactSnapshotsForPhase(
+        runId,
+        "release",
+      );
+      validateReleaseEvidence({
+        artifacts: releaseArtifacts,
+        expectedRunId: current.run.id,
+        expectedInputs: executionInputs.map(({ artifactKey, filePath, contentHash }) => ({
+          artifactKey,
+          filePath,
+          contentHash,
+        })),
+      });
+    }
     const review = await this.store.reviewPhase(
       runId,
       phaseId,
@@ -1583,6 +1649,9 @@ export class WorkflowService {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
     const definitionContext = await this.verificationE2eDefinitionContext(bundle);
+    if (this.runner.mode() === "real") {
+      await assertDefinitionAgentFiles(bundle.project.rootPath, definitionContext.definition);
+    }
     const selected = await this.store.selectionArtifacts(runId, input.selectedArtifactIds);
     const requiredInputs = effectiveRequiredInputKeys(
       "verification",
@@ -2705,19 +2774,32 @@ export class WorkflowService {
       await this.store.appendEvent(request.executionId, sequence, eventType, payload);
     };
     try {
-      const result = await this.runner.run(request, event);
-      const storyArtifact = result.artifacts.find((artifact) => artifact.artifactKey === "user-stories");
-      const ticketSync = storyArtifact
-        ? {
-            artifactKey: storyArtifact.artifactKey,
-            tickets: ticketRecords(storyArtifact.filePath, storyArtifact.content)
-          }
-        : undefined;
-      await this.store.completeExecution(
-        request.executionId,
-        result.exitCode,
-        result.artifacts,
-        ticketSync
+      const selectedOutputKeys = new Set(request.selectedOutputKeys ?? request.phase.outputs);
+      const selectedOutputPaths = request.definition.artifacts
+        .filter((artifact) => selectedOutputKeys.has(artifact.id))
+        .map((artifact) => ({ id: artifact.id, absolutePath: artifact.absolutePath }));
+      await withArtifactPathsRollbackOnError(
+        request.project.rootPath,
+        selectedOutputPaths,
+        2_000_000,
+        async () => {
+          const result = await this.runner.run(request, event);
+          const storyArtifact = result.artifacts.find(
+            (artifact) => artifact.artifactKey === "user-stories",
+          );
+          const ticketSync = storyArtifact
+            ? {
+                artifactKey: storyArtifact.artifactKey,
+                tickets: ticketRecords(storyArtifact.filePath, storyArtifact.content),
+              }
+            : undefined;
+          await this.store.completeExecution(
+            request.executionId,
+            result.exitCode,
+            result.artifacts,
+            ticketSync,
+          );
+        },
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2744,6 +2826,16 @@ export class WorkflowService {
     await this.store.syncTickets(runId, artifact.id, tickets);
     return this.store.listTickets(runId);
   }
+}
+
+function assertProjectCreationActive(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw new AppError(
+    "项目创建请求已取消 (aborted)",
+    400,
+    "PROJECT_CREATION_ABORTED",
+    signal.reason,
+  );
 }
 
 function verificationGitMetadataPaths(state: VerificationGitState): string[] {

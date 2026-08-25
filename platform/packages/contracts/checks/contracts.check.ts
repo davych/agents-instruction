@@ -104,6 +104,17 @@ test("request contracts reject incomplete reviews and invalid artifact ids", () 
   assert.equal(createProjectSchema.safeParse({ name: "demo", rootPath: "/tmp/demo" }).success, true);
 });
 
+test("CreateProject accepts only the supported native agent clients and defaults to Codex", () => {
+  const base = { name: "demo", rootPath: "/tmp/demo" };
+  assert.equal(createProjectSchema.parse(base).agentClient, "codex");
+  for (const agentClient of ["codex", "claude", "copilot"] as const) {
+    assert.equal(createProjectSchema.safeParse({ ...base, agentClient }).success, true, agentClient);
+  }
+  for (const agentClient of ["claude-code", "github-copilot", "cursor", ""] as const) {
+    assert.equal(createProjectSchema.safeParse({ ...base, agentClient }).success, false, agentClient);
+  }
+});
+
 test("structured human decisions require unique ids, meaningful answers, and locked artifact heads", () => {
   const artifactId = crypto.randomUUID();
   assert.equal(captureHumanDecisionsSchema.safeParse({

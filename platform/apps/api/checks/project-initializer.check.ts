@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +16,77 @@ import { calculateArchitectureRulebookDigest } from "../src/services/architectur
 import { CodexTerminalRunner } from "../src/services/codex-runner.ts";
 import { loadDefinition } from "../src/services/definition-loader.ts";
 import { initializeCodexProject } from "../src/services/project-initializer.ts";
+
+type InitializerOptions = {
+  agentClient?: "codex" | "claude" | "copilot";
+  signal?: AbortSignal;
+  cliPath?: string;
+  timeoutMs?: number;
+};
+const initializeProject = initializeCodexProject as unknown as (
+  rootPath: string,
+  name: string,
+  summary: string,
+  options?: InitializerOptions,
+) => Promise<void>;
+
+test("AC3/Tier A: initializer maps agentClient to the CLI client selection", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "ai-sdlc-initializer-client-"));
+  const cliPath = path.join(parent, "recording-cli.mjs");
+  const observedPath = path.join(parent, "observed.json");
+  const target = path.join(parent, "project");
+  try {
+    await writeFile(cliPath, `
+      import { writeFile } from "node:fs/promises";
+      export async function run(args, context) {
+        await writeFile(${JSON.stringify(observedPath)}, JSON.stringify({ args, hasSignal: Boolean(context.signal) }));
+        return 0;
+      }
+    `, "utf8");
+    await initializeProject(target, "Claude project", "Initializer test", {
+      agentClient: "claude",
+      cliPath,
+    });
+    const observed = JSON.parse(await readFile(observedPath, "utf8")) as {
+      args: string[];
+      hasSignal: boolean;
+    };
+    assert.deepEqual(observed.args.slice(0, 2), ["init", target]);
+    assert.deepEqual(observed.args.slice(-2), ["--client", "claude"]);
+    assert.equal(observed.hasSignal, true);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("AC3/Tier A: initializer timeout aborts the CLI and waits for its cleanup", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "ai-sdlc-initializer-abort-"));
+  const cliPath = path.join(parent, "blocking-cli.mjs");
+  const cleanupPath = path.join(parent, "cleanup.txt");
+  try {
+    await writeFile(cliPath, `
+      import { writeFile } from "node:fs/promises";
+      export async function run(_args, context) {
+        await new Promise((resolve, reject) => {
+          const abort = () => void writeFile(${JSON.stringify(cleanupPath)}, "complete", "utf8")
+            .then(() => reject(context.signal.reason));
+          context.signal.addEventListener("abort", abort, { once: true });
+        });
+      }
+    `, "utf8");
+    await assert.rejects(
+      () => initializeProject(path.join(parent, "project"), "Timeout project", "Abort test", {
+        cliPath,
+        timeoutMs: 20,
+      }),
+      /abort|timeout/i,
+    );
+    assert.equal(existsSync(cleanupPath), true, "initializer must await the aborted CLI cleanup");
+    assert.equal(await readFile(cleanupPath, "utf8"), "complete");
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
 
 test("Architect rulebook config fails closed on misspelled fields", async () => {
   const projectRoot = await mkdtemp(path.join(os.tmpdir(), "ai-sdlc-rulebook-config-"));

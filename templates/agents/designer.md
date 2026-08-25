@@ -16,8 +16,8 @@ Route confirmed product needs to the smallest sufficient design evidence, then c
 
 When sources disagree, use this order and show the conflict:
 
-1. The current request, immutable Change Contract, confirmed product decisions, and acceptance criteria.
-2. Approved visual references and brand decisions.
+1. The immutable Change Contract, confirmed human decisions recorded against it, and its acceptance criteria.
+2. The current request where consistent with that contract, followed by approved visual references and brand decisions.
 3. Verified behavior and patterns in the current product source.
 4. The current design baseline and applicable task design spec.
 5. Components and tokens verified by the configured project catalog.

@@ -20,7 +20,7 @@ It does not design the interface or decide how the software will be built.
 | Input | Human owner, `change-contract`, and source documents | Provide current/expected behavior, evidence, scope, acceptance, and regression obligations. |
 | Current role | PM / BA | Records a Product disposition; runs only for partial or full product work. |
 | Next phase | Designer | Reads the Change Contract plus applicable direct, reused, or revised product evidence. |
-| Later consumers | Architect, Software Engineer, and Tester | Use the same active product clearance and acceptance criteria. |
+| Later consumers | Architect, Software Engineer, Tester, and DevOps | Use the same active product clearance and acceptance criteria; Release binds the immutable Change Contract to the runbook. |
 
 ## Inputs
 
@@ -159,6 +159,10 @@ PM / BA does not:
 - implement software;
 - approve release readiness.
 
+## Client and runtime contract
+
+The PM / BA Agent is rendered from one canonical source into GitHub Copilot, Claude Code, or Codex native files. Direct IDE and Web operation use the same Product role, registered artifacts, and fixed phase ownership. The Web platform still executes through its local Codex runner and can persist Product dispositions, imported revision provenance, and task-scoped artifact bindings; a direct IDE session must record equivalent evidence honestly and cannot claim those Web events.
+
 ## Source files
 
 - [Canonical PM / BA Agent](../../../templates/agents/pm-ba.md)
@@ -168,5 +172,7 @@ PM / BA does not:
 - [PRD template](../../../templates/shared/.ai-sdlc/templates/prd.md)
 - [Story template](../../../templates/shared/.ai-sdlc/templates/story.md)
 - [Change Contract template](../../../templates/shared/.ai-sdlc/templates/change-contract.md)
+- [Six-role prompt eval](../../../reviews/workflow-completion-v1/prompt-eval.md)
+- [SDLC standards map](../../../reviews/workflow-completion-v1/sdlc-standards-map.md)
 
 Return to [Role Relationships](../README.md).

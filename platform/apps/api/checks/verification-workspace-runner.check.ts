@@ -22,6 +22,69 @@ const execFileAsync = promisify(execFile);
 
 test.after(async () => Promise.all(roots.map((root) => rm(root, { recursive: true, force: true }))));
 
+test("Release mode rejects and restores writes in generated and Verification runtime-evidence trees", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ai-sdlc-release-workspace-"));
+  roots.push(root);
+  const runbook = path.join(root, "docs", "ai-native", "operations", "release-runbook.md");
+  const source = path.join(root, "src", "service.ts");
+  await mkdir(path.dirname(runbook), { recursive: true });
+  await mkdir(path.dirname(source), { recursive: true });
+  await writeFile(runbook, "# Baseline runbook\n", "utf8");
+  await writeFile(source, "export const stable = true;\n", "utf8");
+
+  await assert.rejects(
+    () => withVerificationWorkspaceProtected(
+      {
+        projectRoot: root,
+        selectedOutputPaths: [runbook],
+        mode: "release",
+      },
+      async () => {
+        await writeFile(runbook, "# Updated runbook\n", "utf8");
+        await mkdir(path.join(root, "dist"), { recursive: true });
+        await mkdir(path.join(root, "test-results"), { recursive: true });
+        await writeFile(path.join(root, "dist", "pwn.txt"), "unexpected\n", "utf8");
+        await writeFile(path.join(root, "test-results", "pwn.txt"), "unexpected\n", "utf8");
+      },
+    ),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, "UNSELECTED_OUTPUTS_CHANGED");
+      return true;
+    },
+  );
+  assert.equal(await readFile(source, "utf8"), "export const stable = true;\n");
+  for (const unexpected of [
+    path.join(root, "dist", "pwn.txt"),
+    path.join(root, "test-results", "pwn.txt"),
+  ]) {
+    await assert.rejects(() => lstat(unexpected), { code: "ENOENT" });
+  }
+});
+
+test("Release mode fails before execution when the protected tree exceeds its snapshot bound", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ai-sdlc-release-capacity-"));
+  roots.push(root);
+  const runbook = path.join(root, "release-runbook.md");
+  await writeFile(runbook, "# Runbook\n", "utf8");
+  await writeFile(path.join(root, "large-source.bin"), "x".repeat(64), "utf8");
+  let invoked = false;
+  await assert.rejects(
+    () => withVerificationWorkspaceProtected({
+      projectRoot: root,
+      selectedOutputPaths: [runbook],
+      mode: "release",
+      maxBytes: 32,
+    }, async () => {
+      invoked = true;
+    }),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, "VERIFICATION_WORKSPACE_SNAPSHOT_FAILED");
+      return true;
+    },
+  );
+  assert.equal(invoked, false);
+});
+
 test("Verification envelope makes source, tests, and control files read-only", async () => {
   const fixture = await verificationFixture();
   const prompt = buildTaskEnvelope({

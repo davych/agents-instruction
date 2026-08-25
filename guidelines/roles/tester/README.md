@@ -30,7 +30,7 @@ Tester then maps risk. A criterion proven most strongly by unit, integration, co
 | Current role | Tester | Maps risk, optionally explores, reviews generated-script provenance, executes repeatable checks, records defects, and writes `test-report`. |
 | Feedback | Fresh Test Author | Fixes linked-workspace test bugs from cited authority, followed by a new manifest-hash review. |
 | Feedback | Software Engineer/upstream roles | Resolves product source, product test, testability-interface, spec, design, or architecture gaps. |
-| Next phase | DevOps | Uses the report plus command/report contract to prepare CI, release, monitoring, and rollback. |
+| Next phase | DevOps | Uses the report with the Change Contract, implementation notes/provenance, and accepted architecture evidence to prepare only the task-scoped release runbook. |
 
 ## Inputs
 
@@ -68,6 +68,7 @@ flowchart TD
   Ready -->|"Yes"| Map["Map ACs, regressions, deferred checks, NFRs, and risks"]
   Map --> Need{"Durable E2E required?"}
   Need -->|"No"| Other["Execute selected non-E2E verification"]
+  Other --> Evidence["Capture applicable revision(s) and durable evidence"]
   Need -->|"Yes"| Linked{"Linked E2E Workspace explicitly configured?"}
   Linked -->|"No"| Configure["Human configures/initializes separate root<br/>never infer a legacy sibling"]
   Configure --> Preflight["Package + real Chromium + server preflight"]
@@ -82,15 +83,17 @@ flowchart TD
   Manifest --> Review{"Human approves exact manifest hash?"}
   Review -->|"Request changes"| Freeze
   Review -->|"Approve scripts"| Execute["Platform runs standalone Playwright<br/>real headless Chromium; no MCP"]
-  Execute --> Other["Capture dual revisions and durable evidence"]
-  Other --> Report["Write Run-scoped test-report"]
+  Execute --> Evidence
+  Evidence --> Report["Write Run-scoped test-report"]
   Report --> Gate{"All required evidence passes?"}
   Gate -->|"No"| Route
   Route --> Map
-  Gate -->|"Yes"| Handoff["Hand command/report contract and risk to DevOps"]
+  Gate -->|"Yes"| Handoff["Hand current report and risk to DevOps<br/>for runbook preparation"]
 ```
 
 This is one Verification subflow, not a seventh phase.
+
+The trusted Linked E2E lifecycle above is a Web-platform capability. A direct IDE client can follow the same risk map and report schema, but it cannot claim platform workspace binding, protected-mutation snapshots, manifest-approval events, trusted command events, or an equivalent supervised E2E guarantee unless the Web platform actually produced them.
 
 ## Stage 0: configuration, readiness, and coverage map
 
@@ -135,7 +138,7 @@ Record:
 
 Use the canonical row `` `<validated package-manager test script>` from `<exact trusted linked E2E root>` ``. Markdown cannot self-authorize another external cwd or command. `No browser is available`, a launch failure, timeout, nonzero test, server readiness problem, or cleanup failure remains non-passing with logs. A local pass is not remote CI success.
 
-Tester owns the command/report contract. DevOps or an authorized owner configures credentials, browser installation/cache policy, retention, branch protection, and required CI checks.
+Tester owns the command/report contract. An authorized human or repository/provider system configures credentials, browser installation/cache policy, retention, branch protection, and required CI checks. DevOps may document the expected contract and evidence gap in the runbook; the Agent does not make those changes.
 
 ## Failure routing
 
@@ -147,7 +150,7 @@ Tester owns the command/report contract. DevOps or an authorized owner configure
 | Spec ambiguity | PM / BA or human owner | Resolve the conflict in authoritative evidence. |
 | Design ambiguity | Designer / Design Impact | Define visible interaction, responsive, content, or accessibility behavior. |
 | Architecture/NFR gap | Architect / human owner | Define the measurable target, boundary, or accepted exception. |
-| Environment/CI issue | DevOps / authorized operator | Repair binding, dependencies, Chromium, server, runner, credentials, or retention; repeat preflight/execution. |
+| Environment/CI issue | Authorized operator/provider; DevOps records the release evidence gap when relevant | Repair binding, dependencies, Chromium, server, runner, credentials, or retention; repeat preflight/execution. |
 
 Only changes to product source, product-repository tests, or product testability interfaces return through Implementation reapproval. Linked-workspace tests stay with Tester/Test Author.
 
@@ -166,6 +169,12 @@ Verification can pass only when:
 
 MCP success, authoring completion, script approval, unit/jsdom success, lint, or build cannot replace required E2E execution. Missing evidence keeps the gate blocked with an owner and next action.
 
+Passing Verification does not configure CI or approve release. DevOps next prepares the current task's runbook, the Release semantic gate evaluates its evidence contract, and a human remains the go/no-go owner.
+
+## Client and runtime contract
+
+The Tester Agent is rendered from one canonical source into GitHub Copilot, Claude Code, or Codex native files. Direct IDE and Web operation share the Verification owner and `test-report` contract. Web execution still uses the local Codex runner and is the only mode that can supply this V1's persisted Linked E2E bindings, hash reviews, mutation guards, and trusted standalone-run events. Neither mode grants Tester CI, merge, deployment, or release authority.
+
 ## Source files
 
 - [Canonical Tester Agent](../../../templates/agents/tester.md)
@@ -174,6 +183,8 @@ MCP success, authoring completion, script approval, unit/jsdom success, lint, or
 - [Tester workflow](../../../templates/shared/.ai-sdlc/roles/tester/workflow.md)
 - [Playwright E2E reference](../../../templates/shared/.ai-sdlc/roles/tester/references/e2e-playwright.md)
 - [Test report template](../../../templates/shared/.ai-sdlc/templates/test-report.md)
+- [Six-role prompt eval](../../../reviews/workflow-completion-v1/prompt-eval.md)
+- [SDLC standards map](../../../reviews/workflow-completion-v1/sdlc-standards-map.md)
 
 The Tester role pack is ordinary Markdown supporting the one canonical Agent. It contains no `SKILL.md`, second Agent, or client-specific duplicate.
 

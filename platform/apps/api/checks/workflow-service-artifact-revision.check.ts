@@ -209,7 +209,7 @@ test("creating a run atomically pins the design spec path derived from that task
   const templatePath = fileURLToPath(
     new URL("../../../../templates/ai-native.yaml", import.meta.url),
   );
-  const config = (await readFile(templatePath, "utf8"))
+  const config = asLegacyDefinition(await readFile(templatePath, "utf8"))
     .replace("{{PROJECT_NAME}}", JSON.stringify("Demo"))
     .replace("{{PROJECT_SUMMARY}}", JSON.stringify("Demo project"))
     .replace("{{AI_CLIENT}}", JSON.stringify("codex"))
@@ -294,7 +294,7 @@ test("workflow service validates architecture selection and carries its freshnes
   const templatePath = fileURLToPath(
     new URL("../../../../templates/ai-native.yaml", import.meta.url),
   );
-  const config = (await readFile(templatePath, "utf8"))
+  const config = asLegacyDefinition(await readFile(templatePath, "utf8"))
     .replace("{{PROJECT_NAME}}", JSON.stringify("Demo"))
     .replace("{{PROJECT_SUMMARY}}", JSON.stringify("Demo project"))
     .replace("{{AI_CLIENT}}", JSON.stringify("codex"))
@@ -548,4 +548,10 @@ async function temporaryProject(): Promise<string> {
 
 function hash(content: string): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+function asLegacyDefinition(config: string): string {
+  const legacy = config.replace("capabilities:\n  release_evidence: v1\n\n", "");
+  assert.notEqual(legacy, config, "legacy fixture must remove the fresh Release v1 capability declaration");
+  return legacy;
 }

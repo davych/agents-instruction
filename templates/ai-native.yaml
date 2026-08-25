@@ -1,6 +1,9 @@
 # AI-native 工作流的唯一配置入口。
 version: 1
 
+capabilities:
+  release_evidence: v1
+
 project:
   name: {{PROJECT_NAME}}
   summary: {{PROJECT_SUMMARY}}
@@ -36,8 +39,8 @@ roles:
     responsibilities: [risk-based test design, optional browser exploration, linked E2E test assets, generated-script hash review, standalone real-browser execution, defect evidence, release-quality recommendation]
   - id: devops
     name: DevOps
-    mission: 建立可重复、可观察、可回滚的交付路径。
-    responsibilities: [CI/CD, 部署, 监控, 回滚]
+    mission: Prepare an evidence-bound, repeatable, observable, and reversible release path without executing the release.
+    responsibilities: [release readiness, provenance validation, rollout guidance, health and monitoring, rollback planning, incident escalation]
 
 workflow:
   phases:
@@ -68,9 +71,9 @@ workflow:
       gate: Acceptance criteria, targeted regressions, main risks, and every selected deferred Design validation have current execution evidence; required E2E scripts match a human-approved linked-workspace manifest and a platform-supervised standalone real-browser execution, while Playwright MCP exploration alone never satisfies repeatable E2E or CI evidence.
     - id: release
       owner: devops
-      inputs: [architecture, architecture-adrs, architecture-nfrs, architecture-adversarial, test-report]
+      inputs: [change-contract, architecture, architecture-adrs, architecture-nfrs, architecture-adversarial, implementation-notes, engineering-provenance, test-report]
       outputs: [release-runbook]
-      gate: 发布、监控和回滚步骤已准备。
+      gate: The runbook is bound to the exact current Run and every selected upstream artifact ID, project-relative path, and content hash, plus the implementation and verification revisions and every applicable release artifact digest; provenance and supply-chain applicability are explicit; preconditions, ordered rollout, health and smoke checks, monitoring thresholds/windows/owners/actions, rollback triggers/RTO/data compatibility/recovery verification, incident escalation, risks, and the human go/no-go owner are complete with no unresolved release blocker. This gate means the guidance is ready, not that a release is approved or executed.
 
 artifacts:
   # path 相对于 paths.outputs；修改 outputs 即可整体迁移 AI 产物目录。
@@ -106,4 +109,5 @@ artifacts:
   - { id: engineering-review, owner: software-engineer, path: review.md }
   - { id: engineering-provenance, owner: software-engineer, path: pr-provenance.md }
   - { id: test-report, owner: tester, path: ai-native/testing/test-report.md }
-  - { id: release-runbook, owner: devops, path: ai-native/operations/release-runbook.md }
+  # DevOps config contributes ai-native/operations; keep this artifact path as a basename.
+  - { id: release-runbook, owner: devops, path: release-runbook.md }

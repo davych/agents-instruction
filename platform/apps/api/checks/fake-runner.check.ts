@@ -14,6 +14,80 @@ const roots: string[] = [];
 const executionConfig = { model: "gpt-5.6-sol", reasoningEffort: "high" as const };
 test.after(async () => Promise.all(roots.map((root) => rm(root, { recursive: true, force: true }))));
 
+test("platform-injected optional outputs never overwrite an unadopted project file", async () => {
+  const root = await mkdtemp(path.join(process.cwd(), ".test-tmp-backfill-"));
+  roots.push(root);
+  await mkdir(path.join(root, ".codex", "agents"), { recursive: true });
+  await writeFile(path.join(root, ".codex", "agents", "designer.toml"), "name='designer'\n", "utf8");
+  const prototypePath = path.join(root, "docs", "prototype.html");
+  await mkdir(path.dirname(prototypePath), { recursive: true });
+  const sentinel = "<!doctype html><p>project-owned sentinel</p>\n";
+  await writeFile(prototypePath, sentinel, "utf8");
+  const now = new Date().toISOString();
+  const phase: PhaseDefinition = {
+    id: "design",
+    owner: "designer",
+    inputs: [],
+    outputs: ["design-prototype"],
+    gate: "human review",
+  };
+  const definition: LoadedDefinition = {
+    version: 1,
+    project: { name: "Legacy design", summary: "Backfill collision" },
+    roles: [{ id: "designer", name: "Designer", mission: "Design", responsibilities: [] }],
+    phases: [phase],
+    agentClient: "codex",
+    agentDirectory: ".codex/agents",
+    outputRoot: path.join(root, "docs"),
+    artifacts: [{
+      id: "design-prototype",
+      owner: "designer",
+      relativePath: "docs/prototype.html",
+      absolutePath: prototypePath,
+      platformInjected: true,
+    }],
+    configPath: path.join(root, "ai-native.yaml"),
+    releaseEvidenceValidationRequired: false,
+  };
+  const project: ProjectDto = {
+    id: crypto.randomUUID(),
+    name: "Legacy design",
+    summary: "Backfill collision",
+    rootPath: root,
+    configPath: definition.configPath,
+    runCount: 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const run: WorkflowRunDto = {
+    id: crypto.randomUUID(),
+    projectId: project.id,
+    title: "Legacy design",
+    objective: "Preserve project-owned prototype",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await assert.rejects(
+    () => new CodexTerminalRunner({ fake: true }).run({
+      executionId: crypto.randomUUID(),
+      project,
+      run,
+      phase,
+      definition,
+      selectedArtifacts: [],
+      selectedOutputKeys: ["design-prototype"],
+      ...executionConfig,
+    }, async () => undefined),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, "PLATFORM_BACKFILL_COLLISION");
+      return true;
+    },
+  );
+  assert.equal(await readFile(prototypePath, "utf8"), sentinel);
+});
+
 test("fake Codex runner creates deterministic registered artifacts", async () => {
   const temporaryRoot = path.join(process.cwd(), ".test-tmp-");
   const root = await mkdtemp(temporaryRoot);

@@ -188,7 +188,7 @@ The pack can become `Ready for human acceptance` only when:
 - no Greenfield default silently replaces a Brownfield framework or convention;
 - the index links only current active material.
 
-The default review floors are three options, seven NFRs across five relevant quality families, and three findings per adversarial stressor. If a floor does not fit the project, Architect asks a human to change the config. It does not add irrelevant material to reach a number.
+The default review floors are three options, seven NFRs across five relevant quality families, and three findings per adversarial stressor. They are a deliberate V1 heuristic, not a risk-adaptive industry requirement. If a floor does not fit the project, Architect asks a human to change the config. It does not add irrelevant material to reach a number. Replacing these fixed floors with a risk-tiered policy is an architecture/configuration decision and remains an explicit prompt-eval follow-up.
 
 The architecture phase passes only after a human completes the acceptance evidence in the index.
 
@@ -205,7 +205,7 @@ Software Engineer starts at the `architecture` index, then follows the active re
 - independent premortem evidence;
 - assumptions, provisional content, blocks, and open human decisions.
 
-Tester and DevOps also start architecture reading at this index. A child artifact never overrides an index status.
+Tester and DevOps also start architecture reading at this index. Release additionally binds the immutable `change-contract`, `implementation-notes`, `engineering-provenance`, and `test-report`; architecture evidence alone is never a release-ready claim. A child artifact never overrides an index status.
 
 ## Human-owned decisions and boundaries
 
@@ -230,6 +230,10 @@ Architect does not:
 
 Architect pauses when a trust boundary changes, an NFR cannot be tested, option scores are too close, a choice is hard to reverse, or the brief names a solution without explaining the problem.
 
+## Client and runtime contract
+
+The Architect Agent is rendered from one canonical source into GitHub Copilot, Claude Code, or Codex native files. Direct IDE and Web operation share the Architecture role, registered pack, and fixed phase ownership. Web execution still uses the local Codex runner and adds persisted selection evidence, digest checks, selected-output guards, and semantic gates; a direct IDE session must preserve the same human checkpoints without claiming those Web controls ran.
+
 ## Source files
 
 - [Canonical Architect Agent](../../../templates/agents/architect.md)
@@ -253,5 +257,7 @@ Architect pauses when a trust boundary changes, an NFR cannot be tested, option 
 - [Pattern template](../../../templates/shared/.ai-sdlc/templates/architecture-patterns.md)
 - [NFR template](../../../templates/shared/.ai-sdlc/templates/architecture-nfrs.md)
 - [Adversarial review template](../../../templates/shared/.ai-sdlc/templates/architecture-adversarial.md)
+- [Six-role prompt eval](../../../reviews/workflow-completion-v1/prompt-eval.md)
+- [SDLC standards map](../../../reviews/workflow-completion-v1/sdlc-standards-map.md)
 
 Return to [Role Relationships](../README.md).

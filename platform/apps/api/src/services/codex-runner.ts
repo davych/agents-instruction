@@ -220,106 +220,146 @@ export class CodexTerminalRunner {
       );
     }
     const selected = new Set(outputKeys(request));
+    assertNoPlatformBackfillCollisions(request, selected);
     assertNonOverlappingOutputPaths(request.definition.artifacts);
     let protectedArtifacts: ProtectedArtifactPath[] = request.definition.artifacts
       .filter((artifact) => !selected.has(artifact.id))
       .map((artifact) => ({ id: artifact.id, absolutePath: artifact.absolutePath }));
-    if (request.phase.id === "architecture") {
-      const architectRoleRoot = path.join(request.project.rootPath, ".ai-sdlc", "roles", "architect");
-      protectedArtifacts.push(
-        { id: "architect-config", absolutePath: path.join(architectRoleRoot, "config.yaml") },
-        { id: "architect-workflow", absolutePath: path.join(architectRoleRoot, "workflow.md") },
-        {
-          id: "architect-rulebook-index",
-          absolutePath: path.join(architectRoleRoot, "references", "architecture-rules.md"),
-        },
-        {
-          id: "architect-rulebook-packs",
-          absolutePath: path.join(architectRoleRoot, "references", "rules"),
-        },
-      );
-    }
-    if (request.phase.id === "implementation") {
-      const rolePacksRoot = path.join(request.project.rootPath, ".ai-sdlc", "roles");
-      const selectedAgentPath = path.join(
-        request.project.rootPath,
-        resolveRoleFile(request.project.rootPath, request.definition, request.phase.owner),
-      );
-      const clientAgentsRoot = path.dirname(selectedAgentPath);
-      const projectControlPaths = [
-        "ai-native.yaml",
-        "AGENTS.md",
-        "CLAUDE.md",
-        ...await listRootEnvironmentPaths(request.project.rootPath),
-      ];
-      const protectedResourceMaxBytes = Math.max(this.maxArtifactBytes, 64 * 1024 * 1024);
-      protectedArtifacts.push(
-        {
-          id: "client-native-agents",
-          absolutePath: clientAgentsRoot,
-          maxBytes: protectedResourceMaxBytes,
-        },
-        {
-          id: "role-packs",
-          absolutePath: rolePacksRoot,
-          maxBytes: protectedResourceMaxBytes,
-        },
-        {
-          id: "workflow-definitions",
-          absolutePath: path.join(request.project.rootPath, ".ai-sdlc", "workflows"),
-          maxBytes: protectedResourceMaxBytes,
-        },
-        {
-          id: "software-engineer-evidence-templates",
-          absolutePath: path.join(request.project.rootPath, ".ai-sdlc", "templates"),
-          maxBytes: protectedResourceMaxBytes,
-        },
-        ...projectControlPaths.map((relativePath) => ({
-          id: `software-engineer-control-${relativePath}`,
-          absolutePath: path.join(request.project.rootPath, relativePath),
-          maxBytes: protectedResourceMaxBytes,
-        })),
-      );
-    }
+    const rolePacksRoot = path.join(request.project.rootPath, ".ai-sdlc", "roles");
+    const selectedAgentPath = path.join(
+      request.project.rootPath,
+      resolveRoleFile(request.project.rootPath, request.definition, request.phase.owner),
+    );
+    const clientAgentsRoot = path.dirname(selectedAgentPath);
+    const projectControlPaths = [
+      "ai-native.yaml",
+      "AGENTS.md",
+      "CLAUDE.md",
+      ...await listRootEnvironmentPaths(request.project.rootPath),
+    ];
+    const protectedResourceMaxBytes = Math.max(this.maxArtifactBytes, 64 * 1024 * 1024);
+    protectedArtifacts.push(
+      {
+        id: "client-native-agents",
+        absolutePath: clientAgentsRoot,
+        maxBytes: protectedResourceMaxBytes,
+      },
+      {
+        id: "role-packs",
+        absolutePath: rolePacksRoot,
+        maxBytes: protectedResourceMaxBytes,
+      },
+      {
+        id: "workflow-definitions",
+        absolutePath: path.join(request.project.rootPath, ".ai-sdlc", "workflows"),
+        maxBytes: protectedResourceMaxBytes,
+      },
+      {
+        id: "evidence-templates",
+        absolutePath: path.join(request.project.rootPath, ".ai-sdlc", "templates"),
+        maxBytes: protectedResourceMaxBytes,
+      },
+      ...projectControlPaths.map((relativePath) => ({
+        id: `project-control-${relativePath}`,
+        absolutePath: path.join(request.project.rootPath, relativePath),
+        maxBytes: protectedResourceMaxBytes,
+      })),
+    );
+    const architectureRulebookArtifacts: ProtectedArtifactPath[] = request.phase.id === "architecture"
+      ? (() => {
+          const architectRoleRoot = path.join(
+            request.project.rootPath,
+            ".ai-sdlc",
+            "roles",
+            "architect",
+          );
+          return [
+            {
+              id: "architect-config",
+              absolutePath: path.join(architectRoleRoot, "config.yaml"),
+              maxBytes: protectedResourceMaxBytes,
+            },
+            {
+              id: "architect-workflow",
+              absolutePath: path.join(architectRoleRoot, "workflow.md"),
+              maxBytes: protectedResourceMaxBytes,
+            },
+            {
+              id: "architect-rulebook-index",
+              absolutePath: path.join(
+                architectRoleRoot,
+                "references",
+                "architecture-rules.md",
+              ),
+              maxBytes: protectedResourceMaxBytes,
+            },
+            {
+              id: "architect-rulebook-packs",
+              absolutePath: path.join(architectRoleRoot, "references", "rules"),
+              maxBytes: protectedResourceMaxBytes,
+            },
+          ];
+        })()
+      : [];
     const selectedArtifacts = request.definition.artifacts
       .filter((artifact) => selected.has(artifact.id))
       .map((artifact) => ({ id: artifact.id, absolutePath: artifact.absolutePath }));
+    const runWithPhaseSpecificProtection = (effectiveRequest: CodexRunRequest) => (
+      withProtectedArtifactPaths(
+        request.project.rootPath,
+        architectureRulebookArtifacts,
+        this.maxArtifactBytes,
+        () => this.runUnprotected(effectiveRequest, onEvent),
+      )
+    );
     const execute = (effectiveRequest: CodexRunRequest) => withProtectedArtifactPaths(
       request.project.rootPath,
       protectedArtifacts,
       this.maxArtifactBytes,
-      () => ["implementation", "verification"].includes(request.phase.id)
-        ? withRootEnvironmentTopologyProtected(
-          request.project.rootPath,
-          () => this.runUnprotected(effectiveRequest, onEvent),
-        )
-        : this.runUnprotected(effectiveRequest, onEvent),
+      () => withRootEnvironmentTopologyProtected(
+        request.project.rootPath,
+        () => runWithPhaseSpecificProtection(effectiveRequest),
+      ),
     );
-    const executeVerification = async () => {
+    const executeWorkspaceReadOnly = async () => {
       const verificationGitState = await captureVerificationGitState(request.project.rootPath);
       const protectedGitMetadataPaths = verificationGitState.kind === "not_repository"
         ? []
         : [verificationGitState.gitDirectory, verificationGitState.gitCommonDirectory];
-      return withVerificationWorkspaceProtected(
-        {
-          projectRoot: request.project.rootPath,
-          selectedOutputPaths: selectedArtifacts.map((artifact) => artifact.absolutePath),
-          protectedGitMetadataPaths,
-          maxBytes: Math.max(this.maxArtifactBytes, 512 * 1024 * 1024),
-        },
-        async (revision) => execute({
-          ...request,
-          workspaceRevisionToken: revision.token,
-          verificationGitState,
-        }),
+      // Keep the full-workspace guard inside the common control snapshot. If a
+      // runner mutates both source and a control file, the workspace guard owns
+      // detection/restoration and preserves its stable, path-specific failure
+      // contract; the outer snapshot remains a second fail-closed layer.
+      return withProtectedArtifactPaths(
+        request.project.rootPath,
+        protectedArtifacts,
+        this.maxArtifactBytes,
+        () => withVerificationWorkspaceProtected(
+          {
+            projectRoot: request.project.rootPath,
+            selectedOutputPaths: selectedArtifacts.map((artifact) => artifact.absolutePath),
+            mode: request.phase.id === "release" ? "release" : "verification",
+            protectedGitMetadataPaths,
+            maxBytes: Math.max(this.maxArtifactBytes, 512 * 1024 * 1024),
+          },
+          async (revision) => runWithPhaseSpecificProtection(
+            request.phase.id === "verification"
+              ? {
+                  ...request,
+                  workspaceRevisionToken: revision.token,
+                  verificationGitState,
+                }
+              : request,
+          ),
+        ),
       );
     };
     return withArtifactPathsRollbackOnError(
       request.project.rootPath,
       selectedArtifacts,
       this.maxArtifactBytes,
-      () => request.phase.id === "verification"
-        ? executeVerification()
+      () => ["verification", "release"].includes(request.phase.id)
+        ? executeWorkspaceReadOnly()
         : execute(request),
     );
   }
@@ -380,7 +420,7 @@ export class CodexTerminalRunner {
     const child = spawn(this.binary, args, {
       cwd: request.project.rootPath,
       stdio: ["pipe", "pipe", "pipe"],
-      env: codexEnvironment(process.env, request.phase.id === "verification")
+      env: codexEnvironment(process.env, ["verification", "release"].includes(request.phase.id))
     });
     child.stdin.end(prompt);
     const stderr: Buffer[] = [];
@@ -519,6 +559,7 @@ export class CodexTerminalRunner {
       await assertRuntimePath(request.project.rootPath, target);
       const architectureContent = fakeArchitectureArtifactContent(artifact.id, request, rulebookDigest);
       const engineeringContent = fakeEngineeringArtifactContent(artifact.id, request);
+      const releaseContent = fakeReleaseArtifactContent(artifact.id, request);
       const architectureSelectionMarker = fakeArchitectureSelectionMarker(artifact.id, request);
       const designSpecContent = artifact.id === "design-spec"
         ? [
@@ -549,7 +590,7 @@ export class CodexTerminalRunner {
             "</html>",
             ""
           ].join("\n")
-        : architectureContent ?? engineeringContent ?? designSpecContent ?? [
+        : architectureContent ?? engineeringContent ?? releaseContent ?? designSpecContent ?? [
             ...(architectureSelectionMarker ? [architectureSelectionMarker, ""] : []),
             `# ${artifact.id}`,
             "",
@@ -621,6 +662,114 @@ export class CodexTerminalRunner {
     return hashes;
   }
 
+}
+
+function fakeReleaseArtifactContent(
+  artifactId: string,
+  request: CodexRunRequest,
+): string | undefined {
+  if (request.phase.id !== "release" || artifactId !== "release-runbook") return undefined;
+  const fakeDigest = "a".repeat(64);
+  const trustedInputRows = request.selectedArtifacts.map((artifact) =>
+    `| ${artifact.artifactKey} | \`${artifact.filePath}\` | \`sha256:${artifact.contentHash}\` |`);
+  const binding = (artifactKey: string, fallback: string): string => {
+    const artifact = request.selectedArtifacts.find((candidate) => candidate.artifactKey === artifactKey);
+    return artifact
+      ? `\`${artifact.filePath}\`; current approved revision; sha256:${artifact.contentHash}`
+      : fallback;
+  };
+  return [
+    `# Release Runbook: ${request.run.title}`,
+    "",
+    "## Status and immutable bindings",
+    "",
+    "- **Release readiness:** Ready for human go/no-go",
+    `- **Run / Change Contract:** Run ${request.run.id}; current change-contract artifact revision`,
+    `- **Release scope:** ${request.run.objective}; bounded by the current Change Contract`,
+    "- **Target environment:** staging target documented by the fake acceptance fixture",
+    `- **Source/product revision:** commit ${request.executionId}`,
+    `- **Implementation Notes:** ${binding("implementation-notes", "implementation-notes.md current approved revision")}`,
+    `- **Engineering Provenance:** ${binding("engineering-provenance", "engineering-provenance / pr-provenance.md current approved revision")}`,
+    `- **Test Report:** ${binding("test-report", "test-report.md current revision")}; Verification approved and passed`,
+    `- **Release artifact:** fake-build-${request.run.id} from engineering-provenance evidence`,
+    `- **Artifact digest:** sha256:${fakeDigest}`,
+    "- **Human release owner:** Human: Release manager",
+    `- **Prepared at / by:** deterministic fake execution ${request.executionId}`,
+    "- **Deployment execution:** Not executed by preparing this runbook.",
+    "",
+    "## Trusted upstream input bindings",
+    "",
+    "| Artifact ID | Current artifact path | Content hash |",
+    "|---|---|---|",
+    ...(trustedInputRows.length > 0
+      ? trustedInputRows
+      : [`| change-contract | current Run ${request.run.id} | sha256:${fakeDigest} |`]),
+    "",
+    "## Evidence and supply-chain applicability",
+    "",
+    "| Evidence | Revision, digest, or durable reference | Applicability and conclusion | Blocker / owner / next action |",
+    "|---|---|---|---|",
+    `| Current evidence pack | Run ${request.run.id}; sha256:${fakeDigest} | Applies and is current in this fixture | None; Release manager verifies at go/no-go |`,
+    "",
+    "## Release preconditions",
+    "",
+    "| ID | Required state or approval | Evidence / safe reference | Owner | Status | Release impact |",
+    "|---|---|---|---|---|---|",
+    "| PRE-01 | Human go/no-go is recorded | Release decision record for this Run | Human: Release manager | Ready for decision | Blocks operator execution until approved |",
+    "",
+    "## Ordered rollout",
+    "",
+    "| Order | Authorized owner | Exact action or reviewed command and trusted context | Expected result | Verification and retained evidence | Stop / continue condition |",
+    "|---:|---|---|---|---|---|",
+    "| 1 | Human: Authorized operator | Promote the bound artifact through the approved deployment system | Bound revision becomes the candidate | Deployment-system event and health report | Stop on identity or health mismatch |",
+    "",
+    "## Health and smoke checks",
+    "",
+    "| Check ID | Target / journey | Method and trusted context | Expected result | Owner | Evidence to retain | Result during authorized execution |",
+    "|---|---|---|---|---|---|---|",
+    "| HEALTH-01 | Primary service health | Approved health probe in target environment | Healthy response from bound revision | Human: Authorized operator | Health report for this Run | Not run during preparation |",
+    "",
+    "## Monitoring and response",
+    "",
+    "| Signal / NFR or risk ID | Threshold | Observation window | Dashboard/query reference | Owner | Action on breach |",
+    "|---|---|---|---|---|---|",
+    "| Service error rate | Greater than 1 percent | Five minutes | Operations dashboard reference OPS-01 | Human: On-call operator | Pause rollout and invoke rollback decision |",
+    "",
+    "## Rollback and recovery",
+    "",
+    "- **Rollback decision owner:** Human: Release manager",
+    "- **Target recovery time (RTO):** 30 minutes from architecture NFR evidence",
+    "- **Rollback triggers:** Error rate exceeds 1 percent for five minutes or the health probe fails twice",
+    "- **Data/schema/config compatibility:** No schema change in the fixture; Change Contract is the evidence source",
+    "- **Backup/restore prerequisites:** Not applicable because the fixture changes no persistent data; Change Contract evidence",
+    "- **Expected recovered state:** Previous approved revision serves healthy responses",
+    "",
+    "| Order | Authorized owner | Recovery action or reviewed command | Expected result | Recovery verification | Status / limitation |",
+    "|---:|---|---|---|---|---|",
+    "| 1 | Human: Authorized operator | Re-promote the previous approved artifact through the deployment system | Previous revision restored | Health and error-rate evidence | Planned, not executed by fake mode |",
+    "",
+    "## Incident and escalation",
+    "",
+    "| Trigger / severity | Immediate response and rollout state | Incident/release owner reference | Escalation and communication path | Evidence to retain |",
+    "|---|---|---|---|---|",
+    "| Health failure or threshold breach | Pause rollout and preserve evidence | Human: Release manager and on-call operator | Operations incident channel and status owner | Events, health reports, decisions, timestamps |",
+    "",
+    "## Risks, exceptions, and open decisions",
+    "",
+    "| ID | Known defect, untested item, risk, or decision | Evidence | Human owner | Durable acceptance / due condition | Release impact |",
+    "|---|---|---|---|---|---|",
+    "| RISK-00 | No unresolved material release blocker in this deterministic fixture | Approved test-report.md | Human: Release manager | Recheck at the human go/no-go record | Residual decision remains human-owned |",
+    "",
+    "## Human go/no-go and execution boundary",
+    "",
+    "- **Runbook conclusion:** Ready for human go/no-go",
+    "- **Unresolved blockers:** None",
+    "- **Go/no-go owner and decision record location:** Human: Release manager; durable release decision record for this Run",
+    "- **Required revalidation triggers:** Any Run, revision, artifact, environment, test, risk, or plan change",
+    "",
+    "Preparing this runbook does not approve or perform deployment, rollout, rollback, migration, CI or secret changes, publication, risk acceptance, or incident command.",
+    "",
+  ].join("\n");
 }
 
 function fakeEngineeringArtifactContent(
@@ -1601,30 +1750,10 @@ export function buildTaskEnvelope(request: CodexRunRequest): string {
   ].filter(Boolean).join("\n");
   const selected = request.selectedArtifacts.length === 0
     ? "- 无（这是第一个阶段）"
-    : request.selectedArtifacts.map((artifact) => {
-      const snapshot = artifact.content.slice(0, 50_000);
-      return [
-        `### ${artifact.artifactKey}`,
-        `Approved artifact id: ${artifact.id}`,
-        `Original path: ${artifact.filePath}`,
-        `SHA-256: ${artifact.contentHash}`,
-        "```markdown",
-        snapshot,
-        "```"
-      ].join("\n");
-    }).join("\n\n").slice(0, 180_000);
+    : renderSelectedArtifactContext(request.selectedArtifacts);
   const currentArtifacts = (request.currentArtifacts ?? []).length === 0
     ? "- 无（本阶段尚未产生过产物）"
-    : (request.currentArtifacts ?? []).map((artifact) => [
-        `### ${artifact.artifactKey} · revision ${artifact.revision}`,
-        `Current artifact id: ${artifact.id}`,
-        `Current path: ${artifact.filePath}`,
-        `Revision source: ${artifact.revisionSource}`,
-        `SHA-256: ${artifact.contentHash}`,
-        "```",
-        artifact.content.slice(0, 50_000),
-        "```",
-      ].join("\n")).join("\n\n").slice(0, 180_000);
+    : renderCurrentArtifactContext(request.currentArtifacts ?? []);
   const revisionFeedback = (request.revisionFeedback ?? []).length === 0
     ? "- 无"
     : (request.revisionFeedback ?? []).map((comment) => `- ${comment}`).join("\n").slice(0, 20_000);
@@ -1725,6 +1854,92 @@ ${figmaTargetContract ? `## 已由人工选定的 Figma 目标\n\n${figmaTargetC
 `;
 }
 
+const artifactContextCharacterBudget = 180_000;
+const artifactPreviewCharacterBudget = 50_000;
+
+function renderSelectedArtifactContext(
+  artifacts: CodexRunRequest["selectedArtifacts"],
+): string {
+  const manifest = [
+    "### Complete approved-input manifest",
+    ...artifacts.map((artifact) => (
+      `- ${artifact.artifactKey}: id=${artifact.id}; path=${artifact.filePath}; sha256=${artifact.contentHash}; characters=${artifact.content.length}`
+    )),
+    "- This manifest is complete. Embedded bodies below are bounded previews. If a preview is truncated or omitted, read the full approved input from its listed project-relative path and verify its SHA-256 before relying on it; never silently ignore the tail.",
+  ].join("\n");
+  return renderBoundedArtifactPreviews(
+    manifest,
+    artifacts.map((artifact) => ({
+      heading: artifact.artifactKey,
+      metadata: [
+        `Approved artifact id: ${artifact.id}`,
+        `Original path: ${artifact.filePath}`,
+        `SHA-256: ${artifact.contentHash}`,
+      ],
+      content: artifact.content,
+      fence: "markdown",
+    })),
+  );
+}
+
+function renderCurrentArtifactContext(
+  artifacts: NonNullable<CodexRunRequest["currentArtifacts"]>,
+): string {
+  const manifest = [
+    "### Complete current-output manifest",
+    ...artifacts.map((artifact) => (
+      `- ${artifact.artifactKey}: revision=${artifact.revision}; id=${artifact.id}; path=${artifact.filePath}; sha256=${artifact.contentHash}; characters=${artifact.content.length}`
+    )),
+    "- This manifest is complete. Embedded bodies below are bounded previews. Read and hash the full listed path before editing whenever its preview is truncated or omitted.",
+  ].join("\n");
+  return renderBoundedArtifactPreviews(
+    manifest,
+    artifacts.map((artifact) => ({
+      heading: `${artifact.artifactKey} · revision ${artifact.revision}`,
+      metadata: [
+        `Current artifact id: ${artifact.id}`,
+        `Current path: ${artifact.filePath}`,
+        `Revision source: ${artifact.revisionSource}`,
+        `SHA-256: ${artifact.contentHash}`,
+      ],
+      content: artifact.content,
+      fence: "",
+    })),
+  );
+}
+
+function renderBoundedArtifactPreviews(
+  manifest: string,
+  artifacts: ReadonlyArray<{
+    heading: string;
+    metadata: string[];
+    content: string;
+    fence: string;
+  }>,
+): string {
+  let remaining = Math.max(0, artifactContextCharacterBudget - manifest.length - 256);
+  const previews = artifacts.map((artifact) => {
+    const previewLength = Math.min(
+      artifact.content.length,
+      artifactPreviewCharacterBudget,
+      remaining,
+    );
+    remaining -= previewLength;
+    const omitted = artifact.content.length - previewLength;
+    return [
+      `### ${artifact.heading}`,
+      ...artifact.metadata,
+      `\`\`\`${artifact.fence}`,
+      artifact.content.slice(0, previewLength),
+      "```",
+      omitted > 0
+        ? `[Preview truncated: ${omitted} characters omitted. Read the complete file at the manifest path and verify its SHA-256.]`
+        : "[Preview complete.]",
+    ].join("\n");
+  });
+  return [manifest, ...previews].join("\n\n");
+}
+
 function buildOutputMaterializationContract(request: CodexRunRequest): string {
   const currentOutputKeys = new Set(
     (request.currentArtifacts ?? []).map((artifact) => artifact.artifactKey),
@@ -1760,6 +1975,15 @@ function buildOutputMaterializationContract(request: CodexRunRequest): string {
       "- Tester 特例：Verification 是独立执行与取证阶段，不是实现或测试脚本编写阶段。除本次已选中的 Run-scoped test-report 和明确列出的运行证据目录外，整个项目中的 tracked/untracked 文件、生产源码、测试源码、仓库控制文件、Agent/角色配置和工作流资源全部只读；runner 同步窗口结束扫描观察到的变化会被平台还原并拒绝整次执行。不得启动后台或分离进程。",
       "- Playwright MCP 探索只能帮助确认路径和诊断问题，探索动作或探索成功本身不能充当可复用 E2E/CI 证据。若缺少 durable E2E 脚本，必须在 test-report 中返回 crystallization 请求给 Software Engineer，不得在 Verification 中创建或修改 tests/e2e/*.spec.ts。",
       "- 仅允许测试命令在项目根目录生成 test-results/、playwright-report/ 或 blob-report/ 运行证据；这些目录不是测试源码，也不能替代 test-report 中的命令、结果与可追溯引用。",
+    );
+  }
+  if (request.phase.owner === "devops") {
+    rules.push(
+      "- DevOps 特例：本阶段只准备和验证 Run-scoped release-runbook。除本次选中的独立 Markdown runbook 外，项目根目录中的全部文件与目录（包括 test-results、dist、build、cache 和 Git metadata）都由 Release workspace guard 视为只读；不存在 Verification runtime-evidence 或 snapshot-exclusion 写入白名单。不得启动后台或分离进程，Git 查询使用 GIT_OPTIONAL_LOCKS=0。",
+      "- 不得执行 deploy、rollout、rollback、生产 migration 或 production smoke；不得修改 CI/required checks、secret、环境、branch policy、源码、测试、Agent/工作流控制文件；不得 commit、push、创建/发布 PR、制品或 release。",
+      "- 从 `.ai-sdlc/roles/devops/workflow.md` 与 `.ai-sdlc/templates/release-runbook.md` 开始。Release readiness 和 Runbook conclusion 只有在机器证据 gate 可满足时才能严格写为 `Ready for human go/no-go`；否则写 `Blocked` 并列出证据、owner 与 next action。",
+      "- Trusted upstream input bindings 表必须逐项复制上方选中输入 manifest 中的 artifact ID、完整项目相对路径与 SHA-256 content hash；不得用一个摘要替代多项绑定，也不得根据文件名或正文自行重算后伪装成平台提供的 current binding。",
+      "- `Human release owner`、`Rollback decision owner` 与 `Go/no-go owner and decision record location` 都必须使用精确的 `Human: <role/name reference>` 机器格式并指向真实人类角色/人员，不得填写 Agent、模型、assistant、automation、bot 或 system。保留模板中的执行边界，且 `Deployment execution` 必须真实写为 `Not executed by preparing this runbook.`。runbook 审批只确认指导已准备，不代表 go/no-go、部署或发布成功；正文也不得用中英文同义句声称已部署、已上线或最终发布已批准。",
     );
   }
   if (request.requireEverySelectedOutputUpdated) {
@@ -1816,6 +2040,30 @@ function outputKeys(request: CodexRunRequest): string[] {
 function configuredOutputs(request: CodexRunRequest): LoadedDefinition["artifacts"] {
   const selected = new Set(outputKeys(request));
   return request.definition.artifacts.filter((artifact) => selected.has(artifact.id));
+}
+
+function assertNoPlatformBackfillCollisions(
+  request: CodexRunRequest,
+  selectedOutputKeys: ReadonlySet<string>,
+): void {
+  const persistedHeads = new Set(
+    (request.currentArtifacts ?? []).map((artifact) => artifact.artifactKey),
+  );
+  const collisions = request.definition.artifacts.filter((artifact) => (
+    artifact.platformInjected
+    && selectedOutputKeys.has(artifact.id)
+    && !persistedHeads.has(artifact.id)
+    && existsSync(artifact.absolutePath)
+  ));
+  if (collisions.length === 0) return;
+  throw new AppError(
+    "平台兼容性补充产物与未纳管的现有项目文件冲突；请显式迁移或在 ai-native.yaml 中登记后再执行",
+    409,
+    "PLATFORM_BACKFILL_COLLISION",
+    {
+      collisions: collisions.map(({ id, relativePath }) => ({ id, relativePath })),
+    },
+  );
 }
 
 function assertNonOverlappingOutputPaths(artifacts: LoadedDefinition["artifacts"]): void {

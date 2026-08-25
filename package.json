@@ -10,6 +10,8 @@
     "bin",
     "templates",
     "guidelines",
+    "reviews/workflow-completion-v1/prompt-eval.md",
+    "reviews/workflow-completion-v1/sdlc-standards-map.md",
     "README.md",
     "LICENSE"
   ],

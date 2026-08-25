@@ -45,11 +45,15 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError } from "@/lib/api";
 import {
+  artifactReviewHeadKey,
   artifactRevisionByteLength,
   artifactRevisionContentInvalid,
   currentArtifactHeadIds,
   isArtifactHeadsChangedError,
   isArtifactRevisionRefreshError,
+  reviewExitPolicy,
+  unviewedCurrentArtifactHeads,
+  updateArchitectureSelectionMarker,
 } from "@/lib/artifact-review";
 import {
   buildFigmaExecutionOptions,
@@ -79,10 +83,16 @@ import {
   isDeferredDesignHandoffCleanupGate,
   nonBlockingHumanDecisionItems,
 } from "@/lib/human-decisions";
+import { registerNavigationGuard } from "@/lib/navigation-guard";
 import {
   TESTER_FLOW_STEPS,
   TEST_REPORT_REVIEW_POINTS,
 } from "@/lib/tester-workflow";
+import {
+  RELEASE_COMPLETION_BOUNDARY,
+  RELEASE_FLOW_STEPS,
+  RELEASE_REVIEW_POINTS,
+} from "@/lib/release-workflow";
 import { verificationE2eStandardGate } from "@/lib/verification-e2e-workflow";
 import {
   architecturePartialAllowedOutputKeys,
@@ -451,11 +461,11 @@ export function RunPage({
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <Badge variant={run.status === "completed" ? "success" : "info"}>
                 <GitBranch className="h-3 w-3" aria-hidden />
-                {run.status === "completed" ? "交付完成" : "交付任务"}
+                {run.status === "completed" ? "工作流审核完成" : "交付任务"}
               </Badge>
               <span className="text-xs text-slate-400">创建于 {formatDate(run.createdAt)}</span>
             </div>
-            <h1 className="text-balance text-2xl font-bold tracking-[-0.025em] text-slate-950 sm:text-3xl">
+            <h1 tabIndex={-1} className="text-balance text-2xl font-bold tracking-[-0.025em] text-slate-950 focus:outline-none sm:text-3xl">
               {run.title}
             </h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
@@ -543,7 +553,7 @@ export function RunPage({
       {view === "tickets" ? (
         <Suspense
           fallback={
-            <div className="flex min-h-72 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white text-sm text-slate-400">
+            <div role="status" aria-live="polite" className="flex min-h-72 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white text-sm text-slate-500">
               <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
               正在加载 Ticket 看板…
             </div>
@@ -992,9 +1002,10 @@ function E2eScriptReviewDialog({
           <EmptyState title="没有待审完整基线" description="刷新 E2E flow，或先生成独立 Playwright 脚本基线。" />
         )}
       </div>
-      <div className="grid grid-cols-2 gap-2 border-t border-slate-100 px-6 py-4">
+      <div className="grid grid-cols-1 gap-2 border-t border-slate-100 px-6 py-4 sm:grid-cols-2">
         <Button
           variant="destructive"
+          className="h-auto min-h-10 whitespace-normal py-2"
           loading={mutation.isPending && mutation.variables === "request_changes"}
           disabled={!authoring || !comment.trim() || mutation.isPending}
           onClick={() => mutation.mutate("request_changes")}
@@ -1003,6 +1014,7 @@ function E2eScriptReviewDialog({
         </Button>
         <Button
           variant="success"
+          className="h-auto min-h-10 whitespace-normal py-2"
           loading={mutation.isPending && mutation.variables === "approve"}
           disabled={
             !authoring
@@ -1524,6 +1536,10 @@ function PhasePanel({
                     ? "根据反馈重新实施"
                   : phase.phaseId === "verification" && phase.status === "ready"
                     ? "普通验证（无需真实浏览器 E2E）"
+                  : phase.phaseId === "release" && phase.status === "ready"
+                    ? "生成发布准备手册"
+                  : phase.phaseId === "release"
+                    ? "根据反馈更新发布手册"
                   : onlyDeferredDesignVerification || deferredHandoffCleanupRequired
                     ? "整理实现后验证交接"
                   : phase.status === "ready"
@@ -1534,7 +1550,7 @@ function PhasePanel({
             {canReview && !linkedVerificationReviewLocked ? (
               <Button variant="default" className="animate-pulse-ring" onClick={() => onReview()}>
                 <Eye className="h-4 w-4" aria-hidden />
-                审核 AI 产物
+                {phase.phaseId === "release" ? "审核发布准备材料" : "审核 AI 产物"}
               </Button>
             ) : phase.status === "approved" ? (
               <Button variant="outline" onClick={() => onReview()}>
@@ -1561,6 +1577,15 @@ function PhasePanel({
         ) : null}
         {phase.phaseId === "verification" ? (
           <div className="mb-5"><TesterFlowGuide /></div>
+        ) : null}
+        {phase.phaseId === "release" ? (
+          <div className="mb-5"><ReleaseFlowGuide /></div>
+        ) : null}
+        {phase.phaseId === "release" && phase.status === "approved" ? (
+          <div role="status" className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">
+            <div className="font-semibold">发布准备材料已通过人工审核</div>
+            <p className="mt-1 text-xs leading-5 text-emerald-900">{RELEASE_COMPLETION_BOUNDARY}</p>
+          </div>
         ) : null}
         {phase.phaseId === "verification" && verificationE2ePanel ? (
           <div className="mb-5 space-y-3">
@@ -1667,7 +1692,7 @@ function PhasePanel({
           </div>
         ) : null}
         {phase.status === "running" ? (
-          <div className="mb-5 flex items-center gap-3 rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-800">
+          <div role="status" aria-live="polite" className="mb-5 flex items-center gap-3 rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-800">
             <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
             {phase.phaseId === "implementation"
               ? "Codex 正在写代码、补测试、运行检查并生成工程证据。页面会自动刷新状态和终端事件。"
@@ -1907,6 +1932,30 @@ function TesterFlowGuide({ compact = false }: { compact?: boolean }) {
             <div className="text-xs font-semibold text-slate-900">
               {step.number === 0 ? "接收" : `E2E Stage ${step.number}`} · {step.title}
             </div>
+            <p className="mt-1 text-[11px] leading-4 text-slate-500">{step.description}</p>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function ReleaseFlowGuide({ compact = false }: { compact?: boolean }) {
+  return (
+    <section className="rounded-xl border border-violet-200 bg-violet-50/60 p-4" aria-label="发布准备与审核流程">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-950">DevOps：准备、核对、审核、交接</h3>
+          <p className="mt-1 text-xs leading-5 text-slate-600">
+            目标是形成可执行、可观察、可回滚的发布手册；本阶段不会执行部署、发布、推送、合并或环境变更。
+          </p>
+        </div>
+        <Badge variant="muted">准备就绪 ≠ 已发布</Badge>
+      </div>
+      <ol className={cn("mt-3 grid gap-2", compact ? "sm:grid-cols-2" : "sm:grid-cols-2 xl:grid-cols-4")}>
+        {RELEASE_FLOW_STEPS.map((step) => (
+          <li key={step.number} className="rounded-lg bg-white px-3 py-2.5 ring-1 ring-violet-100">
+            <div className="text-xs font-semibold text-slate-900">{step.number}. {step.title}</div>
             <p className="mt-1 text-[11px] leading-4 text-slate-500">{step.description}</p>
           </li>
         ))}
@@ -3754,7 +3803,7 @@ function ExecuteDialog({
           </div>
         </div>
         {error ? (
-          <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-700">
+          <div role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-700">
             {error}
           </div>
         ) : null}
@@ -3918,6 +3967,8 @@ function ReviewDialog({
     artifactId: string;
     content: string;
   }>();
+  const decisionResponsesBaselineRef = useRef<Record<string, string>>({});
+  const artifactHeadsSignatureRef = useRef("");
   const [selectedArtifactId, setSelectedArtifactId] = useState(
     initialArtifactId ?? reviewArtifacts[0]?.id ?? "",
   );
@@ -3929,6 +3980,9 @@ function ReviewDialog({
   const [revisionError, setRevisionError] = useState<string>();
   const [reviewConflict, setReviewConflict] = useState<string>();
   const [decisionResponses, setDecisionResponses] = useState<Record<string, string>>({});
+  const [viewedArtifactHeadKeys, setViewedArtifactHeadKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
   const actionableDecisionItems = actionableHumanDecisionItems(decisionGate);
   const dependentDecisionItems = dependentHumanDecisionItems(decisionGate);
   const deferredDecisionItems = deferredHumanDecisionItems(decisionGate);
@@ -3991,6 +4045,21 @@ function ReviewDialog({
     ].includes(phase.status);
   const currentArtifactHeads = phase.artifacts.filter(
     (candidate) => !candidate.superseded && candidate.reviewStatus !== "superseded",
+  );
+  const artifactHeadsSignature = currentArtifactHeads
+    .map((candidate) => artifactReviewHeadKey(candidate) ?? `${candidate.id}:missing-content-hash`)
+    .sort()
+    .join("|");
+  const unviewedArtifactHeads = unviewedCurrentArtifactHeads(
+    phase.artifacts,
+    viewedArtifactHeadKeys,
+  );
+  const decisionResponseKeys = new Set([
+    ...Object.keys(decisionResponsesBaselineRef.current),
+    ...Object.keys(decisionResponses),
+  ]);
+  const hasDirtyDecisionResponses = [...decisionResponseKeys].some(
+    (key) => (decisionResponses[key] ?? "") !== (decisionResponsesBaselineRef.current[key] ?? ""),
   );
   const currentArtifactKeys = new Set(currentArtifactHeads.map((candidate) => keyForArtifact(candidate)));
   const missingApprovalOutputKeys = requiredPhaseApprovalOutputKeys(
@@ -4073,18 +4142,49 @@ function ReviewDialog({
   }, [selectedArtifactId, artifact?.contentHash, artifactQuery.data, content]);
 
   useEffect(() => {
-    setDecisionResponses(Object.fromEntries(
+    const nextDecisionResponses = Object.fromEntries(
       actionableDecisionItems.map((item) => [
         item.id,
         item.response
           ?? (item.kind === "work" ? `请完成该待办并更新正式产物：${item.nextAction}` : ""),
       ]),
-    ));
+    );
+    decisionResponsesBaselineRef.current = nextDecisionResponses;
+    setDecisionResponses(nextDecisionResponses);
   }, [
     decisionGate?.phaseId,
     decisionGate?.items.map(({ id, response, blocking, actionPhaseId }) => (
       `${id}:${response ?? ""}:${blocking}:${actionPhaseId}`
     )).join("|"),
+  ]);
+
+  useEffect(() => {
+    if (artifactHeadsSignatureRef.current === artifactHeadsSignature) return;
+    artifactHeadsSignatureRef.current = artifactHeadsSignature;
+    setViewedArtifactHeadKeys(new Set());
+  }, [artifactHeadsSignature]);
+
+  useEffect(() => {
+    const loadedArtifact = artifactQuery.data;
+    if (!artifactQuery.isSuccess || loadedArtifact?.id !== selectedArtifactId) return;
+    const currentHead = currentArtifactHeads.find(
+      (candidate) => candidate.id === loadedArtifact.id
+        && candidate.contentHash === loadedArtifact.contentHash,
+    );
+    const reviewedHeadKey = currentHead ? artifactReviewHeadKey(currentHead) : undefined;
+    if (!reviewedHeadKey) return;
+    setViewedArtifactHeadKeys((current) => {
+      if (current.has(reviewedHeadKey)) return current;
+      const next = new Set(current);
+      next.add(reviewedHeadKey);
+      return next;
+    });
+  }, [
+    artifactHeadsSignature,
+    artifactQuery.data?.contentHash,
+    artifactQuery.data?.id,
+    artifactQuery.isSuccess,
+    selectedArtifactId,
   ]);
 
   const revisionMutation = useMutation({
@@ -4278,7 +4378,46 @@ function ReviewDialog({
       await queryClient.invalidateQueries({ queryKey: ["run", runId] });
     },
   });
+  const hasPendingReviewWork = revisionMutation.isPending
+    || reviewMutation.isPending
+    || decisionCaptureMutation.isPending;
+  const hasUnsavedReviewWork = isDirty
+    || comment.length > 0
+    || hasDirtyDecisionResponses;
   const isReviewable = phase.status === "awaiting_review";
+  const confirmReviewExit = () => {
+    const exitPolicy = reviewExitPolicy({
+      pending: hasPendingReviewWork,
+      dirty: hasUnsavedReviewWork,
+    });
+    if (exitPolicy === "block") {
+      setError("审核操作仍在处理中，请等待完成后再关闭窗口。");
+      return false;
+    }
+    if (
+      exitPolicy === "confirm"
+      && !window.confirm("关闭后将丢弃尚未提交的审核意见、决定回答或人工编辑。确定关闭吗？")
+    ) {
+      return false;
+    }
+    return true;
+  };
+
+  useEffect(() => {
+    if (!open) return undefined;
+    return registerNavigationGuard(confirmReviewExit);
+  }, [open, hasPendingReviewWork, hasUnsavedReviewWork]);
+
+  useEffect(() => {
+    if (!open || (!hasPendingReviewWork && !hasUnsavedReviewWork)) return undefined;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [open, hasPendingReviewWork, hasUnsavedReviewWork]);
+
   const submitDecisionResponses = () => {
     if (!decisionGate || actionableDecisionItems.length === 0) return;
     if (isDirty || revisionMutation.isPending) {
@@ -4311,6 +4450,12 @@ function ReviewDialog({
       setError("当前阶段没有可用于承接决定的正式产物，请先运行对应角色。");
       return;
     }
+    if (
+      comment.length > 0
+      && !window.confirm("保存决定后会进入下一步，尚未提交的审核意见不会被保存。仍要继续吗？")
+    ) {
+      return;
+    }
     decisionCaptureMutation.mutate({
       phaseId: decisionGate.phaseId,
       responses,
@@ -4329,6 +4474,14 @@ function ReviewDialog({
     }
     if (decision === "approve" && decisionGate && decisionGate.blockingCount > 0) {
       setError("还有未关闭的决定、角色待办或上游依赖。请先处理上方清单并让对应角色更新正式产物。");
+      return;
+    }
+    if (decision === "approve" && unviewedArtifactHeads.length > 0) {
+      setError(
+        `还需逐份查看当前版本：${unviewedArtifactHeads
+          .map((candidate) => artifactLabel(keyForArtifact(candidate)))
+          .join("、")}。`,
+      );
       return;
     }
     if (decision === "request_changes" && architectureReselectionBlocked) {
@@ -4409,24 +4562,31 @@ function ReviewDialog({
     }
     setSelectedArtifactId(artifactId);
   };
+  const leaveReviewFor = (action: () => void) => {
+    if (confirmReviewExit()) action();
+  };
   const handleOpenChange = (nextOpen: boolean) => {
-    if (!nextOpen && (isDirty || revisionMutation.isPending)) {
-      setRevisionError("请先保存或取消当前人工编辑，再关闭窗口。");
+    if (nextOpen) {
+      onOpenChange(true);
       return;
     }
-    onOpenChange(nextOpen);
+    if (!confirmReviewExit()) return;
+    onOpenChange(false);
   };
 
   return (
     <Dialog
       open={open}
       onOpenChange={handleOpenChange}
+      closeDisabled={hasPendingReviewWork}
       title={`人工审核 · ${getPhaseName(definition)}`}
       description={phase.phaseId === "implementation"
         ? "你只需看实现、测试和风险，不要求编辑 Markdown；确认没有阻塞后，通过并解锁 Tester。"
         : phase.phaseId === "verification"
           ? `先确认 ${TEST_REPORT_REVIEW_POINTS.join("；")}。通过只代表 Verification 证据完整，不代表 PR、合并或发布已批准。`
-          : "逐份查看或人工修订阶段产物，也可只重跑当前产物。通过后会解锁下一角色。"}
+          : phase.phaseId === "release"
+            ? `先确认 ${RELEASE_REVIEW_POINTS.join("；")}。${RELEASE_COMPLETION_BOUNDARY}`
+            : "逐份查看或人工修订阶段产物，也可只重跑当前产物。通过后会解锁下一角色。"}
       className="max-w-6xl"
     >
       {reviewConflict ? (
@@ -4438,8 +4598,26 @@ function ReviewDialog({
           <span>{reviewConflict}</span>
         </div>
       ) : null}
-      <div className="grid min-h-0 flex-1 overflow-y-auto lg:grid-cols-[minmax(0,1fr)_340px] lg:overflow-hidden">
-        <div className="flex min-h-0 flex-col border-b border-slate-200 lg:border-b-0 lg:border-r">
+      {isReviewable ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex min-w-0 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-sky-50 px-5 py-2.5 text-xs text-sky-950"
+        >
+          <span className="font-semibold">
+            当前版本已查看 {currentArtifactHeads.length - unviewedArtifactHeads.length} / {currentArtifactHeads.length}
+          </span>
+          <span className="min-w-0 break-words text-sky-800">
+            {unviewedArtifactHeads.length > 0
+              ? `通过前还需打开：${unviewedArtifactHeads
+                  .map((candidate) => artifactLabel(keyForArtifact(candidate)))
+                  .join("、")}`
+              : "当前所有产物 head 均已加载并查看。"}
+          </span>
+        </div>
+      ) : null}
+      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-y-auto lg:grid-cols-[minmax(0,1fr)_340px] lg:overflow-hidden">
+        <div className="flex min-h-0 min-w-0 max-w-full flex-col border-b border-slate-200 lg:border-b-0 lg:border-r">
           {reviewArtifacts.length > 1 ? (
             <div className="scrollbar-thin shrink-0 overflow-x-auto border-b border-slate-100 p-3">
               {phase.phaseId === "implementation" ? (
@@ -4449,12 +4627,19 @@ function ReviewDialog({
               ) : null}
               <Tabs value={selectedArtifactId} onValueChange={changeArtifact}>
                 <TabsList className="w-max">
-                  {reviewArtifacts.map((item) => (
-                    <TabsTrigger key={item.id} value={item.id}>
-                      {artifactLabel(keyForArtifact(item))}
-                      {item.revision ? ` · v${item.revision}` : ""}
-                    </TabsTrigger>
-                  ))}
+                  {reviewArtifacts.map((item) => {
+                    const reviewedHeadKey = artifactReviewHeadKey(item);
+                    const hasViewedCurrentHead = Boolean(
+                      reviewedHeadKey && viewedArtifactHeadKeys.has(reviewedHeadKey),
+                    );
+                    return (
+                      <TabsTrigger key={item.id} value={item.id}>
+                        {hasViewedCurrentHead ? <Check className="h-3.5 w-3.5" aria-hidden /> : null}
+                        {artifactLabel(keyForArtifact(item))}
+                        {item.revision ? ` · v${item.revision}` : ""}
+                      </TabsTrigger>
+                    );
+                  })}
                 </TabsList>
               </Tabs>
             </div>
@@ -4483,8 +4668,8 @@ function ReviewDialog({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={isDirty || revisionMutation.isPending}
-                  onClick={() => onRerunArtifact(artifactKey)}
+                  disabled={isDirty || hasPendingReviewWork}
+                  onClick={() => leaveReviewFor(() => onRerunArtifact(artifactKey))}
                 >
                   <RotateCcw className="h-3.5 w-3.5" aria-hidden />
                   仅重跑当前产物
@@ -4492,7 +4677,7 @@ function ReviewDialog({
               ) : null}
             </div>
           </div>
-          <div className="min-h-[280px] flex-1 bg-white p-5 sm:p-7 lg:max-h-[65vh] lg:min-h-[340px] lg:overflow-y-auto">
+          <div className="min-h-[280px] min-w-0 max-w-full flex-1 overflow-x-hidden bg-white p-5 sm:p-7 lg:max-h-[65vh] lg:min-h-[340px] lg:overflow-y-auto">
             {artifactQuery.isLoading ? (
               <div className="flex h-52 items-center justify-center gap-2 text-sm text-slate-400">
                 <LoaderCircle className="h-4 w-4 animate-spin" /> 读取产物…
@@ -4580,7 +4765,7 @@ function ReviewDialog({
           </div>
         </div>
 
-        <aside className="bg-slate-50/60 p-5 lg:max-h-[75vh] lg:overflow-y-auto">
+        <aside className="min-w-0 max-w-full bg-slate-50/60 p-5 lg:max-h-[75vh] lg:overflow-y-auto">
           {deferredDecisionItems.length > 0 ? (
             <section
               className="mb-5 rounded-xl border border-sky-200 bg-sky-50 p-4"
@@ -4674,7 +4859,7 @@ function ReviewDialog({
                         size="sm"
                         variant="outline"
                         className="mt-2 bg-white"
-                        onClick={() => onNavigateDecisionPhase(item.actionPhaseId)}
+                        onClick={() => leaveReviewFor(() => onNavigateDecisionPhase(item.actionPhaseId))}
                       >
                         <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
                         去 {HUMAN_DECISION_PHASE_LABELS[item.actionPhaseId]} 处理
@@ -4785,7 +4970,8 @@ function ReviewDialog({
                 <Button
                   variant="primary"
                   className="mt-4 w-full"
-                  onClick={() => onDecisionSaved(decisionGate.phaseId)}
+                  disabled={hasPendingReviewWork}
+                  onClick={() => leaveReviewFor(() => onDecisionSaved(decisionGate.phaseId))}
                 >
                   <RotateCcw className="h-4 w-4" aria-hidden />
                   运行 {HUMAN_DECISION_ROLE_LABELS[decisionGate.phaseId]} 同步并处理清单
@@ -4870,7 +5056,10 @@ function ReviewDialog({
                                 ? "border-teal-500 ring-2 ring-teal-500/20"
                                 : "border-amber-200 hover:border-teal-400",
                             )}
-                            onClick={() => setComment(`Selected option: ${option.id}`)}
+                            disabled={hasPendingReviewWork}
+                            onClick={() => setComment((current) => (
+                              updateArchitectureSelectionMarker(current, option.id)
+                            ))}
                           >
                             <span className="flex items-center justify-between gap-2">
                               <span className="font-semibold text-slate-950">Option {option.id} · {option.title}</span>
@@ -4916,6 +5105,7 @@ function ReviewDialog({
                       : "记录你的判断，或者准确描述需要修改的地方…"
                   }
                   value={comment}
+                  disabled={hasPendingReviewWork}
                   onChange={(event) => setComment(event.target.value)}
                   required
                   aria-required="true"
@@ -4957,10 +5147,12 @@ function ReviewDialog({
                       className="mt-2"
                       onClick={() => {
                         if (engineeringGateHelp.recommendation.kind === "repair-upstream") {
-                          onNavigateDecisionPhase("discovery");
+                          leaveReviewFor(() => onNavigateDecisionPhase("discovery"));
                           return;
                         }
-                        onRerunOutputs(engineeringGateHelp.recommendation.outputKeys);
+                        leaveReviewFor(() => onRerunOutputs(
+                          engineeringGateHelp.recommendation.outputKeys,
+                        ));
                       }}
                     >
                       <RotateCcw className="h-3.5 w-3.5" aria-hidden />
@@ -5007,7 +5199,9 @@ function ReviewDialog({
                                 <button
                                   type="button"
                                   className="font-semibold text-teal-700 underline underline-offset-4"
-                                  onClick={() => onRerunOutputs([action.artifactKey!])}
+                                  onClick={() => leaveReviewFor(() => onRerunOutputs([
+                                    action.artifactKey!,
+                                  ]))}
                                 >
                                   只重跑这 1 份证据
                                 </button>
@@ -5032,17 +5226,16 @@ function ReviewDialog({
                   ) : null}
                 </div>
               ) : null}
-              <div className="mt-4 grid grid-cols-2 gap-2">
+              <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <Button
                   variant={showsArchitectureSelectionAction ? "primary" : "destructive"}
-                  className="px-2"
+                  className="h-auto min-h-10 whitespace-normal px-2 py-2"
                   loading={
                     reviewMutation.isPending
                     && reviewMutation.variables?.decision === "request_changes"
                   }
                   disabled={
-                    reviewMutation.isPending
-                    || revisionMutation.isPending
+                    hasPendingReviewWork
                     || isDirty
                     || architectureReselectionBlocked
                     || Boolean(
@@ -5062,15 +5255,15 @@ function ReviewDialog({
                 </Button>
                 <Button
                   variant="success"
-                  className="px-2"
+                  className="h-auto min-h-10 whitespace-normal px-2 py-2"
                   loading={
                     reviewMutation.isPending
                     && reviewMutation.variables?.decision === "approve"
                   }
                   disabled={
-                    reviewMutation.isPending
-                    || revisionMutation.isPending
+                    hasPendingReviewWork
                     || isDirty
+                    || unviewedArtifactHeads.length > 0
                     || missingApprovalOutputKeys.length > 0
                     || isArchitectureSelectionCheckpoint
                     || staleArchitectureOutputKeys.length > 0
@@ -5079,7 +5272,11 @@ function ReviewDialog({
                   onClick={() => submit("approve")}
                 >
                   <CheckCircle2 className="h-4 w-4" aria-hidden />
-                  {phase.phaseId === "implementation" ? "检查证据并解锁 Tester" : "通过并解锁"}
+                  {phase.phaseId === "implementation"
+                    ? "检查证据并解锁 Tester"
+                    : phase.phaseId === "release"
+                      ? "确认发布准备已就绪"
+                      : "通过并解锁"}
                 </Button>
               </div>
             </div>
@@ -5087,9 +5284,13 @@ function ReviewDialog({
             <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-xs leading-5 text-emerald-800">
               <div className="flex items-center gap-2 font-semibold">
                 <FileCheck2 className="h-4 w-4" aria-hidden />
-                本阶段已完成审核
+                {phase.phaseId === "release" ? "发布准备材料已完成审核" : "本阶段已完成审核"}
               </div>
-              <p className="mt-1">可以继续创建人工修订，或只重跑需要调整的当前产物。</p>
+              <p className="mt-1">
+                {phase.phaseId === "release"
+                  ? RELEASE_COMPLETION_BOUNDARY
+                  : "可以继续创建人工修订，或只重跑需要调整的当前产物。"}
+              </p>
             </div>
           ) : phase.status === "changes_requested" || phase.status === "rejected" ? (
             <div className="mt-5 rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs leading-5 text-rose-800">

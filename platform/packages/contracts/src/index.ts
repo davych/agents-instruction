@@ -40,11 +40,15 @@ export const updateTicketStatusSchema = z.object({
 });
 export type UpdateTicketStatusInput = z.infer<typeof updateTicketStatusSchema>;
 
+export const agentClientSchema = z.enum(["codex", "claude", "copilot"]);
+export type AgentClient = z.infer<typeof agentClientSchema>;
+
 export const createProjectSchema = z.object({
   name: z.string().trim().min(1).max(160).regex(/^[^\r\n]+$/u, "项目名称不能换行"),
   summary: z.string().trim().max(2_000).default("由 AI SDLC 平台管理的项目"),
   rootPath: z.string().trim().min(1),
-  initialize: z.boolean().default(false)
+  initialize: z.boolean().default(false),
+  agentClient: agentClientSchema.default("codex")
 });
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 

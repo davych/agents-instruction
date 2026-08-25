@@ -11,6 +11,7 @@ interface DialogProps {
   description?: string;
   children: ReactNode;
   className?: string;
+  closeDisabled?: boolean;
 }
 
 export function Dialog({
@@ -20,12 +21,20 @@ export function Dialog({
   description,
   children,
   className,
+  closeDisabled = false,
 }: DialogProps) {
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-slate-950/45 backdrop-blur-[2px] data-[state=open]:animate-fade-up" />
         <DialogPrimitive.Content
+          aria-busy={closeDisabled || undefined}
+          onEscapeKeyDown={(event) => {
+            if (closeDisabled) event.preventDefault();
+          }}
+          onPointerDownOutside={(event) => {
+            if (closeDisabled) event.preventDefault();
+          }}
           className={cn(
             "fixed bottom-0 left-1/2 z-50 flex max-h-[94vh] w-full max-w-xl -translate-x-1/2 flex-col overflow-hidden rounded-t-3xl border border-white/60 bg-white shadow-panel focus:outline-none sm:bottom-auto sm:top-1/2 sm:w-[calc(100%-3rem)] sm:-translate-y-1/2 sm:rounded-2xl",
             className,
@@ -45,7 +54,8 @@ export function Dialog({
             <DialogPrimitive.Close asChild>
               <button
                 type="button"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+                disabled={closeDisabled}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
                 aria-label="关闭"
               >
                 <X className="h-4 w-4" aria-hidden />

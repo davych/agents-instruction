@@ -339,9 +339,12 @@ test("target preflight rejects a missing product start script before spawn", asy
 
 test("target preflight fails when cleanup requires SIGKILL and still reaps the server", async () => {
   const fixture = await executionFixture();
+  const serverReadyPath = path.join(fixture.parent, "sigterm-handler.ready");
   await writeFile(path.join(fixture.productRoot, "server.mjs"), [
-    "setInterval(() => undefined, 1_000);",
+    'import { writeFileSync } from "node:fs";',
     'process.on("SIGTERM", () => undefined);',
+    `writeFileSync(${JSON.stringify(serverReadyPath)}, "ready", "utf8");`,
+    "setInterval(() => undefined, 1_000);",
     "",
   ].join("\n"), "utf8");
   let serverProcess: ReturnType<typeof spawn> | undefined;
@@ -353,7 +356,15 @@ test("target preflight fails when cleanup requires SIGKILL and still reaps the s
     },
     targetVacancyProbe: async () => undefined,
     readinessProbe: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          await readFile(serverReadyPath, "utf8");
+          return;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+      throw new Error("SIGTERM handler did not become ready");
     },
     browserTargetProbe: async ({ baseUrl, browser }) => ({
       url: baseUrl,

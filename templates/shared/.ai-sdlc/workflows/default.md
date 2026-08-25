@@ -8,7 +8,7 @@ Use `ai-native.yaml` as the source of truth and work in this order:
 4. Architecture Impact records `skip`, `reuse`, `partial`, or `full`; Architect runs only for `partial` or `full`.
 5. After all three clearances pass, Software Engineer implements the confirmed work in the repository and delivers the complete seven-artifact engineering evidence pack: `implementation-notes`, `implementation-plan`, `implementation-tasks`, `engineering-session-log`, `engineering-test-evidence`, `engineering-review`, and `engineering-provenance`.
 6. Tester consumes the applicable `design-spec` (including every `deferred_validations` obligation), `implementation-notes`, `engineering-test-evidence`, and `engineering-review` alongside the Change Contract, acceptance criteria, risks, and regression obligations. Playwright MCP is optional transient exploration. When E2E is required, a human explicitly binds a separate Linked E2E Workspace; the platform freezes spec-only intent, a fresh Test Author writes only in that linked root, a human approves the exact generated-script manifest hash, and the platform executes standalone Playwright with a real headless Chromium. Product source and product-repository tests remain Software Engineer-owned and read-only during Verification. Tester then creates the Run-scoped test report with product/E2E dual provenance.
-7. DevOps prepares release, monitoring, rollback, and the authorized CI required-check configuration from Tester's command/report contract.
+7. DevOps binds the current Change Contract, implementation provenance, architecture evidence, and Test Report into a repeatable release, monitoring, rollback, and incident-escalation runbook. It may document required-check expectations, but only an authorized human or system configures CI or executes the release.
 
 Start artifacts from `.ai-sdlc/templates/`. Resolve every input and output artifact in this order:
 
@@ -46,6 +46,10 @@ An artifact path may name one file or a directory. When it names a directory, re
 
 Meet the phase gate in `ai-native.yaml` before moving forward. Record handoff evidence in the active task file.
 
+## Human and machine language
+
+Use `project.locale` for explanatory prose. Keep artifact IDs, stable requirement/blocker IDs, enum values, JSON/YAML keys, exact validator headings, selection markers, sentinels, hashes, and other machine-contract tokens in their canonical form; do not translate or paraphrase them. When localized prose and a machine token disagree, stop and repair the contract instead of guessing.
+
 ## E2E evidence lifecycle
 
 The three E2E stages and their readiness/script-review checkpoints are a Verification subflow, not new global phases:
@@ -58,6 +62,14 @@ The three E2E stages and their readiness/script-review checkpoints are a Verific
 Only a failure requiring product source, product-repository test, or product testability-interface changes returns to Software Engineer for an evidence refresh and Implementation reapproval. Linked-workspace test bugs stay in the fresh-author and manifest-hash-review loop. The normal linked-workspace path never requires a handwritten crystallization review marker.
 
 Read `.ai-sdlc/roles/tester/workflow.md` and its Playwright reference for selector policy, data safety, evidence fields, and failure routing.
+
+## Release evidence lifecycle
+
+Release remains the sixth fixed phase and is owned by DevOps. Start at the immutable Change Contract, then bind the exact current Run and every selected upstream artifact ID/project-relative path/platform-provided content hash, the current Implementation and Verification revisions, `engineering-provenance`, applicable accepted Architecture evidence, and the release artifact identity/digest when one exists. A valid Architecture `skip` or `reuse` clearance is evidence; never create placeholder architecture files merely to satisfy an input list.
+
+DevOps starts from `.ai-sdlc/roles/devops/workflow.md` and `.ai-sdlc/templates/release-runbook.md`. It records the trusted input binding manifest, provenance and SBOM applicability, preconditions, ordered rollout, health/smoke checks, monitoring threshold/window/owner/action, rollback trigger/RTO/data compatibility/recovery verification, incident escalation, risks, and the human release owner. Required unknowns, placeholders, stale revisions, failed or blocked Verification, and unverified critical recovery steps keep the runbook `Blocked`. In the Web path, a fake or legacy Release execution can be reviewed as a simulation but cannot be approved as readiness.
+
+Preparing or validating a runbook does not authorize deployment, rollback, production migration or smoke execution, CI/required-check changes, secret/environment changes, branch-policy changes, commit, push, PR/release/artifact publication, risk acceptance, or final go/no-go. Those actions remain with a separately authorized human or system. Operational feedback routes to the existing owning phase or creates a new Run; it never creates a seventh phase.
 
 ## Bug fast path
 

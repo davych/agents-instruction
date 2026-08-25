@@ -172,6 +172,10 @@ Designer does not:
 
 A prototype or preview is non-production and is created only when explicitly requested for design validation.
 
+## Client and runtime contract
+
+The Designer Agent is rendered from one canonical source into GitHub Copilot, Claude Code, or Codex native files. Direct IDE and Web operation share the Design role, artifact schema, and fixed phase ownership. Web execution still uses the local Codex runner and adds persisted impact clearances, selected-output guards, semantic validation, and task-scoped path pins; a direct IDE session may follow the same handoff but must not claim those Web controls ran.
+
 ## Source files
 
 - [Canonical Designer Agent](../../../templates/agents/designer.md)
@@ -184,5 +188,7 @@ A prototype or preview is non-production and is created only when explicitly req
 - [Design spec template](../../../templates/shared/.ai-sdlc/templates/design-spec.md)
 - [Change Contract template](../../../templates/shared/.ai-sdlc/templates/change-contract.md)
 - [Initialized Designer usage guide](../../../templates/shared/.ai-sdlc/guides/designer.md)
+- [Six-role prompt eval](../../../reviews/workflow-completion-v1/prompt-eval.md)
+- [SDLC standards map](../../../reviews/workflow-completion-v1/sdlc-standards-map.md)
 
 Return to [Role Relationships](../README.md).

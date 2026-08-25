@@ -18,6 +18,7 @@ export const TASK_SCOPED_ARTIFACT_KEYS: ReadonlySet<string> = new Set([
   "engineering-review",
   "engineering-provenance",
   "test-report",
+  "release-runbook",
 ]);
 const TASK_SLUG_MAX_BYTES = 96;
 const runIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
@@ -53,9 +54,9 @@ export function createTaskArtifactNamespace(task: TaskArtifactIdentity): string 
 
 /**
  * Returns a run-scoped definition without mutating the project definition.
- * Run-level contracts, feature-level design specs, engineering evidence, and
- * verification reports are task-scoped; project-wide artifacts keep their
- * configured paths.
+ * Run-level contracts, feature-level design specs, engineering evidence,
+ * verification reports, and release runbooks are task-scoped; project-wide
+ * artifacts keep their configured paths.
  */
 export function resolveTaskArtifactPaths(
   definition: LoadedDefinition,
