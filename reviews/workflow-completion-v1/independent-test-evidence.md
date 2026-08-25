@@ -55,7 +55,9 @@ Positive evidence used two independent clean-state replays:
 
 The full replay also exposed a pre-existing test-only scheduling race: an orphan-process cleanup check allowed only 40 × 10 ms for two nested Node processes to become ready. The fixture now writes its own PID only after installing its signal handler and waits on that ready file using the runner-provided timeout and abort signal. Ten concurrent focused invocations passed both forced-cleanup cases (20/20), followed by the green 848/848 aggregate run.
 
-The integrated clean-state replay used Node 24.11.1; the independent clean copy reported Node 25.8.0. A final compatibility reviewer also passed Node 20.19.6 with root 33/33, the full E2E runner file 20/20, Contracts build/test/runtime import, and API typecheck. The failed GitHub runner used Node 20.20.2; at the time of this local evidence snapshot, a positive result on that exact remote environment still required the existing PR branch to be updated and CI rerun.
+The integrated clean-state replay used Node 24.11.1; the independent clean copy reported Node 25.8.0. A compatibility reviewer also passed Node 20.19.6 with root 33/33, the full E2E runner file 20/20, Contracts build/test/runtime import, and API typecheck.
+
+The first updated GitHub run on Node 20.20.2 proved the original runtime-package defect closed: API tests loaded and both forced-cleanup cases passed. It then exposed three independent issues that the macOS/local event loop had masked: one test hard-coded `/private/tmp`; the initializer's promised timeout used an unreferenced timer; and seven parent tests did not await their nested tests. The follow-up uses `os.tmpdir()`, keeps the timeout referenced until `finally` clears it, and awaits every nested test. Local focused replay passed 59/59, full platform replay passed 848/848, and independent Node 20.19.6 replay passed the three affected files 16/16, 4/4, and 39/39 with zero cancellation. At the time of this evidence snapshot, the exact Node 20.20.2 follow-up rerun remained required before merge.
 
 ## Adversarial evidence highlights
 
@@ -75,6 +77,7 @@ The integrated clean-state replay used Node 24.11.1; the independent clean copy 
 | Web disconnect arrives after the initializer filesystem commit | Complete project registration; if an INSERT response is uncertain, expose refresh-and-reconcile guidance rather than claim distributed rollback | Workflow completion service Tier A commit-boundary check and project-dialog copy |
 | Clean checkout has no ignored Contracts build output | Platform `yarn test` builds Contracts before parallel runtime imports; typecheck remains a non-emitting gate | No-dist integrated replay and independent immutable-install copy, both 848/848 |
 | Nested Node startup exceeds a fixed scheduler budget under parallel load | Wait for the child-authored PID readiness signal within the runner deadline, or abort explicitly | Ten concurrent focused runs (20/20) plus the full aggregate replay |
+| Linux has no macOS `/private/tmp`, an awaited timeout has no other event-loop handle, or a parent test finishes before nested tests | Use `os.tmpdir()`, keep the contractual timeout referenced until cleanup, and await every child test | Local 59/59 and 848/848; independent Node 20.19.6 affected-file replay 16/16 + 4/4 + 39/39 |
 | Malformed successful Web API response | Surface `INVALID_API_RESPONSE`, never invent an empty list | Web response-parser checks |
 | Review closes while pending/dirty, or approves unseen current heads | Block or require confirmation; bind progress to current ID/hash | Web artifact-review and UI-safety checks |
 

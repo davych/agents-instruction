@@ -59,7 +59,6 @@ export async function initializeCodexProject(
     abortSource = "timeout";
     controller.abort(timeoutError);
   }, options.timeoutMs ?? 30_000);
-  timer.unref();
 
   try {
     controller.signal.throwIfAborted();

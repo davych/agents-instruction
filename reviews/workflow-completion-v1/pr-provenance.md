@@ -20,7 +20,7 @@ Material change groups:
 - runner prompt, workspace mutation, control-resource, and persistence rollback contracts;
 - DevOps V1 and the task-scoped, current-Run/current-input-bound Release evidence gate;
 - Web client selection, core response validation, review safety, navigation, and responsive layout;
-- clean-checkout CI/IDE test bootstrapping and deterministic E2E readiness;
+- clean-checkout CI/IDE test bootstrapping, cross-platform test lifecycles, and deterministic E2E readiness;
 - prompt/SDLC evaluation, README, role guidance, and Mermaid workflow diagrams.
 
 ## Authority and external-side-effect record

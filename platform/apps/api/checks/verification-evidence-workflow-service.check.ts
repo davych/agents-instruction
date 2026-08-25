@@ -61,14 +61,14 @@ test("AC-TESTER-009: legitimate HTML element evidence is not an unresolved angle
   assert.equal(result.standaloneExecutionCount, 1);
 });
 
-test("AC-TESTER-009 adversarial: placeholders and a Blocked status cannot be approved", (context) => {
+test("AC-TESTER-009 adversarial: placeholders and a Blocked status cannot be approved", async (context) => {
   const cases = new Map<string, string>([
     ["template placeholder", validReport().replace("commit abc123def", "<commit SHA>")],
     ["blocked state", validReport().replace("Ready for release review", "Blocked")],
     ["untested result labeled pass", validReport().replace("pass; exit code 0", "pass; untested; exit code 0")],
   ]);
   for (const [label, content] of cases) {
-    void context.test(label, () => assertGateFailure(content));
+    await context.test(label, () => assertGateFailure(content));
   }
 });
 
@@ -80,7 +80,7 @@ test("AC-TESTER-009 adversarial: MCP exploration cannot masquerade as standalone
   assertGateFailure(content, /autonomous test-runner|standalone execution/iu);
 });
 
-test("AC-TESTER-009 adversarial: E2E semantics use the same single canonical command as provenance", (context) => {
+test("AC-TESTER-009 adversarial: E2E semantics use the same single canonical command as provenance", async (context) => {
   const variants = new Map<string, string>([
     [
       "unit command plus an unbound Playwright claim",
@@ -111,7 +111,7 @@ test("AC-TESTER-009 adversarial: E2E semantics use the same single canonical com
     ],
   ]);
   for (const [label, commandCell] of variants) {
-    void context.test(label, () => {
+    await context.test(label, () => {
       const content = validReport().replace(
         "`yarn test:e2e` from `/workspace/shop`",
         commandCell,
@@ -121,13 +121,13 @@ test("AC-TESTER-009 adversarial: E2E semantics use the same single canonical com
   }
 });
 
-test("AC-TESTER-009: canonical direct and repository E2E wrappers remain valid", (context) => {
+test("AC-TESTER-009: canonical direct and repository E2E wrappers remain valid", async (context) => {
   for (const command of [
     "npx playwright test tests/e2e/checkout-coupon.spec.ts",
     "yarn test:e2e",
     "npm run test:e2e",
   ]) {
-    void context.test(command, () => {
+    await context.test(command, () => {
       const content = validReport().replace(
         "`yarn test:e2e` from `/workspace/shop`",
         `\`${command}\` from \`/workspace/shop\``,
@@ -154,13 +154,13 @@ test("AC-TESTER-009 adversarial: a canonical E2E wrapper makes self-declared no-
   );
 });
 
-test("AC-TESTER-009 adversarial: non-E2E evidence also requires a direct canonical runner", (context) => {
+test("AC-TESTER-009 adversarial: non-E2E evidence also requires a direct canonical runner", async (context) => {
   for (const command of [
     "echo npm test",
     "printf npm-test && true",
     "CHECK=npm npm test",
   ]) {
-    void context.test(command, () => {
+    await context.test(command, () => {
       const content = validReport()
         .replace(
           "E2E script required:** yes — CC-AC-001 and REG-001 cross the browser checkout boundary",
@@ -172,12 +172,12 @@ test("AC-TESTER-009 adversarial: non-E2E evidence also requires a direct canonic
   }
 });
 
-test("AC-TESTER-009 adversarial: a report must identify and execute the current revision", (context) => {
-  void context.test("missing revision", () => {
+test("AC-TESTER-009 adversarial: a report must identify and execute the current revision", async (context) => {
+  await context.test("missing revision", () => {
     const content = validReport().replace("- **Current revision:** commit abc123def\n", "");
     assertGateFailure(content, /Current revision/iu);
   });
-  void context.test("execution references another revision", () => {
+  await context.test("execution references another revision", () => {
     const content = validReport().replace(
       "commit abc123def; Chromium",
       "commit deadbeef9; Chromium",
@@ -186,15 +186,15 @@ test("AC-TESTER-009 adversarial: a report must identify and execute the current 
   });
 });
 
-test("AC-TESTER-009 adversarial: an unrun command or missing execution table cannot pass", (context) => {
-  void context.test("no command", () => {
+test("AC-TESTER-009 adversarial: an unrun command or missing execution table cannot pass", async (context) => {
+  await context.test("no command", () => {
     const content = validReport().replace(
       "`yarn test:e2e` from `/workspace/shop`",
       "command will be selected later",
     );
     assertGateFailure(content, /autonomous test-runner/iu);
   });
-  void context.test("no table", () => {
+  await context.test("no table", () => {
     const content = validReport().replace(
       /\| Execution \| Exact command and working directory \| Revision and environment \| Result \| Durable evidence \|[\s\S]*?(?=\n## Acceptance and regression results)/u,
       "No standalone execution was performed.\n",
@@ -203,22 +203,22 @@ test("AC-TESTER-009 adversarial: an unrun command or missing execution table can
   });
 });
 
-test("AC-TESTER-009 adversarial: every applicable AC and regression needs a passing evidence row", (context) => {
-  void context.test("missing acceptance", () => {
+test("AC-TESTER-009 adversarial: every applicable AC and regression needs a passing evidence row", async (context) => {
+  await context.test("missing acceptance", () => {
     const content = validReport().replace(
       /\| CC-AC-001 \|[^\n]+\n/u,
       "",
     );
     assertGateFailure(content, /CC-AC-001 is missing/iu);
   });
-  void context.test("missing regression", () => {
+  await context.test("missing regression", () => {
     const content = validReport().replace(
       /\| REG-001 \|[^\n]+\n/u,
       "",
     );
     assertGateFailure(content, /REG-001 is missing/iu);
   });
-  void context.test("untested regression", () => {
+  await context.test("untested regression", () => {
     const content = validReport().replace(
       "| REG-001 | tests/e2e/checkout-coupon.spec.ts :: checkout without coupon | artifacts/playwright-report/index.html#checkout-default | pass |",
       "| REG-001 | tests/e2e/checkout-coupon.spec.ts :: checkout without coupon | artifacts/playwright-report/index.html#checkout-default | untested |",

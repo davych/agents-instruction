@@ -41,6 +41,9 @@
 24. Investigated the failed PR #6 platform job from its GitHub Actions log. A clean checkout had no ignored Contracts `dist`, `typecheck --noEmit` did not create it, and the parallel API tests resolved the package runtime export before any build. Made the platform-level `yarn test` command build Contracts first so CI, IDE, and local use share one self-contained command.
 25. Replayed the Actions order from an explicitly absent Contracts `dist`: typecheck passed without creating output, the amended test command built the runtime package and passed 848/848, and the production build passed. A separate clean copy excluding `.git`, `node_modules`, and every `dist` also passed immutable install, all 848 tests, and a runtime Contracts import.
 26. Removed a scheduling assumption exposed during that replay. The POSIX orphan-cleanup test now uses the runner's deadline and cancellation signal plus a child-authored PID ready file instead of a fixed 400 ms polling budget; ten concurrent focused replays passed 20/20 before the complete platform replay.
+27. Committed and pushed the first CI repair to the existing PR #6 branch. The Node 20.20.2 rerun confirmed Contracts runtime resolution and both forced-cleanup cases, then exposed three previously masked portability/lifecycle defects instead of the original module error.
+28. Replaced a macOS-only `/private/tmp` test path with `os.tmpdir()`, kept the initializer timeout timer referenced until its promised timeout/cleanup contract settles, and awaited every nested Verification evidence subtest so a parent cannot complete while children are pending.
+29. Replayed the three affected files at 59/59, platform typecheck, the full 848/848 aggregate, and production build locally. An independent Node 20.19.6 replay passed the affected files 16/16, 4/4, and 39/39 with zero cancellation plus API typecheck.
 
 ## Alternatives rejected or deferred
 

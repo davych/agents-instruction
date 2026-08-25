@@ -71,6 +71,7 @@ The Release semantic validator and workspace guards are intentionally strict bec
 | WF-REV-013 | Medium | A late disconnect after successful filesystem initialization could strand an unregistered project. | Successful initialization is the filesystem commit point; registration then completes despite cancellation, with Tier A coverage and explicit uncertain-INSERT reconciliation copy. | Resolved |
 | WF-REV-014 | High | Clean CI and IDE checkouts lacked the ignored Contracts runtime build, while the platform test command launched API tests before building it. | Platform `yarn test` now builds Contracts first. Two no-dist clean-state replays passed all 848 tests and runtime package resolution without changing CI ordering or committing generated output. | Resolved locally; the remote gate must pass before merge |
 | WF-REV-015 | Medium | An E2E orphan-cleanup test used a fixed 400 ms nested-process startup budget and could fail under parallel scheduler load before reaching the cleanup assertion. | Child-authored PID readiness, runner deadline/cancellation, precise error details, ten concurrent focused replays (20/20), and a green aggregate replay removed the timing assumption. | Resolved |
+| WF-REV-016 | High | The first Node 20 rerun exposed a macOS-only temp path, an unreferenced promised timeout, and unawaited nested tests, producing one failure and cascading cancellations. | Temp roots use the OS contract; initializer timeout remains live until `finally`; every nested test is awaited. Local affected tests passed 59/59 and the aggregate 848/848; Node 20.19.6 passed 16/16, 4/4, and 39/39 with zero cancellation. | Resolved locally; exact remote rerun required before merge |
 
 ## Adversarial pass
 
@@ -94,6 +95,7 @@ The Release semantic validator and workspace guards are intentionally strict bec
 | WF-ADV-EC-004 | HTML comments, headings, or repeated filler make a DevOps pack look complete. | Comment-stripped substantive token checks reject the pack as invalid. | Loader/fake/legacy replay 33/33. | Resolved |
 | WF-ADV-EC-005 | User cancels dirty review through Back or Forward; viewport is 320 px with a very wide table. | App restores the rendered route/draft; table scrolls locally; approval remains reachable. | Real in-app browser and Web checks 90/90. | Resolved in covered cases |
 | WF-ADV-EC-006 | A clean checkout has no generated Contracts runtime, or nested Node startup is delayed by parallel load. | The public test command creates the runtime before API imports, and process tests wait for a real ready signal rather than elapsed sleep. | Two clean-state 848/848 replays, Node 20.19.6 compatibility checks, and focused cleanup stress 20/20. | Resolved locally; remote CI remains required before merge |
+| WF-ADV-EC-007 | Tests execute on Linux/Node 20 with no incidental event-loop handles. | Temporary paths are portable, promised timeouts remain live, and parent tests wait for all nested results. | Exact GitHub failure reproduction plus local and Node 20.19.6 focused/full replays. | Resolved locally; remote gate remains authoritative |
 
 ## Residual boundaries
 
