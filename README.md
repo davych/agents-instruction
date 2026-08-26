@@ -213,6 +213,7 @@ The Web platform also task-scopes `change-contract`, `design-spec`, `test-report
 
 | Guide | What it explains |
 |---|---|
+| [中文 AI-SDLC 学习手册](guidelines/learning/README.md) | Project mental model, six-phase learning path, source map, hands-on labs, and self-checks in Chinese |
 | [Getting Started](guidelines/getting-started/README.md) | Installation, interactive setup, generated files, and the first task |
 | [Configuration](guidelines/configuration/README.md) | `ai-native.yaml`, role configs, artifact paths, and safe customization |
 | [End-to-End Workflow](guidelines/workflow/README.md) | Phase order, gates, feedback loops, artifacts, and human decisions |

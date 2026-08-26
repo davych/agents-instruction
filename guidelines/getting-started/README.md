@@ -59,7 +59,7 @@ For automation, the optional client flag can answer only the client question:
 npx create-ai-native-sdlc@latest init . --client codex
 ```
 
-Valid values are `github-copilot`, `claude-code`, and `codex`. Name, summary, and any Designer inputs remain interactive.
+Valid CLI values are `copilot`, `claude`, and `codex`. The generated `ai-native.yaml` stores their canonical configuration values as `github-copilot`, `claude-code`, and `codex`. Name, summary, and any Designer inputs remain interactive.
 
 You do not enter an Agent directory. The initializer uses the selected client's native project directory and installs only that client's Agent set.
 
