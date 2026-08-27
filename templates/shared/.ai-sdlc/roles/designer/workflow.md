@@ -4,10 +4,10 @@ Choose the smallest sufficient design path from the recorded Design Impact dispo
 
 ## Steps
 
-1. Read `ai-native.yaml`, `.ai-sdlc/workflows/default.md`, the current Run's immutable Change Contract, the Designer config, configured resources and inputs, and the execution contract's Design disposition, source evidence, and selected output list.
+1. Read `ai-native.yaml`, `.ai-sdlc/workflows/default.md`, the current Run's immutable Change Contract, the Designer config, configured resources and inputs, and the Design disposition, source evidence, and selected output list from the supplied execution contract or direct-IDE execution brief.
 2. Follow the disposition before doing design generation:
-   - `skip`: do not run Designer or create placeholder outputs. The platform records why no interface, interaction, copy, responsive, or accessibility behavior changes.
-   - `reuse`: do not run Designer. The platform imports approved design revisions that cover the exact behavior and acceptance criteria.
+   - `skip`: do not run Designer or create placeholder outputs. The recorded human/platform route explains why no interface, interaction, copy, responsive, or accessibility behavior changes.
+   - `reuse`: do not run Designer. The recorded human/platform route names approved design revisions that cover the exact behavior and acceptance criteria.
    - `partial`: resolve imported baselines and update only the declared task behavior or project-wide evidence.
    - `full`: create a new task-scoped design spec for a new journey or material experience model while reusing the project baseline where valid.
 3. For `partial` or `full`, resolve and read existing versions of selected outputs. Do not create, update, or refresh an output that is not selected.
@@ -22,13 +22,7 @@ Choose the smallest sufficient design path from the recorded Design Impact dispo
 12. When `design-spec` is selected, complete `Handoff to Software Engineer`. Use `blocked` when a missing decision, behavior, component, asset, copy item, or validation result changes what must be built. A check that explicitly requires the final runnable implementation is different: define its observable behavior and pass criteria now, move it to `deferred_validations` with owner `tester` and phase `verification`, and keep it out of `blockers`. Use `ready-for-engineering` only when active `blockers` is empty, then run `node .ai-sdlc/roles/designer/scripts/validate-spec.mjs <SPEC.md>`.
 13. Submit only selected outputs for human review. Downstream implementation consumes the active product, design, and architecture clearances rather than demanding fake files for a skipped phase.
 
-Resolve Designer output paths in this order:
-
-1. `ai-native.yaml` → `paths.outputs`
-2. Designer config → `output.subdirectory`
-3. `ai-native.yaml` → the Designer artifact `path`
-
-The platform may then resolve `design-spec` to a task-scoped filename containing the current task namespace. When present, the execution contract's resolved path overrides only the physical filename; the logical artifact ID stays `design-spec`. Re-runs of the same task reuse that path, and outputs not selected for the re-run must remain unchanged.
+Use the owner-aware artifact resolution defined in `.ai-sdlc/workflows/default.md`. The Designer config contributes only its output namespace. A platform execution contract may supply a task-scoped physical filename for `design-spec`; the logical artifact ID remains unchanged. Re-runs reuse that resolved path, and unselected outputs remain byte-for-byte unchanged.
 
 ## Completion checks
 
@@ -47,12 +41,6 @@ The platform may then resolve `design-spec` to a task-scoped filename containing
 
 Keep assumptions reversible and visible. Prefer the smallest complete artifact and do not ask the Software Engineer to infer a missing design decision.
 
-## Retry-loop guard
+## Deferred-validation loop guard
 
-When feedback says a B-04 or similar browser/accessibility check must happen only
-after the implementation is runnable, do not keep attempting the unavailable check
-inside Design. Preserve the obligation ID, remove it from `blockers`, add it to
-`deferred_validations`, make the handoff `ready-for-engineering` if no other blocker
-remains, and state that Tester will execute it in Verification. If the check can run
-against the current design prototype or existing product now, it remains Designer
-work and must not be deferred.
+When an identified browser or accessibility check can run only after the implementation is runnable, do not keep attempting it inside Design. Preserve its stable ID, remove it from `blockers`, add it to `deferred_validations`, and assign it to Tester in Verification. If the check can run against the current design prototype or existing product now, it remains Designer work and must not be deferred.

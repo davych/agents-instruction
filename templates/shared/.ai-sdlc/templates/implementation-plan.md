@@ -62,9 +62,10 @@ The Change Contract and active PM / BA evidence are authoritative. This plan doe
 
 | Layer | Path or artifact | Why relevant | Confirmed fact, constraint, or gap |
 |---|---|---|---|
-| Hot | <AGENTS.md / CLAUDE.md / None> | <reason> | <evidence> |
-| Warm | <path / None> | <reason> | <evidence> |
-| Cold | <path / None> | <reason> | <evidence> |
+| Project instructions | <AGENTS.md / CLAUDE.md / None> | <reason> | <evidence> |
+| Approved artifact | <artifact and revision / None> | <reason> | <evidence> |
+| Repository evidence | <path / None> | <reason> | <evidence> |
+| Configured reference | <path / None> | <reason> | <evidence> |
 
 ## Vertical slice strategy
 

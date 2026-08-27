@@ -143,7 +143,7 @@ Five roles have their own config:
 | PM / BA | `.ai-sdlc/roles/pm-ba/config.yaml` | Business Markdown inputs and `output.subdirectory` |
 | Designer | `.ai-sdlc/roles/designer/config.yaml` | Role resources, upstream artifacts, extra Markdown, component query/validation paths, and `output.subdirectory` |
 | Architect | `.ai-sdlc/roles/architect/config.yaml` | Upstream artifacts, evidence Markdown, confirmed context, review floors, and `output.subdirectory` |
-| Software Engineer | `.ai-sdlc/roles/software-engineer/config.yaml` | Upstream artifact vocabulary, layered-context candidates, evidence IDs, quality floors, and `output.subdirectory` |
+| Software Engineer | `.ai-sdlc/roles/software-engineer/config.yaml` | Upstream artifact and Markdown inputs, evidence IDs, quality floors, and `output.subdirectory` |
 | DevOps | `.ai-sdlc/roles/devops/config.yaml` | Release evidence vocabulary, optional project release/operations Markdown, and `output.subdirectory` |
 
 A role config may:
@@ -226,6 +226,6 @@ The six global phases and their owners are fixed in this V1. Changing their orde
 - artifact IDs stay stable when existing documents depend on them;
 - human-owned decisions remain explicit gates.
 
-See [End-to-End Workflow](../workflow/README.md) before changing phase dependencies.
+See [End-to-End Workflow](../workflow/README.md) before changing phase dependencies. The [Platform runtime contract](../../platform/docs/runtime-contract.md) explains how a Web-managed Run pins resolved paths and selected outputs.
 
-The platform and its real runner are currently suitable only for local, trusted, disposable or otherwise recoverable projects. Path validation limits project-output targets; it is not an OS sandbox. The unauthenticated API and unsandboxed Codex process remain explicit security-architecture blockers for remote, multi-user, or untrusted-repository use.
+The platform and its real runner are currently suitable only for local, trusted, disposable or otherwise recoverable projects. Path validation limits project-output targets; it is not an OS sandbox. The unauthenticated API and unsandboxed Codex process remain explicit security-architecture blockers for remote, multi-user, or untrusted-repository use. See the [Platform security model](../../platform/docs/security-model.md).

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -100,12 +101,98 @@ test("fresh Test Author is ephemeral, spec-only, and applies only tests/fixtures
     await readFile(path.join(fixture.e2eRoot, "tests", "pinyin.spec.ts"), "utf8"),
     "// US-001-AC-06\n",
   );
-  assert.match(await readFile(path.join(fixture.e2eRoot, result.manifestPath), "utf8"), /patchHash/u);
+  for (const file of result.files) {
+    const linkedContent = await readFile(path.join(fixture.e2eRoot, ...file.path.split("/")));
+    assert.equal(file.afterSha256, createHash("sha256").update(linkedContent).digest("hex"));
+    assert.equal(file.bytes, linkedContent.length);
+  }
+  const manifest = JSON.parse(
+    await readFile(path.join(fixture.e2eRoot, result.manifestPath), "utf8"),
+  ) as { files: unknown; patchHash: string };
+  assert.deepEqual(manifest.files, result.files, "the persisted review result comes from linked-root bytes");
+  assert.equal(manifest.patchHash, result.patchHash);
   const prompt = await readFile(fixture.promptLog, "utf8");
   assert.match(prompt, /frozen-e2e-spec-intent/u);
   assert.match(prompt, /US-001-AC-06/u);
   assert.doesNotMatch(prompt, new RegExp(fixture.e2eRoot.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
   assert.doesNotMatch(prompt, /src\/App\.tsx/iu);
+});
+
+test("a concurrent linked-root test addition invalidates the full pre-promotion baseline", async () => {
+  const fixture = await authorFixture();
+  const concurrent = path.join(fixture.e2eRoot, "tests", "concurrent-unreviewed.spec.ts");
+  const author = path.join(fixture.parent, "concurrent-author.mjs");
+  await writeFile(author, [
+    "#!/usr/bin/env node",
+    'import { readFileSync, writeFileSync } from "node:fs";',
+    'import path from "node:path";',
+    'readFileSync(0, "utf8");',
+    'writeFileSync(path.join(process.cwd(), "tests", "pinyin.spec.ts"), "// US-001-AC-06\\n", "utf8");',
+    `writeFileSync(${JSON.stringify(concurrent)}, "// unreviewed concurrent test\\n", "utf8");`,
+    'process.stdout.write(JSON.stringify({ type: "thread.started", thread_id: "concurrent" }) + "\\n");',
+    "",
+  ].join("\n"), "utf8");
+  await chmod(author, 0o755);
+
+  await assert.rejects(
+    () => new E2eTestAuthorRunner({ codexBinary: author, timeoutMs: 10_000 }).run({
+      e2eRoot: fixture.e2eRoot,
+      executionId: "author-concurrent",
+      frozenIntent: {
+        scenarioId: "concurrent-baseline",
+        acceptanceCriteria: [{
+          id: "US-001-AC-06",
+          text: "Only the staged and validated complete suite may be promoted.",
+        }],
+        observableBehavior: "Concurrent linked-root changes invalidate authoring.",
+      },
+    }),
+    { code: "E2E_AUTHOR_TARGET_STALE" },
+  );
+  await assert.rejects(
+    () => readFile(path.join(fixture.e2eRoot, "tests", "pinyin.spec.ts")),
+    { code: "ENOENT" },
+  );
+  assert.equal(await readFile(concurrent, "utf8"), "// unreviewed concurrent test\n");
+});
+
+test("a post-promotion author-manifest failure rolls linked files back", async () => {
+  const fixture = await authorFixture();
+  const runner = new E2eTestAuthorRunner({ codexBinary: fixture.stub, timeoutMs: 10_000 });
+  const input = {
+    e2eRoot: fixture.e2eRoot,
+    executionId: "author-manifest-rollback",
+    frozenIntent: {
+      scenarioId: "manifest-rollback",
+      acceptanceCriteria: [{
+        id: "US-001-AC-06",
+        text: "A failed review-manifest publication must not retain promoted bytes.",
+      }],
+      observableBehavior: "The linked root returns to its exact pre-promotion bytes.",
+    },
+  };
+  const first = await runner.run(input);
+  const promotedPath = path.join(fixture.e2eRoot, "tests", "pinyin.spec.ts");
+  const firstPromoted = await readFile(promotedPath, "utf8");
+  const firstManifest = await readFile(path.join(fixture.e2eRoot, first.manifestPath), "utf8");
+
+  await writeFile(fixture.stub, [
+    "#!/usr/bin/env node",
+    'import { readFileSync, writeFileSync } from "node:fs";',
+    'import path from "node:path";',
+    'readFileSync(0, "utf8");',
+    'writeFileSync(path.join(process.cwd(), "tests", "pinyin.spec.ts"), "// US-001-AC-06 second version\\n", "utf8");',
+    'process.stdout.write(JSON.stringify({ type: "thread.started", thread_id: "second" }) + "\\n");',
+    "",
+  ].join("\n"), "utf8");
+  await chmod(fixture.stub, 0o755);
+
+  await assert.rejects(() => runner.run(input), { code: "EEXIST" });
+  assert.equal(await readFile(promotedPath, "utf8"), firstPromoted);
+  assert.equal(
+    await readFile(path.join(fixture.e2eRoot, first.manifestPath), "utf8"),
+    firstManifest,
+  );
 });
 
 test("Test Author cannot smuggle package/control edits out of its staging workspace", async () => {

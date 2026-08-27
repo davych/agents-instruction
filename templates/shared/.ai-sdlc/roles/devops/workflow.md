@@ -5,9 +5,11 @@ Prepare an evidence-bound release runbook for the current Run. This procedure va
 
 ## Evidence contract
 
-Resolve inputs by artifact ID and owner-aware path rules. Use the active execution contract's Run-scoped paths and revisions when supplied. A valid Architecture `skip` or `reuse` clearance is evidence and does not require placeholder architecture files.
+Resolve inputs by artifact ID and owner-aware path rules. Use the platform execution contract's Run-scoped paths and revisions when supplied; otherwise use the exact selected IDs, paths, and evidence references in the direct-IDE execution brief without claiming platform provenance. A valid Architecture `skip` or `reuse` route is evidence and does not require placeholder architecture files.
 
 Read the immutable Change Contract, current phase clearances, `implementation-notes`, `engineering-provenance`, `test-report`, and applicable accepted Architecture evidence. Read only configured Markdown sources that exist and apply to the target environment. Record missing required evidence as a blocker rather than inventing a value.
+
+For CI and required checks, DevOps only records and validates the expected autonomous command, check name, revision binding, and evidence contract. Only a separately authorized human or provider system configures or changes the check, credentials, browser provisioning, environment, branch policy, or retention.
 
 The runbook must bind the same Run, product/source revision, build or release artifact identity, applicable digest, provenance, and Test Report revision. Copy every selected upstream artifact ID, exact project-relative path, and platform-provided SHA-256 content hash into the trusted input binding manifest. Any mismatch or later change makes the readiness conclusion stale.
 
@@ -54,4 +56,4 @@ This gate approves the quality of the guidance only. The human release owner ret
 
 ## Execution boundary
 
-By default, DevOps does not deploy, roll out, roll back, run production migrations or smoke tests, change CI/required checks, edit secrets or environments, change branch policy, commit, push, create/publish a PR, publish an artifact, or create a release. The runbook itself never grants those permissions. Record external actions only when they actually occurred under separate explicit human authorization and have durable evidence.
+DevOps never deploys, rolls out, rolls back, runs production migrations or smoke tests, configures CI/required checks, edits credentials, secrets, or environments, changes branch policy or retention, commits, pushes, creates/publishes a PR, publishes an artifact, or creates a release. The runbook never grants those permissions. If a separately authorized human or provider system performs an external action, this role may record it only when durable evidence shows that it actually occurred.

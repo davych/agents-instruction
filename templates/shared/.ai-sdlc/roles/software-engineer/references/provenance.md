@@ -5,7 +5,7 @@ Provenance lets a reviewer reconstruct what was requested, what evidence was tru
 ## Required fields
 
 - **Tool/model:** actual implementation and independent-review tools/models, or `Unknown` with a reason.
-- **Context loaded:** exact hot, warm, cold, configured Markdown, and upstream artifact revisions used.
+- **Context loaded:** exact project instructions, configured Markdown, upstream artifact revisions, and repository evidence used.
 - **Verification gates:** Implementation-owned project checks, independent-test status and isolation tier, seven-lens verdict, and unresolved Implementation blockers. Put downstream Tester-owned deferred validation in limitations/handoff instead of marking the Implementation gate failed or blocked.
 - **Human decisions:** approval, waiver, override, or decision evidence with owner and durable reference; use `None` when there was none.
 - **Known limitations:** untested scope, unavailable environment, uncertainty, and residual risk.
@@ -23,7 +23,6 @@ Link the current Run and exact revisions of:
 - engineering session log;
 - independent test evidence and real test paths;
 - seven-lens/adversarial review;
-- replay packet when required;
 - human exception or decision records.
 
 Resolve paths through the registry. Do not hardcode `docs`, link an ambiguous “latest” revision, or point to an artifact from another Run without explicit imported provenance.

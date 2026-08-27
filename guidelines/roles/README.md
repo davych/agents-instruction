@@ -1,132 +1,120 @@
-# Role Relationships
+# Role Relationships and Prompt Layers
 
-The workflow has one canonical Markdown source for each of six roles. The initializer derives one native Agent set for the selected client, so the target project never receives three duplicated sets. Every Run begins with an immutable Change Contract; roles collaborate through registered artifacts and structured impact clearances.
+The workflow has six fixed roles and six fixed phase owners. An Agent owns only the selected analysis and artifacts inside its role boundary. A human or the platform records Product, Design, and Architecture Impact dispositions before the corresponding Agent may run; role procedures, focused references, output templates, and human-facing guides are supporting layers, not additional Agents.
 
-## Relationship map
+Every Run begins with an immutable Change Contract. Roles hand off registered artifacts and structured clearances rather than relying on chat memory.
+
+## Role map
 
 ```mermaid
 flowchart LR
   Human["Human owner"] --> Contract["Immutable Change Contract"]
-  Contract --> Product["Product Impact<br/>direct / reuse / partial / full"]
+  Contract --> Product{"Product Impact"}
   Product --> PMBA["PM / BA when needed"]
-  Product --> Design["Design Impact<br/>skip / reuse / partial / full"]
+  Product --> Design{"Design Impact"}
   PMBA --> Design
   Design --> Designer["Designer when needed"]
-  Design --> Architect["Architecture Impact"]
-  Designer --> Architect
+  Design --> Architecture{"Architecture Impact"}
+  Designer --> Architecture
+  Architecture --> Architect["Architect when needed"]
   Product --> Engineer["Software Engineer"]
   Design --> Engineer
-  Architect -->|"Accepted architecture pack"| Engineer
-  Human -->|"Explicit workspace + script-hash review"| E2E["Linked E2E Workspace"]
-  Contract --> Tester["Tester"]
-  Product --> Tester
-  Architect -->|"NFRs and risks"| Tester
-  Engineer -->|"Evidence index, test evidence, and review"| Tester
-  E2E --> Tester
-  Tester -->|"Product/testability defect only"| Engineer
-  Contract --> DevOps["DevOps"]
-  Architect -->|"ADRs, NFRs, and premortem"| DevOps["DevOps"]
-  Engineer -->|"Implementation notes + provenance"| DevOps
-  Tester -->|"Test report"| DevOps
-  DevOps -->|"Task-scoped release runbook"| ReleaseGate{"Release semantic gate"}
-  ReleaseGate -->|"blocked"| EvidenceOwner["Named evidence owner"]
-  ReleaseGate -->|"ready"| Human
+  Architect --> Engineer
+  Engineer --> Tester["Tester"]
+  Tester --> DevOps["DevOps"]
+  DevOps --> Gate{"Release semantic gate"}
+  Gate --> Human
 ```
 
-The diagram has three kinds of handoff:
+A human or the platform records each evidence-backed Impact disposition before Agent execution. `direct`, `skip`, or `reuse` can omit PM / BA, Designer, or Architect entirely; `partial` or `full` invokes the role only for the selected evidence. No omitted Agent owns or retroactively changes the disposition. The phase clearance and gate still apply.
 
-- **Product handoff** — The Change Contract and Product clearance define the user outcome, scope, rules, acceptance criteria, and applicable product evidence; PM / BA contributes only when needed.
-- **Design and architecture handoff** — The Design clearance provides skip/reuse evidence or Designer output; Architect defines accepted system constraints.
-- **Delivery evidence handoff** — Software Engineer, Tester, and DevOps record implementation, verification, and release evidence.
+## Ownership matrix
 
-## Role matrix
+| Role | Main question | Owns | Does not own |
+|---|---|---|---|
+| [PM / BA](pm-ba/README.md) | What selected product evidence must be clarified or updated within the recorded route? | Selected PRD/story evidence and product clarification | Product Impact disposition, Change Contract mutation, visual design, or technical design |
+| [Designer](designer/README.md) | What selected experience evidence must be produced within the recorded route? | Selected design baseline/spec/supporting evidence and handoff | Design Impact disposition, product scope, APIs, architecture, or production code |
+| [Architect](architect/README.md) | What selected architecture evidence best fits the accepted constraints? | Selected indexed architecture evidence and recommendation | Architecture Impact disposition, final option selection, architecture acceptance, or risk acceptance |
+| [Software Engineer](software-engineer/README.md) | How is the confirmed contract implemented with reviewable evidence? | Product source changes, repository tests, and the engineering evidence pack | Product/design/architecture decisions, verification exceptions, merge, or release |
+| [Tester](tester/README.md) | What current and repeatable evidence verifies acceptance and risk? | Risk map, independent Verification, linked E2E test assets, and `test-report` | Product source/tests, CI policy, requirement changes, or release approval |
+| [DevOps](devops/README.md) | Is the release path sufficiently bound, observable, and reversible for a human decision? | `release-runbook`, expected provider/required-check contract, and evidence gaps | CI/required-check configuration, secrets, merge, deployment, rollback execution, or go/no-go |
 
-| Role | Main question | Owns | Hands off to | Does not own |
-|---|---|---|---|---|
-| [PM / BA](pm-ba/README.md) | Is the Change Contract sufficient, reusable, locally changed, or a full product change? | Product disposition, PRD, and user stories | Designer; later consumers | Change Contract mutation, visual or technical design |
-| [Designer](designer/README.md) | Can design be skipped/reused, or what experience work is affected? | Design disposition, project baseline, and task spec | Architect and Software Engineer | Product scope, APIs, architecture, production code |
-| [Architect](architect/README.md) | Which system direction best fits the evidence and constraints? | Indexed architecture pack | Software Engineer, Tester, DevOps | Final option approval or risk acceptance |
-| [Software Engineer](software-engineer/README.md) | How do we implement the confirmed contracts with independently reviewable evidence? | Code, tests, and seven Run-scoped engineering evidence outputs | Tester | Product, design, architecture, verification-exception, publication, or merge decisions |
-| [Tester](tester/README.md) | What current, repeatable evidence shows the change meets acceptance and risk expectations? | Risk map, optional MCP exploration, linked-workspace E2E assets, standalone real-browser evidence, defects, and Run-scoped test report | Software Engineer for product/testability repair; DevOps and human release owner | Product source/tests, CI policy, requirement changes, or release approval |
-| [DevOps](devops/README.md) | Is the current release path evidence-bound, repeatable, observable, and reversible enough for a human decision? | Task-scoped runbook and readiness evidence | Release semantic gate, named evidence owners, and human release owner | Deploy, CI/secrets/branch policy, commit/push/merge/publish, rollback execution, or go/no-go |
+## One Markdown layer, one responsibility
 
-## One role, one Agent
+Use this order when deciding where content belongs:
 
-The repository keeps six canonical Markdown role sources. Initialization installs exactly one native set:
+| Layer | Canonical location | Single responsibility |
+|---|---|---|
+| Global definition | `ai-native.yaml` | Phase owners, declared inputs/outputs, gates, capabilities, and artifact registry |
+| Shared workflow | `.ai-sdlc/workflows/default.md` | Cross-role order, impact routing, handoff rules, and artifact resolution |
+| Canonical Agent | `templates/agents/<role>.md`, rendered under `paths.agents` | Role identity, authority boundary, safety-critical invariants, and handoff |
+| Role config | `.ai-sdlc/roles/<role>/config.yaml` | Project-controlled inputs, role settings, and child output namespace |
+| Role workflow | `.ai-sdlc/roles/<role>/workflow.md` | The role's only ordered execution procedure and completion checks |
+| Focused reference | `.ai-sdlc/roles/<role>/references/*.md` | One reusable specialist rule set loaded only when the workflow routes to it |
+| Artifact template | `.ai-sdlc/templates/*` | Output structure, required fields, and machine-readable schema |
+| Human guide | `guidelines/**` | Explanation, navigation, examples, and review guidance; never a competing Agent procedure |
+| Run evidence | Registered artifact paths | Current decisions, revisions, results, limitations, and provenance |
 
-| Selected client | Native Agent files |
+Consequences of this structure:
+
+- Do not copy a canonical Agent into a client-specific Skill or maintain separate role bodies for Copilot, Claude Code, and Codex.
+- Do not put a second step-by-step procedure in an Agent or human guide. Link to the role's `workflow.md`.
+- Do not restate an artifact schema in a workflow or reference. Link to its template.
+- Do not put broad role identity or authority in a focused reference.
+- Do not treat a config, workflow, reference, guide, or generated client file as a second role definition.
+- When two layers disagree, stop and fix the canonical owner instead of choosing the more convenient text.
+
+## Client rendering and Web execution
+
+The initializer renders exactly one native Agent set from the six canonical Markdown role sources:
+
+| Selected client | Generated Agent files |
 |---|---|
 | GitHub Copilot | `.github/agents/<role>.agent.md` |
 | Claude Code | `.claude/agents/<role>.md` |
 | Codex | `.codex/agents/<role>.toml` |
 
-The initializer never installs all three sets together. For Codex, it generates TOML from the same canonical Markdown source in memory. `ai-native.yaml` records the selected client and its native directory.
+The selected client controls direct IDE discovery. It does not choose the Web execution engine: real Platform jobs use the local Codex runner for all three initialized client targets.
 
-The selected native set supports direct IDE use. The Web new-project flow can choose the same three client targets, but real Web jobs still run through the local Codex runner; the selection controls generated discovery files, not the server's execution engine. Both modes share the six phase owners, role bodies, and registered artifact contract. Persisted clearances, semantic gates, task-scoped path pins, Linked E2E binding, exact manifest review, and trusted command events are Web capabilities and must not be claimed by a direct IDE session unless the platform produced them.
+Direct IDE and Web operation share role identity, phase ownership, artifact IDs, and output schemas. Before a direct IDE invocation, the human supplies the bounded execution brief defined in `.ai-sdlc/workflows/default.md`; registered basename paths apply because no Web task-and-Run pin exists. Only the Web platform can claim clearances, path pins, artifact-head reviews, Architecture checkpoints, mutation guards, Linked E2E bindings, manifest approvals, trusted runner events, and semantic-gate results that it actually persisted.
 
-## Agent and role workflow
+For required E2E, the Web platform copies the explicitly linked separate workspace to ephemeral staging, runs a fresh spec-only Test Author there, validates and promotes only allowlisted test/fixture changes to the unchanged linked root, re-hashes the complete promoted executable suite, obtains human approval of that exact baseline, and executes standalone Playwright from the linked root. Playwright MCP is optional exploration and cannot satisfy the repeatable gate.
 
-The two files have different jobs:
+An authorized human or repository/provider system configures CI policy, credentials, browser provisioning, retention, branch protection, and required checks. Tester supplies the test command and evidence contract. DevOps may record the expected check and missing provider evidence in the runbook but does not configure it.
 
-- The selected client's native Agent file under `paths.agents` defines the role identity, working rules, boundaries, output contract, and handoff.
-- `.ai-sdlc/roles/<role>/workflow.md` contains a longer step-by-step procedure when that role needs one.
+See the [Platform runtime contract](../../platform/docs/runtime-contract.md) and [security model](../../platform/docs/security-model.md) for Web-specific guarantees and limitations.
 
-The role workflow is ordinary Markdown loaded explicitly by the Agent. It is not a second Agent, a duplicate role definition, or a client-native Skill. All six roles have supporting workflows; PM / BA, Designer, Architect, Software Engineer, and DevOps also have configs. The Software Engineer pack has ordinary `references/*.md` for layered context, contract-driven planning, independent verification, seven-lens review, CI evidence, provenance, and replay guidance. The Tester pack has a Playwright E2E reference for the exploration/crystallization/execution boundary. DevOps's config and workflow define its evidence inputs, task-scoped operations namespace, runbook procedure, semantic readiness, and side-effect boundary.
+## Handoff invariant
 
-Do not confuse a role workflow with `.ai-sdlc/workflows/default.md`: the default workflow controls the shared phase order and artifact resolution, while a role workflow explains how one role completes its own phase.
+A handoff is ready only when:
 
-## Handoff rule
-
-A handoff is ready when:
-
-1. the role wrote the selected registered artifact, or the platform recorded a valid direct/skip/reuse clearance and imported any required source revisions;
-2. evidence, assumptions, limits, and unresolved decisions are visible;
+1. the role wrote the selected registered outputs, or the platform recorded a valid evidence-backed disposition and imported any required current-Run heads;
+2. assumptions, limitations, blockers, and unresolved decisions are explicit;
 3. the phase gate in `ai-native.yaml` is satisfied;
-4. any human-owned decision represented as resolved has real human evidence;
-5. the next role resolves and reads the current artifact instead of relying on chat memory.
+4. every claimed human decision has durable human evidence;
+5. the next role resolves and reads current artifacts rather than relying on chat memory.
 
-Chat messages may explain a handoff, but the registered files are the durable contract.
+Chat may explain a handoff. Registered artifacts and platform clearances are the durable contract.
 
-A valid `direct`, `skip`, or `reuse` disposition is also a durable handoff when it records rationale, exact source revisions, and current-Run provenance. It skips Agent generation, not evidence. Downstream roles consume the immutable Change Contract plus the active Product, Design, and Architecture clearances instead of demanding empty artifacts.
-
-Software Engineer has a stricter delivery handoff. The Web execution owns seven Run-scoped outputs: `implementation-notes` as the evidence-pack index, `implementation-plan`, `implementation-tasks`, `engineering-session-log`, `engineering-test-evidence`, `engineering-review`, and `engineering-provenance`. Tester receives the index plus the test-evidence and review artifacts as declared inputs. Tier A or B test authoring may satisfy the normal engineering gate; Tier C or Limited requires a recorded human verification exception. The engineering review must cover all seven lenses and both adversarial passes. PR-ready provenance is evidence only; Software Engineer does not publish or merge the PR.
-
-Tester uses Playwright MCP only as optional transient exploration. For required E2E, a human explicitly configures a separate Linked E2E Workspace; the platform freezes spec-only intent, a fresh Tier A/B Test Author writes only there, a human approves the exact manifest hash, and the platform runs standalone Playwright with a real headless Chromium. The platform never infers a sibling or legacy repository. Product source, product-repository tests, and testability interfaces remain Software Engineer-owned; only changes to those assets return through refreshed engineering evidence and Implementation reapproval. A direct IDE session can follow the same evidence schema but cannot claim these Web-trusted events or a CI pass.
-
-DevOps receives `change-contract`, applicable architecture evidence, `implementation-notes`, `engineering-provenance`, and `test-report`. It prepares the current task's `release-runbook` and leaves it blocked when required evidence is missing or contains unresolved placeholders. The Web Release gate requires a real execution, re-resolves the current approved heads, binds the exact Run plus selected artifact/path/content hashes, and validates revision/digest, provenance/SBOM applicability, rollout, health/smoke, monitoring, rollback/recovery, incident, risk, authority, and human-owner contracts. Passing prepares a human go/no-go; it does not configure CI, use secrets, deploy, merge, publish, or decide.
-
-## Escalation rule
-
-Return a missing decision to the owner who can make it:
+## Escalation routing
 
 | Missing or conflicting item | Return to |
 |---|---|
-| User problem, scope, business rule, or acceptance criterion | PM / BA or human product owner |
-| Interface behavior, content, component, asset, or responsive rule | Designer or human design owner |
-| Architecture option, trust boundary, ADR, or NFR target | Architect or human architecture/risk owner |
-| Incorrect or incomplete implementation | Software Engineer |
-| Missing linked-workspace E2E evidence or a test-script defect | Tester/fresh Test Author plus exact manifest-hash review |
-| Product implementation, product-repository test, or testability-interface defect | Software Engineer, with refreshed engineering evidence and Implementation reapproval |
-| Environment, Playwright runner, CI report, credential, or required-check issue | Authorized human or repository/provider system; DevOps records the evidence gap and expected contract |
-| Tier C/Limited isolation or another engineering verification-gate exception | Human owner; Software Engineer records but cannot approve it |
-| Missing runbook guidance | DevOps |
-| Environment access, deployment execution, monitoring-provider evidence, or rollback authorization | Authorized human/operator; DevOps records but does not perform the action |
-| Final scope, architecture acceptance, risk acceptance, or release approval | Human owner |
+| Outcome, scope, business rule, policy, or acceptance criterion | PM / BA or human product owner |
+| Interface behavior, content, component, asset, responsive, or accessibility rule | Designer or human design owner |
+| Architecture option, boundary, ADR, security constraint, or NFR target | Architect or human architecture/risk owner |
+| Product implementation, repository test, or testability-interface defect | Software Engineer, followed by refreshed evidence and Implementation reapproval |
+| Linked E2E script defect | Fresh staging Test Author, allowlist validation/promotion, and a new complete-baseline review |
+| E2E binding, browser, environment, CI/provider, credential, or required-check issue | Authorized human/operator/provider system; Tester and DevOps record the evidence gap |
+| Tier C/Limited isolation or another verification exception | Human owner; the Agent may record but cannot approve it |
+| Missing or invalid runbook guidance | DevOps |
+| Final scope, architecture acceptance, risk acceptance, merge, deployment, rollback, or release decision | Human owner |
 
-No role should silently fill a material gap owned by another role.
+No role silently fills a material gap owned by another role.
 
-## Source-of-truth order
+## Continue reading
 
-Use these files for different questions:
-
-1. `ai-native.yaml` — global roles, phases, gates, and artifact registry.
-2. `.ai-sdlc/workflows/default.md` — shared path resolution and execution order.
-3. The selected client's native Agent file under `paths.agents` — role mission, rules, boundaries, and handoff.
-4. `.ai-sdlc/roles/<role>/config.yaml` — role-specific inputs and child directory when present.
-5. `.ai-sdlc/roles/<role>/workflow.md` — detailed role procedure when present.
-6. `.ai-sdlc/roles/<role>/references/*.md` — ordinary supporting procedures when the role workflow names them.
-7. Registered output artifacts — current project evidence and decisions.
-
-See [Configuration](../configuration/README.md) for artifact path resolution and [End-to-End Workflow](../workflow/README.md) for the phase graph.
-
-The current Web platform is limited to local, trusted, disposable or otherwise recoverable project state. Its unauthenticated API and non-sandboxed Codex runner are unresolved security-architecture blockers for remote, multi-user, or untrusted-repository operation.
+- [Repository overview](../../README.md)
+- [End-to-End Workflow](../workflow/README.md)
+- [Configuration](../configuration/README.md)
+- [Platform operator guide](../../platform/README.md)

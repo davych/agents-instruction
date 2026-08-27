@@ -62,6 +62,7 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assert.match(config, /owner: designer\n      inputs: \[change-contract, prd, user-stories\]/u);
   assert.match(config, /owner: architect\n      inputs: \[change-contract, prd, user-stories, design-spec\]/u);
   assert.match(config, /outputs: \[architecture, architecture-discovery-context, architecture-options, architecture-c4-context, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs, architecture-adversarial\]/u);
+  assert.match(config, /Architecture disposition is recorded; skip[\s\S]*reuse[\s\S]*partial\/full[\s\S]*human selection and acceptance evidence/u);
   assert.match(config, /owner: software-engineer\n      inputs: \[change-contract, prd, user-stories, design-baseline, design-spec, architecture, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs\]/u);
   assert.match(
     config,
@@ -92,6 +93,14 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
       "utf8"
     );
     assert.ok(agent.endsWith(`${canonicalAgent.trim()}\n`));
+    assert.deepEqual(
+      [...canonicalAgent.matchAll(/^## (.+)$/gmu)].map((match) => match[1]),
+      ["Mission", "Authority", "Non-negotiable boundaries", "Start", "Handoff"],
+      `${roleId} Agent must remain a single-purpose authority entry point`
+    );
+    assert.match(canonicalAgent, /project\.locale/u);
+    assert.match(canonicalAgent, /execution contract or direct-IDE execution brief/u);
+    assert.doesNotMatch(canonicalAgent, /^## (?:.*disposition.*|Procedure|Workflow|Path.*|Output contract|Evidence order)$/imu);
   }
   assert.deepEqual(
     (await readdir(path.join(target, ".github/agents"))).sort(),
@@ -101,13 +110,18 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assert.equal(existsSync(path.join(target, ".claude/agents")), false);
   assert.equal(existsSync(path.join(target, ".codex/agents")), false);
   const workflow = await readFile(path.join(target, ".ai-sdlc/workflows/default.md"), "utf8");
-  assert.match(workflow, /artifact owner/u);
+  assert.match(workflow, /Owner-aware artifact resolution/u);
   assert.match(workflow, /\.ai-sdlc\/roles\/<owner>\/config\.yaml/u);
-  assert.match(workflow, /immutable, task-scoped `change-contract`[\s\S]*Product Impact records `direct`, `reuse`, `partial`, or `full`/u);
-  assert.match(workflow, /Design Impact records `skip`, `reuse`, `partial`, or `full`[\s\S]*Architecture Impact records `skip`, `reuse`, `partial`, or `full`[\s\S]*Bug fast path[\s\S]*Architecture: skip or reuse[\s\S]*Verification is never skipped/u);
-  assert.match(workflow, /Older initialized projects that do not list `change-contract` are extended by the platform/u);
-  assert.match(workflow, /Architect phase has an explicit selection checkpoint[\s\S]*`Selected option: <ID>`[\s\S]*selected-state output was refreshed after that review/u);
-  await readFile(path.join(target, ".ai-sdlc/tasks/README.md"), "utf8");
+  assert.match(workflow, /## Change Contract prerequisite[\s\S]*immutable, task-scoped `change-contract`/u);
+  assert.match(workflow, /## Six phases[\s\S]*\| 1 \| Discovery \| PM \/ BA \|[\s\S]*\| 6 \| Release \| DevOps \|/u);
+  assert.match(workflow, /## Impact routing[\s\S]*Product \| `direct`[\s\S]*Design \| `skip`[\s\S]*Architecture \| `full`/u);
+  assert.match(workflow, /Verification remains required for production-code changes/u);
+  assert.match(workflow, /roles\/architect\/workflow\.md[\s\S]*roles\/tester\/workflow\.md[\s\S]*roles\/devops\/workflow\.md/u);
+  assert.match(workflow, /### Direct IDE fallback[\s\S]*no Web execution contract[\s\S]*selected registered output IDs[\s\S]*registered basename[\s\S]*not a platform clearance/u);
+  assert.match(workflow, /Shared evidence and staleness rules[\s\S]*project\.locale/u);
+  assert.doesNotMatch(workflow, /Selected option: <ID>|shell: false|rollback trigger/u);
+  assert.equal(existsSync(path.join(target, ".ai-sdlc/tasks/README.md")), false);
+  assert.equal(existsSync(path.join(target, ".ai-sdlc/guides/designer.md")), false);
   const prdTemplate = await readFile(path.join(target, ".ai-sdlc/templates/prd.md"), "utf8");
   const storyTemplate = await readFile(path.join(target, ".ai-sdlc/templates/story.md"), "utf8");
   assert.match(prdTemplate, /\{relative-path-from-prd-to-story\.md\}/u);
@@ -128,7 +142,6 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
       "design-baseline.md",
       "design-spec.md",
       "engineering-provenance.md",
-      "engineering-replay-packet.md",
       "engineering-review.md",
       "engineering-session-log.md",
       "engineering-test-evidence.md",
@@ -159,8 +172,8 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assert.match(changeContractTemplate, /## Current behavior or context[\s\S]*## Expected behavior and outcome[\s\S]*## Acceptance contract[\s\S]*## Regression obligations/u);
   assert.match(changeContractTemplate, /CC-AC-001[\s\S]*## Impact hints, not final dispositions/u);
   const pmBaAgent = await readFile(path.join(target, ".github/agents/pm-ba.agent.md"), "utf8");
-  assert.match(pmBaAgent, /## Product disposition contract[\s\S]*`direct`[\s\S]*`reuse`[\s\S]*`partial`[\s\S]*`full`/u);
-  assert.match(pmBaAgent, /change-contract[\s\S]*read-only/u);
+  assert.match(pmBaAgent, /Change Contract[\s\S]*read-only/u);
+  assert.doesNotMatch(pmBaAgent, /`direct`[\s\S]*`reuse`[\s\S]*`partial`[\s\S]*`full`/u);
   const architectConfig = await readFile(path.join(target, ".ai-sdlc/roles/architect/config.yaml"), "utf8");
   assert.match(architectConfig, /role: "\.github\/agents\/architect\.agent\.md"/u);
   assert.match(architectConfig, /artifacts: \[change-contract, prd, user-stories, design-spec\]/u);
@@ -169,7 +182,7 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assert.match(architectConfig, /output:\n  subdirectory: ai-native\/architecture/u);
   assert.match(architectConfig, /minimum_options: 3[\s\S]*minimum_nfrs: 7[\s\S]*minimum_findings_per_stressor: 3/u);
   const architectWorkflow = await readFile(path.join(target, ".ai-sdlc/roles/architect/workflow.md"), "utf8");
-  assert.match(architectWorkflow, /`skip` and `reuse` are platform actions[\s\S]*Under `partial`[\s\S]*Under `full`/u);
+  assert.match(architectWorkflow, /`skip` and `reuse` are human\/platform routing actions[\s\S]*Under `partial`[\s\S]*Under `full`/u);
   assert.match(architectWorkflow, /rulebook index[\s\S]*always-loaded[\s\S]*Greenfield, Brownfield, or Hybrid/u);
   assert.match(architectWorkflow, /all six conditional pack routes[\s\S]*load only packs marked Applicable or Blocked/u);
   assert.match(architectWorkflow, /Rule Pack Applicability rows[\s\S]*Never silently omit a pack/u);
@@ -181,20 +194,19 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assert.match(architectWorkflow, /rulebook v1 JSON machine block[\s\S]*every rule × affected scope from every Applicable pack exactly once/u);
   assert.match(architectWorkflow, /platform semantic gate accepts option selection[\s\S]*final approval/u);
   assert.match(architectWorkflow, /rulebook-digest\.mjs[\s\S]*old checkpoint and selection are stale/u);
-  assert.match(architectWorkflow, /Create or update the resolved `architecture` artifact[\s\S]*Check for human selection evidence[\s\S]*materialize the awaiting-selection scaffolds[\s\S]*`Awaiting human selection`/u);
+  assert.match(architectWorkflow, /Create or update the resolved `architecture` artifact[\s\S]*check for human selection evidence[\s\S]*materialize the awaiting-selection scaffolds[\s\S]*`Awaiting human selection`/u);
   assert.match(architectWorkflow, /review-feedback line `Selected option: <ID>`[\s\S]*current options revision/u);
   assert.match(architectWorkflow, /`## Option <ID>: <name>`[\s\S]*captured human decision[\s\S]*do not ask for the same answer again/u);
   assert.match(architectWorkflow, /C4 `\.mmd` artifact[\s\S]*`README\.md`[\s\S]*not an ADR[\s\S]*Pending document/u);
-  assert.match(architectWorkflow, /Every output selected by the active execution contract exists and is non-empty/u);
+  assert.match(architectWorkflow, /Every output selected by the supplied execution contract or direct-IDE brief exists and is non-empty/u);
   assert.match(architectWorkflow, /explicit `Must` and `Do not` rules/u);
   assert.match(architectWorkflow, /fresh session or independent reviewer/u);
   assert.match(architectWorkflow, /deferred_validations[\s\S]*Tester-owned Verification obligations/u);
   assert.doesNotMatch(architectWorkflow, /^---/u);
   assert.equal(existsSync(path.join(target, ".ai-sdlc/roles/architect/SKILL.md")), false);
   const architectAgent = await readFile(path.join(target, ".github/agents/architect.agent.md"), "utf8");
-  assert.match(architectAgent, /## Architecture disposition contract[\s\S]*`skip`[\s\S]*`reuse`[\s\S]*`partial`[\s\S]*`full`/u);
-  assert.match(architectAgent, /deferred_validations[\s\S]*Verification obligation[\s\S]*not an open Design decision/iu);
-  assert.match(architectAgent, /`## Option <ID>: <name>`[\s\S]*ARCH-OBS-002[\s\S]*do not repeat/u);
+  assert.match(architectAgent, /architecture options[\s\S]*human acceptance/iu);
+  assert.doesNotMatch(architectAgent, /`## Option <ID>: <name>`|ARCH-OBS-002/u);
   const architectRuleIndex = await readFile(
     path.join(target, ".ai-sdlc/roles/architect/references/architecture-rules.md"),
     "utf8"
@@ -262,9 +274,6 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assert.match(architectureContainers, /ai-sdlc:architecture-selection:v1/u);
   const architectureAdversarial = await readFile(path.join(target, ".ai-sdlc/templates/architecture-adversarial.md"), "utf8");
   assert.match(architectureAdversarial, /ai-sdlc:architecture-selection:v1/u);
-  const designerGuidance = await readFile(path.join(target, ".ai-sdlc/guides/designer.md"), "utf8");
-  assert.match(designerGuidance, /## GitHub Copilot[\s\S]*## Claude Code[\s\S]*## Codex/u);
-  assert.match(designerGuidance, /ready-for-engineering[\s\S]*empty `blockers` list/u);
   await readFile(
     path.join(target, ".ai-sdlc/roles/designer/references/figma-workflow.md"),
     "utf8"
@@ -275,16 +284,14 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assert.match(designerConfig, /- "docs\/context\.md"/u);
   assert.match(designerConfig, /output:\n  subdirectory: ai-native\/design\n\ncomponents:/u);
   const designerAgent = await readFile(path.join(target, ".github/agents/designer.agent.md"), "utf8");
-  assert.match(designerAgent, /## Start here[\s\S]*## Evidence order[\s\S]*## Working rules[\s\S]*## Output contract[\s\S]*## Boundaries[\s\S]*## Handoff/u);
-  assert.match(designerAgent, /Software Engineer[\s\S]*ready-for-engineering/u);
-  assert.match(designerAgent, /## Design disposition contract[\s\S]*`skip`[\s\S]*`reuse`[\s\S]*`partial`[\s\S]*`full`/u);
-  assert.match(designerAgent, /baseline is project-level|project-wide rules/u);
-  assert.match(designerAgent, /deferred_validations[\s\S]*Tester[\s\S]*Verification/u);
+  assert.match(designerAgent, /smallest sufficient design evidence/u);
+  assert.doesNotMatch(designerAgent, /`skip`[\s\S]*`reuse`[\s\S]*`partial`[\s\S]*`full`/u);
   const designerWorkflow = await readFile(path.join(target, ".ai-sdlc/roles/designer/workflow.md"), "utf8");
   assert.match(designerWorkflow, /Handoff to Software Engineer[\s\S]*ready-for-engineering/u);
   assert.match(designerWorkflow, /`skip`[\s\S]*`reuse`[\s\S]*`partial`[\s\S]*`full`/u);
   assert.match(designerWorkflow, /Downstream implementation consumes the active product, design, and architecture clearances/u);
-  assert.match(designerWorkflow, /Retry-loop guard[\s\S]*B-04[\s\S]*deferred_validations/u);
+  assert.match(designerWorkflow, /Deferred-validation loop guard[\s\S]*stable ID[\s\S]*deferred_validations/u);
+  assert.doesNotMatch(designerWorkflow, /B-04/u);
   assert.doesNotMatch(designerWorkflow, /^---/u);
   assert.equal(existsSync(path.join(target, ".ai-sdlc/roles/designer/SKILL.md")), false);
   const designSpecTemplate = await readFile(path.join(target, ".ai-sdlc/templates/design-spec.md"), "utf8");
@@ -292,14 +299,10 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assert.match(designSpecTemplate, /"deferred_validations": \[\][\s\S]*### Deferred verification/u);
   assert.match(designSpecTemplate, /artifact:change-contract/u);
   const engineerAgent = await readFile(path.join(target, ".github/agents/software-engineer.agent.md"), "utf8");
-  assert.match(engineerAgent, /immutable `change-contract`[\s\S]*Product, Design, and Architecture/iu);
-  assert.match(engineerAgent, /current-Run clearance[\s\S]*`direct`, `skip`, and `reuse`/u);
-  // AC-ENG-001, AC-ENG-002, AC-ENG-011, AC-ENG-012: the canonical Agent is
-  // only the policy entry point; the project-native role pack owns procedure.
-  assert.match(engineerAgent, /config\.yaml[\s\S]*workflow\.md/u);
-  assert.match(engineerAgent, /architecture[\s-]sensitive|architecture decision/iu);
-  assert.match(engineerAgent, /## Human-owned decisions[\s\S]*Product scope/iu);
-  assert.match(engineerAgent, /security[\s-]sensitive/iu);
+  assert.match(engineerAgent, /confirmed contracts[\s\S]*engineering evidence pack/iu);
+  assert.match(engineerAgent, /workflow\.md/u);
+  assert.match(engineerAgent, /architecture[\s\S]*human decision/iu);
+  assert.match(engineerAgent, /security exception/iu);
   assert.match(engineerAgent, /DDL/iu);
   assert.match(engineerAgent, /merge/iu);
   assert.match(engineerAgent, /release/iu);
@@ -314,9 +317,7 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
     [
       "ci-enforcement.md",
       "independent-verification.md",
-      "mini-cycle.md",
       "provenance.md",
-      "replay-packet.md",
       "seven-lens-review.md",
       "spec-driven-development.md"
     ]
@@ -331,15 +332,26 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   assert.match(engineerConfig, /output:\n  subdirectory: ai-native\/engineering/u);
   assert.match(engineerConfig, /registered_artifacts:[\s\S]*implementation-plan[\s\S]*engineering-provenance/u);
   assert.match(engineerConfig, /passing_isolation_tiers: \[A, B\][\s\S]*minimum_review_lenses: 7/u);
+  assert.doesNotMatch(engineerConfig, /(?:hot|warm|cold|replay|conditional_support)/iu);
 
   const engineerWorkflow = await readFile(path.join(engineerRoleRoot, "workflow.md"), "utf8");
   assert.match(engineerWorkflow, /Change Contract[\s\S]*Product[\s\S]*Design[\s\S]*Architecture/iu);
-  assert.match(engineerWorkflow, /ADDED[\s\S]*MODIFIED[\s\S]*REMOVED[\s\S]*REMOVED audit[\s\S]*risk/iu);
+  assert.match(engineerWorkflow, /template is the sole source[\s\S]*implementation-plan\.md/iu);
   assert.match(engineerWorkflow, /Tier A[\s\S]*Tier B[\s\S]*Tier C[\s\S]*Limited/u);
   assert.match(engineerWorkflow, /seven[- ]lens[\s\S]*adversarial/iu);
   assert.match(engineerWorkflow, /security-sensitive[\s\S]*human/iu);
-  assert.match(engineerWorkflow, /PR(?:-ready)? provenance/iu);
+  assert.match(engineerWorkflow, /future-use PR traceability/iu);
+  assert.doesNotMatch(engineerWorkflow, /mini-cycle|replay|hot, warm, and cold/iu);
   assert.doesNotMatch(engineerWorkflow, /^---/u);
+
+  const implementationPlanTemplate = await readFile(
+    path.join(target, ".ai-sdlc/templates/implementation-plan.md"),
+    "utf8"
+  );
+  assert.match(
+    implementationPlanTemplate,
+    /## ADDED[\s\S]*## MODIFIED[\s\S]*## REMOVED[\s\S]*## REMOVED audit[\s\S]*## Risk note/iu
+  );
 
   for (const artifactKey of engineeringEvidenceKeys) {
     const template = await readFile(
@@ -348,20 +360,16 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
     );
     assert.match(template, /\S/u, `${artifactKey} template should be non-empty`);
   }
-  const replayTemplate = await readFile(
-    path.join(target, ".ai-sdlc/templates/engineering-replay-packet.md"),
-    "utf8"
-  );
-  assert.match(replayTemplate, /conditional|replay/iu);
+  assert.equal(existsSync(path.join(target, ".ai-sdlc/templates/engineering-replay-packet.md")), false);
   assert.doesNotMatch(
     config,
     /id: engineering-replay-packet/u,
     "the conditional replay packet is not a registered phase output"
   );
   const testerAgent = await readFile(path.join(target, ".github/agents/tester.agent.md"), "utf8");
-  assert.match(testerAgent, /change-contract[\s\S]*不会省略测试[\s\S]*目标回归结果/u);
-  assert.match(testerAgent, /implementation-notes[\s\S]*engineering-test-evidence[\s\S]*engineering-review/u);
-  assert.match(testerAgent, /design-spec[\s\S]*deferred_validations[\s\S]*test-report/u);
+  assert.match(testerAgent, /temporary staging copy[\s\S]*validated allowlist promotion[\s\S]*complete promoted suite baseline[\s\S]*standalone real-browser execution/u);
+  assert.match(testerAgent, /Run-scoped `test-report`/u);
+  assert.doesNotMatch(testerAgent, /E2E Stage 1|E2E Stage 2|E2E Stage 3|Author working directory/u);
   assert.match(config, /id: verification[\s\S]*inputs: \[change-contract, prd, user-stories, design-spec,/u);
   const implementationNotes = await readFile(
     path.join(target, ".ai-sdlc/templates/implementation-notes.md"),
@@ -371,6 +379,8 @@ test("interactive init installs one native GitHub Copilot agent set", async () =
   const testReport = await readFile(path.join(target, ".ai-sdlc/templates/test-report.md"), "utf8");
   assert.match(testReport, /## Contract, scope, and environment[\s\S]*## Acceptance and regression results[\s\S]*pre-fix reproduction[\s\S]*## Coverage gaps/u);
   assert.match(testReport, /## Deferred design verification[\s\S]*Obligation ID[\s\S]*blocked[\s\S]*untested/u);
+  assert.match(testReport, /Temporary staging identity[\s\S]*Staging validation[\s\S]*Validated promotion result[\s\S]*Promoted suite baseline[\s\S]*Human script review/u);
+  assert.doesNotMatch(`${workflow}\n${architectAgent}\n${designerAgent}\n${testReport}`, /ARCH-OBS-002|B-04/u);
   const componentQuery = await readFile(
     path.join(target, ".ai-sdlc/roles/designer/scripts/component-query.mjs"),
     "utf8"

@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { artifactLabel, FALLBACK_PHASES } from "../src/lib/workflow.js";
 import {
@@ -10,8 +8,8 @@ import {
   engineeringEvidenceGateGuidance,
   implementationReadinessGuidance,
 } from "../src/lib/engineering-workflow.js";
+import { readRunUiSource } from "./support/run-ui-source.ts";
 
-const runPagePath = fileURLToPath(new URL("../src/pages/run-page.tsx", import.meta.url));
 const engineeringOutputs = [
   "implementation-notes",
   "implementation-plan",
@@ -75,7 +73,7 @@ test("AC-CLARITY-001/002: the UI models four steps and explains every artifact",
 });
 
 test("AC-CLARITY-003: the Implementation CTA says when real code work starts", async () => {
-  const source = await readFile(runPagePath, "utf8");
+  const source = await readRunUiSource();
   assert.match(source, /检查条件并开始写代码/iu);
   assert.match(source, /证据文档.*自动生成/iu);
 });
@@ -166,7 +164,7 @@ test("AC-CLARITY-022: real implementation failures recommend a full rerun", () =
 });
 
 test("AC-CLARITY-023: the review dialog exposes batch and per-artifact repair controls", async () => {
-  const source = await readFile(runPagePath, "utf8");
+  const source = await readRunUiSource();
   assert.match(source, /让 Software Engineer 只修复这.*份证据/u);
   assert.match(source, /只重跑.*份证据/u);
   assert.match(source, /全部 .* 条原始校验信息/u);
@@ -226,7 +224,7 @@ test("AC-CLARITY-011/012: blocked inputs explain why code execution never starte
 });
 
 test("AC-CLARITY-010/011: normal Implementation presents automatic bundles instead of choices", async () => {
-  const source = await readFile(runPagePath, "utf8");
+  const source = await readRunUiSource();
   assert.match(source, /实施依据（平台自动选择）/u);
   assert.match(source, /这里没有需要你决定的选项/u);
   assert.match(source, /工程证据包（平台自动生成）/u);
@@ -236,7 +234,7 @@ test("AC-CLARITY-010/011: normal Implementation presents automatic bundles inste
 });
 
 test("AC-CLARITY-013: Implementation review prioritizes three human-facing documents", async () => {
-  const source = await readFile(runPagePath, "utf8");
+  const source = await readRunUiSource();
   assert.match(source, /建议先看 3 份/u);
   assert.match(source, /实现说明 → 独立测试证据 → 工程七镜/u);
   assert.match(source, /通常不用逐字阅读.*自动检查全部 7 份/u);

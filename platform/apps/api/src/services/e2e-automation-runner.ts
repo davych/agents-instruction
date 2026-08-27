@@ -117,6 +117,14 @@ export interface E2eTestAuthorResult {
   patchHash: string;
   manifestPath: string;
   manifestSha256: string;
+  /** Reverts the promoted test assets and author manifest if the coordinator cannot persist its review record. */
+  rollbackPromotion(): Promise<void>;
+}
+
+export interface E2eReviewBaselineFile {
+  path: string;
+  sha256: string;
+  bytes: number;
 }
 
 export interface E2eTestAuthorRunnerOptions {
@@ -163,6 +171,7 @@ export class E2eTestAuthorRunner {
       });
       const stagingRoot = await realpath(stagingCandidate);
       const before = await snapshotAuthorTree(stagingRoot);
+      const beforeManagedTree = await snapshotManagedAuthorTree(stagingRoot);
       const prompt = authorPrompt(intent);
       const args = [
         "exec",
@@ -215,6 +224,7 @@ export class E2eTestAuthorRunner {
           "E2E_AUTHOR_DELETE_FORBIDDEN",
         );
       }
+      const afterManagedTree = await snapshotManagedAuthorTree(stagingRoot);
       await assertReviewableAuthoredText(stagingRoot, changes);
       await assertFrozenCriteriaCoveredByTests(stagingRoot, [
         ...intent.acceptanceCriteria.map(({ id }) => id),
@@ -234,42 +244,103 @@ export class E2eTestAuthorRunner {
         afterSha256: change.after!.sha256,
         bytes: change.after!.bytes,
       }));
-      const reviewedSuite = await collectReviewedSuite(stagingRoot, before);
+      const stagedReviewedSuite = await collectReviewedSuite(stagingRoot, before);
+      await assertLinkedAuthorBaselineCurrent(e2eRoot, beforeManagedTree);
       const applied = await applyAuthoredFiles(e2eRoot, stagingRoot, authoredChanges);
-      const specIntentHash = sha256(stableJson(intent));
-      const patchHash = sha256(stableJson(reviewedSuite));
-      const sessionId = codexSessionId(completed.stdout);
-      const manifest = {
-        schemaVersion: 1,
-        executionId: input.executionId,
-        sessionId,
-        isolation: "fresh ephemeral spec-only authoring session",
-        specIntentHash,
-        files: reviewedSuite,
-        changes: authoredChanges,
-        patchHash,
-      };
       const manifestRelativePath = path.posix.join(
         ".ai-sdlc",
         "e2e-author-runs",
         `${input.executionId}.json`,
       );
       const manifestPath = path.join(e2eRoot, ...manifestRelativePath.split("/"));
+      let ownedManifestSha256: string | null = null;
+      let promotionRolledBack = false;
+      const rollbackPromotion = async () => {
+        if (promotionRolledBack) return;
+        const rollbackErrors: unknown[] = [];
+        if (ownedManifestSha256) {
+          try {
+            await removeOwnedManifest(manifestPath, ownedManifestSha256);
+          } catch (error) {
+            rollbackErrors.push(error);
+          }
+        }
+        try {
+          await applied.rollback();
+        } catch (error) {
+          rollbackErrors.push(error);
+        }
+        if (rollbackErrors.length > 0) {
+          throw new AppError(
+            "Failed to roll back promoted E2E authoring state",
+            500,
+            "E2E_AUTHOR_ROLLBACK_FAILED",
+            { causes: rollbackErrors.map((error) => error instanceof Error ? error.message : String(error)) },
+          );
+        }
+        promotionRolledBack = true;
+      };
       try {
-        await writePlatformFile(e2eRoot, manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+        const linkedManagedTree = await snapshotManagedAuthorTree(e2eRoot);
+        assertManagedAuthorTreeEqual(
+          afterManagedTree,
+          linkedManagedTree,
+          "Linked E2E workspace changed while authored files were promoted",
+        );
+        const reviewedSuite = await collectReviewedSuite(e2eRoot, before);
+        assertReviewedSuiteEqual(stagedReviewedSuite, reviewedSuite);
+        const specIntentHash = sha256(stableJson(intent));
+        const patchHash = sha256(stableJson(reviewedSuite));
+        const sessionId = codexSessionId(completed.stdout);
+        const manifest = {
+          schemaVersion: 1,
+          executionId: input.executionId,
+          sessionId,
+          isolation: "fresh ephemeral spec-only authoring session",
+          specIntentHash,
+          files: reviewedSuite,
+          changes: authoredChanges,
+          patchHash,
+        };
+        const manifestContent = `${JSON.stringify(manifest, null, 2)}\n`;
+        const expectedManifestSha256 = sha256(manifestContent);
+        await writePlatformFile(e2eRoot, manifestPath, manifestContent);
+        ownedManifestSha256 = expectedManifestSha256;
+        const persistedManifest = await readFile(manifestPath);
+        const manifestSha256 = sha256(persistedManifest);
+        if (manifestSha256 !== expectedManifestSha256) {
+          throw new AppError(
+            "E2E author manifest changed immediately after publication",
+            409,
+            "E2E_AUTHOR_TARGET_STALE",
+          );
+        }
+        return {
+          executionId: input.executionId,
+          sessionId,
+          specIntentHash,
+          files: reviewedSuite,
+          patchHash,
+          manifestPath: manifestRelativePath,
+          manifestSha256,
+          rollbackPromotion,
+        };
       } catch (error) {
-        await applied.rollback();
+        try {
+          await rollbackPromotion();
+        } catch (rollbackError) {
+          throw new AppError(
+            "E2E authoring failed after promotion and rollback was incomplete",
+            500,
+            "E2E_AUTHOR_ROLLBACK_FAILED",
+            {
+              cause: error instanceof Error ? error.message : String(error),
+              rollback: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+            },
+          );
+        }
         throw error;
       }
-      return {
-        executionId: input.executionId,
-        sessionId,
-        specIntentHash,
-        files: reviewedSuite,
-        patchHash,
-        manifestPath: manifestRelativePath,
-        manifestSha256: sha256(await readFile(manifestPath)),
-      };
     } finally {
       await rm(stagingParent, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -676,9 +747,23 @@ interface AuthorChange {
   after?: AuthorFileSnapshot;
 }
 
-async function snapshotAuthorTree(root: string): Promise<Map<string, AuthorFileSnapshot>> {
+interface ManagedAuthorTreeEntry {
+  kind: "directory" | "file";
+  mode: number;
+  bytes: number;
+  sha256?: string;
+}
+
+async function snapshotAuthorTree(
+  root: string,
+  options: { excludeAuthorRuntimeRoots?: boolean } = {},
+): Promise<Map<string, AuthorFileSnapshot>> {
   const files = new Map<string, AuthorFileSnapshot>();
   await walk(root, async (absolutePath, relativePath, entry) => {
+    const first = relativePath.split(path.sep)[0];
+    if (options.excludeAuthorRuntimeRoots && first && authorExcludedRoots.has(first)) {
+      return entry.isDirectory() ? "skip" : undefined;
+    }
     if (entry.isSymbolicLink()) {
       throw new AppError(
         `E2E author workspace contains a symlink: ${relativePath}`,
@@ -696,9 +781,92 @@ async function snapshotAuthorTree(root: string): Promise<Map<string, AuthorFileS
       );
     }
     const content = await readFile(absolutePath);
-    files.set(relativePath, { sha256: sha256(content), bytes: content.length });
+    files.set(relativePath.split(path.sep).join("/"), {
+      sha256: sha256(content),
+      bytes: content.length,
+    });
   });
   return files;
+}
+
+async function snapshotManagedAuthorTree(
+  root: string,
+): Promise<Map<string, ManagedAuthorTreeEntry>> {
+  await assertManagedE2eInputTree(root);
+  const entries = new Map<string, ManagedAuthorTreeEntry>();
+  await walk(root, async (absolutePath, relativePath, entry) => {
+    const first = relativePath.split(path.sep)[0];
+    if (first && authorExcludedRoots.has(first)) {
+      return entry.isDirectory() ? "skip" : undefined;
+    }
+    if (entry.isSymbolicLink()) {
+      throw new AppError(
+        `E2E managed author tree contains a symlink: ${relativePath}`,
+        400,
+        "E2E_AUTHOR_WORKSPACE_UNSAFE",
+      );
+    }
+    const normalized = relativePath.split(path.sep).join("/");
+    const info = await stat(absolutePath);
+    if (entry.isDirectory()) {
+      entries.set(normalized, { kind: "directory", mode: info.mode, bytes: 0 });
+      return;
+    }
+    if (!entry.isFile()) return;
+    if (info.size > maximumAuthorWorkspaceFileBytes) {
+      throw new AppError(
+        `E2E managed author file exceeds ${maximumAuthorWorkspaceFileBytes} bytes: ${relativePath}`,
+        413,
+        "E2E_AUTHOR_WORKSPACE_TOO_LARGE",
+      );
+    }
+    const content = await readFile(absolutePath);
+    entries.set(normalized, {
+      kind: "file",
+      mode: info.mode,
+      bytes: content.length,
+      sha256: sha256(content),
+    });
+  });
+  return entries;
+}
+
+async function assertLinkedAuthorBaselineCurrent(
+  e2eRoot: string,
+  expected: ReadonlyMap<string, ManagedAuthorTreeEntry>,
+): Promise<void> {
+  assertManagedAuthorTreeEqual(
+    expected,
+    await snapshotManagedAuthorTree(e2eRoot),
+    "Linked E2E workspace changed after the author staging snapshot",
+  );
+}
+
+function assertManagedAuthorTreeEqual(
+  expected: ReadonlyMap<string, ManagedAuthorTreeEntry>,
+  actual: ReadonlyMap<string, ManagedAuthorTreeEntry>,
+  message: string,
+): void {
+  const paths = [...new Set([...expected.keys(), ...actual.keys()])]
+    .sort((left, right) => left.localeCompare(right));
+  const differences = paths.flatMap((relativePath) => {
+    const previous = expected.get(relativePath);
+    const current = actual.get(relativePath);
+    if (stableJson(previous) === stableJson(current)) return [];
+    return [{
+      path: relativePath,
+      change: !previous ? "added" : !current ? "deleted" : "modified",
+    }];
+  });
+  if (differences.length === 0) return;
+  throw new AppError(
+    message,
+    409,
+    "E2E_AUTHOR_TARGET_STALE",
+    {
+      paths: differences.map(({ path: relativePath, change }) => ({ path: relativePath, change })),
+    },
+  );
 }
 
 function authorChanges(
@@ -710,7 +878,7 @@ function authorChanges(
   return paths.flatMap((relativePath) => {
     const previous = before.get(relativePath);
     const current = after.get(relativePath);
-    if (previous?.sha256 === current?.sha256) return [];
+    if (previous?.sha256 === current?.sha256 && previous?.bytes === current?.bytes) return [];
     return [{
       path: relativePath,
       change: !previous ? "added" as const : !current ? "deleted" as const : "modified" as const,
@@ -762,14 +930,30 @@ async function assertReviewableAuthoredText(
 }
 
 async function collectReviewedSuite(
-  stagingRoot: string,
+  reviewRoot: string,
   before: ReadonlyMap<string, AuthorFileSnapshot>,
 ): Promise<E2eAuthoredFile[]> {
-  const files: E2eAuthoredFile[] = [];
+  return (await collectE2eReviewBaseline(reviewRoot)).map((file) => {
+    const previous = before.get(file.path);
+    return {
+      path: file.path,
+      change: !previous ? "added" : previous.sha256 === file.sha256 ? "unchanged" : "modified",
+      beforeSha256: previous?.sha256 ?? null,
+      afterSha256: file.sha256,
+      bytes: file.bytes,
+    };
+  });
+}
+
+/** Enumerates the exact human-reviewable executable suite from the supplied linked root. */
+export async function collectE2eReviewBaseline(
+  reviewRoot: string,
+): Promise<E2eReviewBaselineFile[]> {
+  const files: E2eReviewBaselineFile[] = [];
   let totalBytes = 0;
   const decoder = new TextDecoder("utf-8", { fatal: true });
   for (const rootName of ["tests", "fixtures"] as const) {
-    const root = path.join(stagingRoot, rootName);
+    const root = path.join(reviewRoot, rootName);
     await walk(root, async (absolutePath, relativeWithinRoot, entry) => {
       const relativePath = path.posix.join(rootName, ...relativeWithinRoot.split(path.sep));
       if (entry.isSymbolicLink()) {
@@ -808,18 +992,31 @@ async function collectReviewedSuite(
           "E2E_AUTHOR_OUTPUT_NOT_TEXT",
         );
       }
-      const afterSha256 = sha256(raw);
-      const previous = before.get(relativePath);
       files.push({
         path: relativePath,
-        change: !previous ? "added" : previous.sha256 === afterSha256 ? "unchanged" : "modified",
-        beforeSha256: previous?.sha256 ?? null,
-        afterSha256,
+        sha256: sha256(raw),
         bytes: raw.length,
       });
     });
   }
   return files.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function assertReviewedSuiteEqual(
+  expected: readonly E2eAuthoredFile[],
+  actual: readonly E2eAuthoredFile[],
+): void {
+  const comparable = (files: readonly E2eAuthoredFile[]) => files.map((file) => ({
+    path: file.path,
+    sha256: file.afterSha256,
+    bytes: file.bytes,
+  }));
+  if (stableJson(comparable(expected)) === stableJson(comparable(actual))) return;
+  throw new AppError(
+    "Linked E2E review baseline differs from the validated author staging suite",
+    409,
+    "E2E_AUTHOR_TARGET_STALE",
+  );
 }
 
 async function assertFrozenCriteriaCoveredByTests(
@@ -879,15 +1076,40 @@ async function applyAuthoredFiles(
   stagingRoot: string,
   files: readonly E2eAuthoredFile[],
 ): Promise<AppliedAuthoredFiles> {
-  const rollback: Array<{ target: string; content?: Buffer; mode?: number }> = [];
+  const rollback: Array<{
+    target: string;
+    appliedSha256: string;
+    content?: Buffer;
+    mode?: number;
+  }> = [];
+  let restored = false;
   const restore = async () => {
+    if (restored) return;
     let restoreError: unknown;
-    for (const entry of rollback.reverse()) {
+    for (const entry of [...rollback].reverse()) {
       try {
-        if (entry.content) {
+        const current = await readFile(entry.target).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return undefined;
+          throw error;
+        });
+        if (current !== undefined && sha256(current) !== entry.appliedSha256) {
+          throw new AppError(
+            `Promoted E2E target changed before rollback: ${path.relative(e2eRoot, entry.target)}`,
+            409,
+            "E2E_AUTHOR_TARGET_STALE",
+          );
+        }
+        if (entry.content !== undefined) {
+          if (current === undefined) {
+            throw new AppError(
+              `Promoted E2E target disappeared before rollback: ${path.relative(e2eRoot, entry.target)}`,
+              409,
+              "E2E_AUTHOR_TARGET_STALE",
+            );
+          }
           await writeFile(entry.target, entry.content);
           if (entry.mode !== undefined) await chmod(entry.target, entry.mode);
-        } else {
+        } else if (current !== undefined) {
           await rm(entry.target, { force: true });
         }
       } catch (error) {
@@ -901,6 +1123,7 @@ async function applyAuthoredFiles(
         "E2E_AUTHOR_ROLLBACK_FAILED",
       );
     }
+    restored = true;
   };
   try {
     for (const file of files) {
@@ -922,10 +1145,11 @@ async function applyAuthoredFiles(
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
-      const actualBeforeHash = existing ? sha256(existing) : null;
+      const targetExists = existing !== undefined;
+      const actualBeforeHash = existing !== undefined ? sha256(existing) : null;
       if (
-        (file.change === "added" && existing)
-        || (file.change === "modified" && !existing)
+        (file.change === "added" && targetExists)
+        || (file.change === "modified" && !targetExists)
         || actualBeforeHash !== file.beforeSha256
       ) {
         throw new AppError(
@@ -934,9 +1158,23 @@ async function applyAuthoredFiles(
           "E2E_AUTHOR_TARGET_STALE",
         );
       }
-      rollback.push({ target, ...(existing ? { content: existing, mode: existingMode } : {}) });
+      const sourceContent = await readFile(source);
+      if (sha256(sourceContent) !== file.afterSha256 || sourceContent.length !== file.bytes) {
+        throw new AppError(
+          `E2E authored staging file changed before promotion: ${file.path}`,
+          409,
+          "E2E_AUTHOR_TARGET_STALE",
+        );
+      }
       await safeParentDirectories(e2eRoot, path.dirname(target));
-      await writeFile(target, await readFile(source), existing ? undefined : { flag: "wx" });
+      await writeFile(target, sourceContent, targetExists ? undefined : { flag: "wx" });
+      // Register ownership only after a successful write. In particular, an EEXIST
+      // race on a newly added path must never make rollback delete the user's file.
+      rollback.push({
+        target,
+        appliedSha256: file.afterSha256,
+        ...(targetExists ? { content: existing, mode: existingMode } : {}),
+      });
       if (existingMode !== undefined) await chmod(target, existingMode);
     }
     return { rollback: restore };
@@ -944,6 +1182,22 @@ async function applyAuthoredFiles(
     await restore();
     throw error;
   }
+}
+
+async function removeOwnedManifest(target: string, expectedSha256: string): Promise<void> {
+  const content = await readFile(target).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (content === undefined) return;
+  if (sha256(content) !== expectedSha256) {
+    throw new AppError(
+      "E2E author manifest changed before rollback",
+      409,
+      "E2E_AUTHOR_TARGET_STALE",
+    );
+  }
+  await rm(target);
 }
 
 function authorPrompt(intent: z.infer<typeof frozenIntentSchema>): string {

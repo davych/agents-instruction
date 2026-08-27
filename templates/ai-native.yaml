@@ -19,8 +19,8 @@ paths:
 roles:
   - id: pm-ba
     name: PM / BA
-    mission: Route each immutable change contract to the smallest sufficient product evidence without rewriting a project PRD for every Run.
-    responsibilities: [change impact, user problems, business rules, product scope, acceptance criteria]
+    mission: Produce the smallest sufficient product evidence selected by the recorded Product route without rewriting a project PRD for every Run.
+    responsibilities: [product impact analysis, user problems, business rules, product scope, acceptance criteria]
   - id: designer
     name: Designer
     mission: Turn confirmed product needs into clear interface behavior and a developer-ready design handoff.
@@ -58,7 +58,7 @@ workflow:
       owner: architect
       inputs: [change-contract, prd, user-stories, design-spec]
       outputs: [architecture, architecture-discovery-context, architecture-options, architecture-c4-context, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs, architecture-adversarial]
-      gate: Human acceptance evidence is recorded after the selected direction, C4 views, decisions, quality budgets, risks, and open human decisions are complete.
+      gate: An explicit Architecture disposition is recorded; skip has valid no-impact evidence, reuse binds current accepted architecture evidence, or the selected partial/full outputs are complete and have the required human selection and acceptance evidence.
     - id: implementation
       owner: software-engineer
       inputs: [change-contract, prd, user-stories, design-baseline, design-spec, architecture, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs]

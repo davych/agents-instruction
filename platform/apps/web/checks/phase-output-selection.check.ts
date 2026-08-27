@@ -634,10 +634,13 @@ test("fallback workflow matches the registered architecture pack and its consume
     "engineering-review",
   ]);
   assert.deepEqual(byId.get("release")?.inputs, [
+    "change-contract",
     "architecture",
     "architecture-adrs",
     "architecture-nfrs",
     "architecture-adversarial",
+    "implementation-notes",
+    "engineering-provenance",
     "test-report",
   ]);
 });

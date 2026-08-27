@@ -1972,8 +1972,8 @@ function buildOutputMaterializationContract(request: CodexRunRequest): string {
   }
   if (request.phase.owner === "tester") {
     rules.push(
-      "- Tester 特例：Verification 是独立执行与取证阶段，不是实现或测试脚本编写阶段。除本次已选中的 Run-scoped test-report 和明确列出的运行证据目录外，整个项目中的 tracked/untracked 文件、生产源码、测试源码、仓库控制文件、Agent/角色配置和工作流资源全部只读；runner 同步窗口结束扫描观察到的变化会被平台还原并拒绝整次执行。不得启动后台或分离进程。",
-      "- Playwright MCP 探索只能帮助确认路径和诊断问题，探索动作或探索成功本身不能充当可复用 E2E/CI 证据。若缺少 durable E2E 脚本，必须在 test-report 中返回 crystallization 请求给 Software Engineer，不得在 Verification 中创建或修改 tests/e2e/*.spec.ts。",
+      "- Verification 是独立验证与取证阶段，不是实现或 E2E 脚本 authoring 阶段。Tester 主执行除本次已选中的 Run-scoped test-report 和明确列出的运行证据目录外，必须把产品项目中的 tracked/untracked 文件、生产源码、测试源码、仓库控制文件、Agent/角色配置和工作流资源全部视为只读；runner 同步窗口结束扫描观察到的变化会被平台还原并拒绝整次执行。不得启动后台或分离进程。E2E 脚本由平台另行在临时 staging 副本中启动 fresh spec-only Test Author，校验后只提升 allowlisted tests/fixtures 到 Linked E2E Workspace。",
+      "- Playwright MCP 探索只能帮助确认路径和诊断问题，探索动作或探索成功本身不能充当可复用 E2E/CI 证据。若 E2E 必需但缺少当前 durable 脚本，保持在 Verification 的 authoring/script-review 流程并交给 fresh Test Author；不得在 Tester 主执行中创建或修改 tests/e2e/*.spec.ts。只有需要修改产品源码、产品仓内测试或 testability interface 时才返回 Software Engineer。",
       "- 仅允许测试命令在项目根目录生成 test-results/、playwright-report/ 或 blob-report/ 运行证据；这些目录不是测试源码，也不能替代 test-report 中的命令、结果与可追溯引用。",
     );
   }

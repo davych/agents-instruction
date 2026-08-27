@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   RELEASE_COMPLETION_BOUNDARY,
   RELEASE_FLOW_STEPS,
   RELEASE_REVIEW_POINTS,
 } from "../src/lib/release-workflow.ts";
-
-const runPagePath = fileURLToPath(new URL("../src/pages/run-page.tsx", import.meta.url));
+import { readRunUiSource } from "./support/run-ui-source.ts";
 
 test("release UI defines preparation, review, handoff, and an explicit no-release boundary", () => {
   assert.equal(RELEASE_FLOW_STEPS.length, 4);
@@ -22,7 +19,7 @@ test("release UI defines preparation, review, handoff, and an explicit no-releas
 });
 
 test("release actions and terminal state never claim deployment or release completion", async () => {
-  const source = await readFile(runPagePath, "utf8");
+  const source = await readRunUiSource();
 
   assert.match(source, /生成发布准备手册/u);
   assert.match(source, /审核发布准备材料/u);

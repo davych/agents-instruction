@@ -1,23 +1,35 @@
 import type { PhaseDefinition, PhaseStatus, RoleDefinition } from "@/lib/types";
 
+/**
+ * Legacy compatibility snapshot used only when the API cannot supply a project definition.
+ * The canonical structure remains templates/ai-native.yaml; a cross-package drift check keeps
+ * role identity and the complete phase graph synchronized without adding YAML to the Web bundle.
+ */
+export const LEGACY_FALLBACK_CANONICAL_SOURCE = "templates/ai-native.yaml";
+
+// Update this only after reviewing the localized role copy and every gate below
+// against the canonical semantic fields covered by the API-side drift check.
+export const LEGACY_FALLBACK_CANONICAL_SEMANTIC_SHA256 =
+  "0688fa6eab70905eacb3c9951ede4c1c3be21376debd821f4ee6be66615562da";
+
 export const FALLBACK_ROLES: RoleDefinition[] = [
   {
     id: "pm-ba",
     name: "PM / BA",
-    mission: "把产品机会变成清晰的 PRD 与可验收用户故事。",
-    responsibilities: ["用户问题", "业务规则", "范围", "验收标准"],
+    mission: "在已记录的 Product 路由内产出最小充分的产品证据，避免为每个 Run 重写项目 PRD。",
+    responsibilities: ["产品影响分析", "用户问题", "业务规则", "产品范围", "验收标准"],
   },
   {
     id: "designer",
     name: "Designer",
-    mission: "把确认的需求转化为可实现、可验证的交互设计。",
-    responsibilities: ["用户旅程", "交互状态", "响应式", "可访问性"],
+    mission: "把已确认的产品需求转化为清晰的界面行为与可供工程实现的设计交接。",
+    responsibilities: ["用户旅程", "交互状态", "响应式行为", "可访问性", "设计验证"],
   },
   {
     id: "architect",
     name: "Architect",
-    mission: "把产品与设计意图转化为有证据的架构决策。",
-    responsibilities: ["架构方案", "系统边界", "ADR", "质量预算"],
+    mission: "把已确认的产品与设计意图转化为有证据支撑的架构决策包。",
+    responsibilities: ["架构候选方案", "系统边界", "决策记录", "可度量质量预算"],
   },
   {
     id: "software-engineer",
@@ -28,14 +40,14 @@ export const FALLBACK_ROLES: RoleDefinition[] = [
   {
     id: "tester",
     name: "Tester",
-    mission: "验证需求、风险和回归范围。",
-    responsibilities: ["测试设计", "缺陷证据", "质量结论"],
+    mission: "把已确认的需求与风险转化为独立、可重复的验证；Playwright MCP 仅用于可选探索，持久 E2E 通过显式关联工作区、临时 staging 独立编写、受控提升、完整基线人审与真实浏览器独立执行形成证据。",
+    responsibilities: ["风险驱动测试设计", "可选浏览器探索", "关联 E2E 测试资产", "完整脚本基线 Hash 审核", "真实浏览器独立执行", "缺陷证据", "发布质量建议"],
   },
   {
     id: "devops",
     name: "DevOps",
-    mission: "建立可重复、可观察、可回滚的交付路径。",
-    responsibilities: ["CI/CD", "部署", "监控", "回滚"],
+    mission: "准备有证据约束、可重复、可观察、可回滚的发布路径，但不执行发布。",
+    responsibilities: ["发布就绪度", "来源追溯验证", "上线指导", "健康与监控", "回滚规划", "事件升级"],
   },
 ];
 
@@ -46,7 +58,7 @@ export const FALLBACK_PHASES: PhaseDefinition[] = [
     owner: "pm-ba",
     inputs: [],
     outputs: ["change-contract", "prd", "user-stories"],
-    gate: "用户问题、范围、业务规则与验收标准已经清晰。",
+    gate: "当前 Run 的不可变 Change Contract 已存在；所选 Product disposition 对范围、业务规则、验收标准与目标回归提供了充分证据。",
   },
   {
     id: "design",
@@ -54,7 +66,7 @@ export const FALLBACK_PHASES: PhaseDefinition[] = [
     owner: "designer",
     inputs: ["change-contract", "prd", "user-stories"],
     outputs: ["design-baseline", "design-spec", "design-prototype", "figma-handoff"],
-    gate: "设计完整追溯用户故事，可供工程实现，且没有阻塞项。",
+    gate: "已记录明确的 Design disposition：skip 与 reuse 有有效证据，或所选设计产物完整、可追溯、ready-for-engineering 且无阻塞；只能在可运行实现上验证的检查已记录为 Tester 在 Verification 阶段负责的 deferred validations，而不是 Design blocker。",
   },
   {
     id: "architecture",
@@ -72,7 +84,7 @@ export const FALLBACK_PHASES: PhaseDefinition[] = [
       "architecture-nfrs",
       "architecture-adversarial",
     ],
-    gate: "架构方向、边界、关键决策、质量预算和风险经过人工确认。",
+    gate: "已记录明确的 Architecture disposition：skip 有有效的无影响证据，reuse 绑定当前已接受的架构证据，或所选 partial/full 产物完整并具备所需的人类选型与验收证据。",
   },
   {
     id: "implementation",
@@ -99,7 +111,7 @@ export const FALLBACK_PHASES: PhaseDefinition[] = [
       "engineering-review",
       "engineering-provenance",
     ],
-    gate: "实现与必要测试完成，每条验收标准有独立证据，七镜与对抗审查完整，交付追溯无阻塞。",
+    gate: "已确认的实现与必要测试均完成；每条验收标准都有独立测试证据，七镜审查与对抗审查完整，来源追溯链没有未解决阻塞。",
   },
   {
     id: "verification",
@@ -117,21 +129,24 @@ export const FALLBACK_PHASES: PhaseDefinition[] = [
       "engineering-review",
     ],
     outputs: ["test-report"],
-    gate: "验收标准、主要风险和延期设计验证都有真实证据。",
+    gate: "验收标准、目标回归、主要风险与每项选定的延期 Design 验证都有当前执行证据；所需 E2E 脚本与人类批准的关联工作区完整可执行基线清单一致，并由平台监督在真实浏览器中独立执行；仅有 Playwright MCP 探索绝不能满足可重复 E2E 或 CI 证据。",
   },
   {
     id: "release",
     name: "发布准备",
     owner: "devops",
     inputs: [
+      "change-contract",
       "architecture",
       "architecture-adrs",
       "architecture-nfrs",
       "architecture-adversarial",
+      "implementation-notes",
+      "engineering-provenance",
       "test-report",
     ],
     outputs: ["release-runbook"],
-    gate: "发布、监控和回滚步骤已准备。",
+    gate: "发布手册绑定当前 Run，以及每个所选上游 artifact ID、项目相对路径和内容 Hash，并绑定实现与验证 revision 及适用的发布制品 digest；来源追溯与供应链适用性明确；前置条件、顺序化上线步骤、健康与 smoke 检查、监控阈值/窗口/负责人/动作、回滚触发条件/RTO/数据兼容性/恢复验证、事件升级、风险与人类 go/no-go 负责人均完整，且没有未解决的发布阻塞。该门禁只表示指导已就绪，不表示发布已批准或已执行。",
   },
 ];
 

@@ -8,12 +8,12 @@ import {
   verificationE2eStandardGate,
   type VerificationE2eActionKind,
 } from "../src/lib/verification-e2e-workflow.js";
+import { readRunUiSource } from "./support/run-ui-source.ts";
 
 const panelPath = fileURLToPath(
   new URL("../src/components/verification-e2e-panel.tsx", import.meta.url),
 );
 const apiPath = fileURLToPath(new URL("../src/lib/api.ts", import.meta.url));
-const runPagePath = fileURLToPath(new URL("../src/pages/run-page.tsx", import.meta.url));
 const testerWorkflowPath = fileURLToPath(new URL("../src/lib/tester-workflow.ts", import.meta.url));
 
 test("Verification E2E panel maps every flow state to one safe primary action", () => {
@@ -120,7 +120,7 @@ test("Verification E2E API uses structured actions instead of shell text", async
 
 test("Run page connects every E2E state action without a review-comment marker", async () => {
   const [runPage, testerWorkflow] = await Promise.all([
-    readFile(runPagePath, "utf8"),
+    readRunUiSource(),
     readFile(testerWorkflowPath, "utf8"),
   ]);
   assert.match(runPage, /<VerificationE2ePanel[\s\S]*onConfigureWorkspace[\s\S]*onPrepareWorkspace[\s\S]*onPreflight/iu);

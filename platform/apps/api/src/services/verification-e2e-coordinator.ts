@@ -30,6 +30,7 @@ import {
   E2eAutomationRunner,
   E2eTestAuthorRunner,
   MAX_E2E_AUTHORED_REVIEW_BYTES,
+  collectE2eReviewBaseline,
   type E2eExecutionFailureEvidence,
   type E2eExecutionResult,
   type FrozenE2eSpecIntent,
@@ -237,34 +238,52 @@ export class VerificationE2eCoordinator {
       model: input.model ?? undefined,
       reasoningEffort: input.reasoningEffort ?? undefined,
     });
-    const e2eRevision = await captureE2eInputRevisionToken(config.e2eRoot);
-    const e2eGitState = await captureVerificationGitState(config.e2eRoot);
-    const now = new Date().toISOString();
-    const record: AuthoringRecord = {
-      schemaVersion: 1,
-      runId: input.runId,
-      executionId: input.executionId,
-      status: "awaiting_review",
-      patchHash: result.patchHash,
-      productRevisionToken,
-      e2eRevisionToken: e2eRevision,
-      productGitState,
-      e2eGitState,
-      criterionIds: input.intent.criteria.map(({ id }) => id),
-      files: result.files.map((file) => ({
-        path: file.path,
-        sha256: file.afterSha256,
-        bytes: file.bytes,
-      })),
-      reviewComment: null,
-      reviewedAt: null,
-      createdAt: now,
-    };
-    await writeAuthoringRecord(config.e2eRoot, record);
-    return {
-      authoring: await authoringDto(config.e2eRoot, record),
-      reportContent: authoringReport(input.executionId, record),
-    };
+    try {
+      const e2eRevision = await captureE2eInputRevisionToken(config.e2eRoot);
+      const e2eGitState = await captureVerificationGitState(config.e2eRoot);
+      const now = new Date().toISOString();
+      const record: AuthoringRecord = {
+        schemaVersion: 1,
+        runId: input.runId,
+        executionId: input.executionId,
+        status: "awaiting_review",
+        patchHash: result.patchHash,
+        productRevisionToken,
+        e2eRevisionToken: e2eRevision,
+        productGitState,
+        e2eGitState,
+        criterionIds: input.intent.criteria.map(({ id }) => id),
+        files: result.files.map((file) => ({
+          path: file.path,
+          sha256: file.afterSha256,
+          bytes: file.bytes,
+        })),
+        reviewComment: null,
+        reviewedAt: null,
+        createdAt: now,
+      };
+      const authoring = await authoringDto(config.e2eRoot, record);
+      await writeAuthoringRecord(config.e2eRoot, record);
+      return {
+        authoring,
+        reportContent: authoringReport(input.executionId, record),
+      };
+    } catch (error) {
+      try {
+        await result.rollbackPromotion();
+      } catch (rollbackError) {
+        throw new AppError(
+          "E2E authoring record failed and promoted files could not be fully rolled back",
+          500,
+          "E2E_AUTHOR_ROLLBACK_FAILED",
+          {
+            cause: error instanceof Error ? error.message : String(error),
+            rollback: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+          },
+        );
+      }
+      throw error;
+    }
   }
 
   async latestAuthoring(project: ProjectDto, runId: string): Promise<E2eAuthoringDto | null> {
@@ -513,6 +532,7 @@ async function assertAuthoringCurrent(
     || stableJson(productGitState) !== stableJson(record.productGitState)
     || stableJson(e2eGitState) !== stableJson(record.e2eGitState)
   ) throw stale("产品或 E2E revision 在脚本生成后发生变化");
+  await assertExactAuthoringFileSet(e2eRoot, record.files, "stale");
   for (const file of record.files) {
     const target = safeE2eAssetPath(e2eRoot, file.path);
     const content = await readFile(target).catch(() => undefined);
@@ -744,7 +764,47 @@ async function writeAuthoringRecord(e2eRoot: string, record: AuthoringRecord): P
   await safeWriteJson(e2eRoot, target, record);
 }
 
+async function assertExactAuthoringFileSet(
+  e2eRoot: string,
+  expected: AuthoringRecord["files"],
+  failureMode: "stale" | "invalid",
+): Promise<void> {
+  let actual: Array<{ path: string; sha256: string; bytes: number }>;
+  try {
+    actual = await collectE2eReviewBaseline(e2eRoot);
+  } catch (error) {
+    if (failureMode === "stale") {
+      throw stale("E2E 完整脚本集合无法安全枚举，请重新生成并审核");
+    }
+    throw new AppError(
+      "E2E authored assets cannot be enumerated as the complete human-review manifest",
+      409,
+      "E2E_AUTHORING_RECORD_INVALID",
+      { cause: error instanceof Error ? error.message : String(error) },
+    );
+  }
+  const normalize = (files: ReadonlyArray<{ path: string; sha256: string; bytes: number }>) => (
+    files
+      .map(({ path: relativePath, sha256: contentHash, bytes }) => ({
+        path: relativePath,
+        sha256: contentHash,
+        bytes,
+      }))
+      .sort((left, right) => left.path.localeCompare(right.path))
+  );
+  if (stableJson(normalize(expected)) === stableJson(normalize(actual))) return;
+  if (failureMode === "stale") {
+    throw stale("E2E 完整脚本文件集合与待审 manifest 不一致");
+  }
+  throw new AppError(
+    "E2E authored assets contradict the complete human-review manifest",
+    409,
+    "E2E_AUTHORING_RECORD_INVALID",
+  );
+}
+
 async function authoringDto(e2eRoot: string, record: AuthoringRecord): Promise<E2eAuthoringDto> {
+  await assertExactAuthoringFileSet(e2eRoot, record.files, "invalid");
   let totalBytes = 0;
   const files = [];
   const decoder = new TextDecoder("utf-8", { fatal: true });

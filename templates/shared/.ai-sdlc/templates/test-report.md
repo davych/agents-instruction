@@ -8,7 +8,7 @@
 - **Product revision binding:** <exact platform-supplied product Git/workspace revision; do not invent or normalize it>
 - **Linked E2E Workspace binding:** <workspace ID, canonical root/descriptor binding supplied by the platform, or Not applicable when E2E is not required>
 - **E2E suite revision binding:** <exact platform-supplied E2E Git/workspace before-and-after revisions, or Not applicable>
-- **Approved script manifest:** <sha256:64-hex plus human review reference, or Not applicable>
+- **Approved script manifest:** <sha256:64-hex for the complete promoted executable baseline plus human review reference, or Not applicable>
 
 Script approval, a passing build, unit/jsdom results, or MCP success is not Verification approval and is not a browser E2E pass.
 
@@ -64,22 +64,27 @@ A real MCP screenshot may supplement a specifically declared manual/deferred obs
 - **Fresh Test Author:** <platform authoring stage/model/session identity or Not applicable>
 - **Inputs visible during intent authoring:** <approved Change Contract or story ACs, observable Design/NFR, frozen intent, and linked public harness only>
 - **Excluded context confirmed:** <product implementation, implementation diff/transcript, private helpers, exploration code/transcript, MCP actions, and DOM dump were not visible, or disclose the limitation>
-- **Author working directory:** <exact trusted Linked E2E Workspace root or Not applicable>
+- **Temporary staging identity:** <fresh staging-copy ID, baseline revision, and workspace token, or Not applicable>
+- **Author working directory:** <exact temporary staging root; never the Linked E2E Workspace or product root, or Not applicable>
+- **Staging write policy:** <allowlisted tests/fixtures only; no execution, dependency install, Git/environment/workflow mutation, CI configuration, or direct linked-root write>
+- **Staging validation:** <non-executing path/symlink/protected-file/allowlist/schema checks and result>
 - **Product workspace mutation:** <No, backed by the platform guard; otherwise Failed>
 - **E2E before/after revision:** <exact platform bindings>
+- **Validated promotion result:** <platform event that copied only validated allowlisted tests/fixtures into the linked root, or blocked / Not applicable>
+- **Promoted suite baseline:** <linked-root revision/token plus complete executable test/fixture file set, including unchanged files>
 
 | Linked-workspace test/fixture path | Stable AC/scenario IDs and exact test name | Content SHA-256 | Change |
 |---|---|---|---|
 | <tests/checkout-coupon.spec.ts> | <CC-AC-003 · applies an eligible coupon> | <sha256:64-hex> | <created / changed / unchanged> |
 
-- **Aggregate manifest hash:** <sha256:64-hex or Not applicable>
-- **Human script review:** <approved exact manifest hash + durable review ID/date, request changes, or Not applicable>
-- **Approval freshness:** <product revision, E2E revision, binding, workspace token, file set, and bytes still match / invalidated>
+- **Aggregate manifest hash:** <sha256:64-hex for the complete promoted executable baseline, or Not applicable>
+- **Human script review:** <approved exact promoted-baseline manifest hash + durable review ID/date, request changes, or Not applicable>
+- **Approval freshness:** <product revision, linked-root revision/binding, complete file set, and bytes still match immediately before execution / invalidated>
 - **Selector rationale:** <role/label/text/reviewed test contract; explain any documented CSS fallback>
 
-A candidate script or manifest is not passing evidence. Newly generated executable files cannot run before a human approves their exact current aggregate hash. Any script byte, manifest, product/E2E revision, binding, or workspace-token change invalidates approval. Script review approves execution of those bytes only—not Verification, CI policy, PR, merge, risk, or release.
+A candidate script or change manifest is not passing evidence. The fresh Test Author writes only in temporary staging and never executes generated code. After non-executing validation, the platform promotes only the validated allowlisted changes, then records and re-hashes the complete linked-root executable baseline. A human reviews that exact promoted baseline; script review authorizes execution only, not promotion, Verification, CI policy, PR, merge, risk, or release. Any approved-baseline byte, file set, product/E2E revision, or binding drift blocks execution and requires a new staging cycle.
 
-If a failure requires product source, product-repository tests, or a product testability-interface change, cite the refreshed Software Engineer evidence and Implementation reapproval before resuming. A linked-workspace-only test bug returns to fresh authoring and a new hash review instead.
+If a failure requires product source, product-repository tests, or a product testability-interface change, cite the refreshed Software Engineer evidence and Implementation reapproval before resuming. An E2E-only test bug returns to a fresh staging copy, authoring, validation, promotion, complete-baseline hash review, and execution instead.
 
 ## E2E Stage 3: Execution
 
@@ -92,11 +97,11 @@ If a failure requires product source, product-repository tests, or a product tes
 - **Real browser launched:** <yes with Chromium launch event, or no with exact error; `No browser is available` is blocked>
 - **MCP used for execution:** No. Stage 3 uses the platform-supervised standalone runner.
 - **Retry/flake history:** <first result, retries, classification, owner, and next action or None>
-- **Required PR check:** <real check name and owner, planned/not configured, or confirmed with durable run reference>
+- **Required PR check:** <expected autonomous command/check contract plus separately authorized human/provider owner; planned/not configured, or confirmed with durable run reference>
 
 The canonical local form is `` `<one validated package-manager test script>` from `<exact trusted linked E2E root>` ``. Markdown cannot authorize an arbitrary external cwd or invented command. The command must match the current successful platform `command_execution` event; compound shell, comments, inline assignments, substitutions, redirection, and detached/background commands are not valid evidence.
 
-For platform-managed local evidence, use only the configured Linked E2E Workspace evidence directories and append one `sha256:<64 hex>` digest per report, trace, screenshot, video, or log file. Approval re-hashes scripts and evidence and validates both product and E2E revisions. A local pass is not a remote CI pass; “configured” or “expected to run” is not a completed required check.
+For platform-managed local evidence, use only the configured Linked E2E Workspace evidence directories and append one `sha256:<64 hex>` digest per report, trace, screenshot, video, or log file. Approval re-hashes scripts and evidence and validates both product and E2E revisions. A local pass is not a remote CI pass; “configured” or “expected to run” is not a completed required check. Tester and DevOps only record or validate the expected check contract; only a separately authorized human or provider system configures it.
 
 ## Acceptance and regression results
 
@@ -110,7 +115,7 @@ For a bug, include pre-fix reproduction when available, post-fix behavior, and t
 
 | Obligation ID | Targets and checks | Real evidence | Result | Defect / owner / release impact |
 |---|---|---|---|---|
-| <B-04 or None> | <viewport, keyboard, focus, live region, contrast, reduced motion, or other declared checks> | <real-browser event, screenshot, trace, log, or durable reference> | <pass / fail / blocked / untested> | <defect or unresolved owner and impact, or None> |
+| <deferred-validation-id or None> | <viewport, keyboard, focus, live region, contrast, reduced motion, or other declared checks> | <real-browser event, screenshot, trace, log, or durable reference> | <pass / fail / blocked / untested> | <defect or unresolved owner and impact, or None> |
 
 Copy every selected `design-spec.deferred_validations` ID exactly once and name every target, check, and evidence type. `blocked` and `untested` are visible risks, never passing evidence; static source review, jsdom, or vague prose cannot replace a required real-browser observation.
 
@@ -120,7 +125,7 @@ Copy every selected `design-spec.deferred_validations` ID exactly once and name 
 |---|---|---|---|---|---|
 | <TEST-FAIL-001 or None> | <implementation bug / testability-interface gap / test bug / spec ambiguity / design ambiguity / architecture-NFR gap / environment-CI issue> | <reproduction/report/trace/log/hash> | <role or human owner> | <specific action> | <open / resolved> |
 
-Product or product-repository test changes return to Software Engineer and refresh engineering evidence. Linked-workspace test bugs return to the fresh Test Author and exact-hash review. Environment/browser/server problems return to the authorized operator and preflight.
+Product or product-repository test changes return to Software Engineer and refresh engineering evidence. E2E-only test bugs return to a fresh staging copy and repeat validation, promotion, complete-baseline exact-hash review, and execution. Environment/browser/server problems return to the authorized operator and preflight.
 
 ## Coverage gaps
 

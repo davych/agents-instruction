@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import { routeTitle } from "../src/lib/navigation.ts";
 import { allowAppNavigation, registerNavigationGuard } from "../src/lib/navigation-guard.ts";
+import { readRunUiSource } from "./support/run-ui-source.ts";
 
-const runPagePath = fileURLToPath(new URL("../src/pages/run-page.tsx", import.meta.url));
 const appPath = fileURLToPath(new URL("../src/App.tsx", import.meta.url));
 const appShellPath = fileURLToPath(new URL("../src/components/app-shell.tsx", import.meta.url));
 const projectsPagePath = fileURLToPath(new URL("../src/pages/projects-page.tsx", import.meta.url));
@@ -15,7 +15,7 @@ const stylesPath = fileURLToPath(new URL("../src/index.css", import.meta.url));
 
 test("review dialog contains mobile width constraints and stackable review actions", async () => {
   const [runPage, markdown, styles] = await Promise.all([
-    readFile(runPagePath, "utf8"),
+    readRunUiSource(),
     readFile(markdownPath, "utf8"),
     readFile(stylesPath, "utf8"),
   ]);
@@ -29,7 +29,7 @@ test("review dialog contains mobile width constraints and stackable review actio
 });
 
 test("review dialog guards pending and dirty exits and gates approval on viewed heads", async () => {
-  const source = await readFile(runPagePath, "utf8");
+  const source = await readRunUiSource();
 
   assert.match(source, /const hasPendingReviewWork = revisionMutation\.isPending[\s\S]*reviewMutation\.isPending[\s\S]*decisionCaptureMutation\.isPending/u);
   assert.match(source, /const hasUnsavedReviewWork = isDirty[\s\S]*comment\.length > 0[\s\S]*hasDirtyDecisionResponses/u);

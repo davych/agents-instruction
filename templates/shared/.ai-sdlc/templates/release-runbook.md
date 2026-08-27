@@ -23,7 +23,7 @@ Any change to the Run, source, build/artifact bytes or digest, provenance, envir
 
 ## Trusted upstream input bindings
 
-Copy every selected upstream input from the execution manifest without rewriting it. One current selected input per row is required; use the exact project-relative path and platform-provided SHA-256 content hash.
+Copy every selected upstream input from the platform execution manifest without rewriting it. In a direct IDE session without that manifest, use the human-supplied execution brief, compute the exact current project-relative path and SHA-256 locally, and label it as direct-IDE evidence rather than platform-recorded provenance. One current selected input per row is required.
 
 | Artifact ID | Current artifact path | Content hash |
 |---|---|---|

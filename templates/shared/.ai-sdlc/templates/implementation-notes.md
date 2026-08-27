@@ -22,8 +22,6 @@ Use `Ready for verification` only when the registered evidence is current, the r
 | Engineering review | `artifact:engineering-review` | <status> | <revision/date> |
 | Engineering provenance | `artifact:engineering-provenance` | <status> | <revision/date> |
 
-The optional replay packet is not registered and is not part of this index or the Web phase gate. It may be created manually for a failed or disputed run only.
-
 ## Contract and active clearances
 
 - **Change Contract:** `artifact:change-contract` at <revision and resolved path>

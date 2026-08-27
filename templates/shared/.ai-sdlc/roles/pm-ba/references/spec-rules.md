@@ -8,14 +8,6 @@
 - Use interview notes as evidence, not as automatic product decisions.
 - If the basic problem, target user, or desired outcome is missing, ask one short question before writing the specification.
 
-## Product Impact disposition
-
-- `direct` is valid for a bug, technical change, or tightly bounded request only when the Change Contract plus an authoritative behavior source is sufficient to implement and verify the outcome. It creates no placeholder PRD or story.
-- `reuse` is valid only when approved PRD/story revisions already cover every relevant contract outcome and acceptance criterion without reinterpretation.
-- `partial` preserves the approved product baseline and changes only affected PRD sections, stories, rules, and acceptance criteria.
-- `full` is required for a new product domain or a material change to target users, outcomes, scope, policy, pricing model, or cross-story business rules.
-- `unknown` evidence is not `direct` or `reuse`. Return to Product Impact instead of guessing.
-
 ## PRD
 
 - Keep the PRD short enough to scan in one sitting.

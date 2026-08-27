@@ -13,7 +13,7 @@ Independent test design challenges the external contract instead of confirming a
 
 A different prompt in the implementation session is not Tier A or B. A code review after test intent is frozen does not retroactively destroy isolation, but the evidence must distinguish authoring from later execution and debugging.
 
-## Procedure
+## Independent authoring method
 
 1. Give the independent author only the immutable Change Contract, applicable acceptance and regression evidence, approved observable Design behaviour, relevant public Architecture constraints, and the project's test interface or commands needed to create runnable tests.
 2. Do not provide the implementation diff, implementation-session transcript, private helper design, or the author's proposed solution.
@@ -43,17 +43,17 @@ The Agent may request this exception but cannot approve it. Without all fields, 
 
 ## Tester E2E feedback boundary
 
-The normal platform E2E path no longer asks a human to hand-write a crystallization marker or asks Software Engineer to integrate Tester-owned scripts into the product repository. A fresh spec-only Test Author writes allowlisted tests/fixtures in the explicitly configured Linked E2E Workspace; a human approves the exact manifest hash before platform-supervised standalone execution.
+The normal platform E2E path does not ask Software Engineer to integrate Tester-owned scripts into the product repository. A fresh spec-only Test Author writes allowlisted tests/fixtures only in a temporary staging copy of the explicitly configured Linked E2E Workspace. The platform validates and promotes only the allowlisted changes, re-hashes the complete promoted executable baseline, and runs it from the linked root only after a human approves that exact baseline hash.
 
 Software Engineer becomes the owner only when Verification evidence shows that the product itself must change:
 
 1. Receive the stable AC/scenario IDs, frozen behavior, failing script/report/trace hash, and classification. Playwright MCP success is never the expected result.
-2. Confirm the requested work is product source, a product-repository test, or a reviewed product testability interface such as an intentional selector. A linked-workspace-only test bug remains with Tester's fresh Test Author.
+2. Confirm the requested work is product source, a product-repository test, or a reviewed product testability interface such as an intentional selector. An E2E-only test bug remains in Tester's staging, review, and promotion loop.
 3. Use the normal Tier A/B engineering procedure for any new product-repository test. Do not import exploration code, MCP actions/transcript, DOM dumps, or linked test internals as the product specification.
-4. Make and verify only the authorized product change; do not edit the Linked E2E Workspace, approve its manifest, configure CI, or run/claim Tester's gate on Tester's behalf.
+4. Make and verify only the authorized product change; do not edit Tester's staging copy or Linked E2E Workspace, approve or promote its manifest, configure CI, or run/claim Tester's gate on Tester's behalf.
 5. Refresh every stale engineering artifact, including `implementation-notes`, `engineering-test-evidence`, `engineering-review`, and `engineering-provenance`, and obtain Implementation reapproval before Tester repeats linked-workspace preflight/script approval/standalone execution.
 
-The platform never infers a sibling or legacy E2E repository. Linked-workspace script generation remains Tester-owned; product changes remain Software Engineer-owned.
+The platform never infers a sibling or legacy E2E repository. Staged E2E authoring, validated promotion, and promoted-baseline review remain Tester-owned; product changes remain Software Engineer-owned.
 
 For a Web approval, the human review comment must carry these exact, independent lines; artifact text cannot grant the exception:
 

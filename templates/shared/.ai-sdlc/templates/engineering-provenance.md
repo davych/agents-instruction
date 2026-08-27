@@ -24,7 +24,8 @@
 | Product clearance | <reference> | <purpose> |
 | Design clearance | <reference> | <purpose> |
 | Architecture clearance | <reference> | <purpose> |
-| Hot / warm / cold / configured Markdown | <exact path or None> | <purpose> |
+| Project instructions / configured references | <exact paths or None> | <purpose> |
+| Repository evidence | <exact paths or None> | <purpose> |
 
 ## Verification gates
 

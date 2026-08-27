@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   actionableHumanDecisionItems,
@@ -13,8 +11,7 @@ import {
   humanDecisionPresets,
 } from "../src/lib/human-decisions.js";
 import type { PhaseHumanDecisionGate } from "../src/lib/types.js";
-
-const runPagePath = fileURLToPath(new URL("../src/pages/run-page.tsx", import.meta.url));
+import { readRunUiSource } from "./support/run-ui-source.ts";
 
 function gate(overrides: Partial<PhaseHumanDecisionGate> = {}): PhaseHumanDecisionGate {
   return {
@@ -90,7 +87,7 @@ test("AC-CLARITY-019: deferred B-04 is shown as post-implementation and never re
   assert.equal(humanDecisionNextAction("awaiting_review", deferred), "review");
   assert.notEqual(humanDecisionNextAction("awaiting_review", deferred), "execute");
 
-  const source = await readFile(runPagePath, "utf8");
+  const source = await readRunUiSource();
   assert.match(source, /实现后验证/u);
   assert.match(source, /当前不阻塞/u);
 });
@@ -128,7 +125,7 @@ test("AC-DES-LOOP-004: a legacy B-04 plus formal cleanup blockers gets the one-t
   });
   assert.equal(isDeferredDesignHandoffCleanupGate(realBlocker), false);
 
-  const source = await readFile(runPagePath, "utf8");
+  const source = await readRunUiSource();
   assert.match(source, /整理实现后验证交接/u);
   assert.match(source, /整理交接并进入审核/u);
 });
@@ -167,7 +164,7 @@ test("AC-CLARITY-017: the next action asks only for real decisions and reruns st
 });
 
 test("AC-CLARITY-014/017: Run page exposes one decision inbox and a save-rerun handoff", async () => {
-  const source = await readFile(runPagePath, "utf8");
+  const source = await readRunUiSource();
   assert.match(source, /决定与待办/u);
   assert.match(source, /这里才是你需要处理的入口/u);
   assert.match(source, /通过状态不一致|已显示为“通过”/u);
@@ -196,7 +193,7 @@ test("AC-ARCH-LOOP-001/004/005: OBS-002 and option selection use concrete one-cl
   assert.match(presets[0]?.value ?? "", /不远程上传.*不记录儿童输入/u);
   assert.match(presets[1]?.label ?? "", /已有监控平台/u);
 
-  const source = await readFile(runPagePath, "utf8");
+  const source = await readRunUiSource();
   assert.match(source, /先做决定，再选方案/u);
   assert.match(source, /选择 Option \{option\.id\}/u);
   assert.match(source, /选方案不是批准架构/u);

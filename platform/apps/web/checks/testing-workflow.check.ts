@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   TESTER_FLOW_STEPS,
   TEST_REPORT_REVIEW_POINTS,
 } from "../src/lib/tester-workflow.js";
-
-const runPagePath = fileURLToPath(new URL("../src/pages/run-page.tsx", import.meta.url));
+import { readRunUiSource } from "./support/run-ui-source.ts";
 
 test("AC-TESTER-011: Web guidance separates intake and the three E2E stages", () => {
   assert.equal(TESTER_FLOW_STEPS.length, 4);
@@ -27,7 +24,7 @@ test("AC-TESTER-011: test-report review points reject exploration-only evidence"
 });
 
 test("AC-TESTER-011: Verification page renders the Tester guide before execution and review", async () => {
-  const source = await readFile(runPagePath, "utf8");
+  const source = await readRunUiSource();
   assert.match(source, /TesterFlowGuide/iu);
   assert.match(source, /phase\.phaseId === "verification"[\s\S]{0,180}<TesterFlowGuide/iu);
   assert.match(source, /开始 Tester 独立验证/iu);

@@ -1,8 +1,8 @@
-# Design SPEC contract
+# Design SPEC validation rules
 
-Start a SPEC with one machine-readable JSON block, followed by concise rationale.
+Use `.ai-sdlc/templates/design-spec.md` as the sole output structure. This focused reference explains semantic validation constraints; it does not define a second artifact schema. Start a SPEC with the template's machine-readable JSON block, followed by concise rationale.
 
-## JSON fields
+## JSON field rules
 
 - `spec_version`: `1.0`.
 - `title`, `mode` (`new` or `change`), and `status` (`draft`, `blocked`, or `ready-for-engineering`).
@@ -25,7 +25,7 @@ behavior and pass criteria are already explicit and whose stated prerequisite is
 runnable implementation. A missing browser by itself is not a reason to defer a
 check that can run against an available design prototype or current product.
 
-## Markdown body
+## Markdown validation rules
 
 Use the template sections needed to explain intent, coverage, layout, states, responsive behavior, components and assets, accessibility and content, and validation. Reference every acceptance-criteria ID at least once.
 

@@ -34,7 +34,7 @@ AI 编程工具已经很擅长完成局部任务：生成代码、解释错误�
 2. 系统根据真实影响提出 Product、Design、Architecture 路由建议，由人确认后只运行必要角色；小改动不背负无意义流程，大改动不能逃过必要门禁。
 3. 每个角色读取当前 Run 已批准的精确输入，生成自己拥有的结构化产物；下一个角色读取 artifact，而不是依赖上一段聊天。
 4. Software Engineer 完成真实代码和仓库测试，同时给出可独立审核的计划、任务、会话、测试、审查和 provenance 证据包。
-5. Tester 从合同和风险出发独立验证。需要 E2E 时，脚本先在临时 staging workspace 中创作，再把允许的测试变更提升到与产品仓库分离、非嵌套的 Linked E2E Workspace；脚本字节经过人工 hash 审核后，才由受监督的真实浏览器 runner 执行。
+5. Tester 从合同和风险出发独立验证。需要 E2E 时，脚本先在临时 staging workspace 中创作；平台验证 allowlist 后，只把通过校验的测试/fixture 变更提升到与产品仓库分离、非嵌套的 Linked E2E Workspace。提升后的精确脚本字节经过人工 hash 审核后，才由受监督的 runner 从 linked root 执行 standalone Playwright。
 6. 任何上游产物、代码、脚本或绑定发生相关变化，旧批准自动失效，系统把工作准确退回真正的 owner，而不是继续使用过期证据。
 7. DevOps 把已批准输入、制品、监控、回滚和事故响应绑定成可执行 runbook；授权的人完成 go/no-go，外部受控系统才执行合并、部署或回滚。
 8. 最终可以从一个生产结果反向追到：谁批准了什么、使用了哪个版本、执行了哪些命令、哪些风险被接受，以及为什么当时允许前进。
@@ -220,7 +220,7 @@ Product: direct
 
 Software Engineer 的七个 Markdown 是同一次代码变更的一套证据包，不是七张让人手填的表，也不能替代真实代码和测试 diff。推荐顺序：
 
-1. 读 `implementation-notes`：它是索引，先确认状态为 `Ready for verification`，没有 `Failed` 或 `Blocked`。
+1. 读 `implementation-notes`：它是索引；只有精确状态 `Ready for verification` 才继续，否则停止并查看阻塞原因。
 2. 查看真实 source/test diff：确认实现存在、范围正确、没有越权修改。
 3. 读 `engineering-test-evidence`：每个 passing AC coverage row 必须在同一行包含 exact AC ID、真实 executable test path、test name、durable result evidence 和 `Pass`；同时核对真实命令/结果与 Tier A/B 独立性声明。
 4. 读 `engineering-review`：确认七个 review lens、pre-mortem 和 edge-case-hunter 已完成，没有未解决的 `critical`/`high` finding，也没有任何未决 security finding。
@@ -235,18 +235,18 @@ E2E 是 Verification 内的子流程，不是第七阶段：
 
 1. 人工显式绑定独立、非嵌套的 Linked E2E Workspace；平台再分别验证 package manager 与脚本标识、manifest/lockfile/Playwright 状态、真实 Chromium launch probe、product start 与 loopback target readiness，以及 cleanup capability。安装依赖或浏览器仍是显式人工 setup，不是 Tester 自行完成的副作用。
 2. Tester 可选地用 Playwright MCP 做临时路径探索；探索成功本身不是可重复验收或 CI 证据。
-3. 平台冻结只含规格的 AC intent，把 linked workspace 复制到临时 staging workspace，并在那里启动新的 Tier A/B Test Author；作者只能改 allowlist 中的测试/fixture，不读产品实现或探索 transcript，也不执行脚本。校验通过后，平台才把这些允许的变更提升回 linked root。
-4. 人工审核精确 aggregate manifest hash；受审核的脚本/fixture、manifest，或被记录的 Product/E2E revision 与 binding 发生变化，都会使批准失效。`.git`、依赖、缓存和报告等排除项不是该 revision token 的组成部分。
-5. 平台用固定 argv、`shell: false` 和真实 headless Chromium 执行 standalone Playwright，并记录 cwd、revision、exit code 及报告/trace/screenshot/log hash。
+3. 平台冻结只含规格的 AC intent，把 linked workspace 复制到临时 staging workspace，并在那里启动新的 Tier A/B Test Author；作者只能改 allowlist 中的测试/fixture，不读产品实现或探索 transcript，也不执行脚本。平台验证 staged allowlist 和目标未漂移后，只把通过校验的变更提升回 linked root。
+4. 人工审核提升后文件的精确 aggregate manifest hash；受审核的脚本/fixture、manifest，或被记录的 Product/E2E revision 与 binding 发生变化，都会使批准失效。`.git`、依赖、缓存和报告等排除项不是该 revision token 的组成部分。
+5. 平台从 linked root 用固定 argv、`shell: false` 和真实 headless Chromium 执行 standalone Playwright，并记录 cwd、revision、exit code 及报告/trace/screenshot/log hash。
 6. Tester 把 Product 与 E2E 双重 provenance 写入 `test-report`。
 
-只有需要改变产品源码、产品仓内测试或 testability interface 的失败才回 Software Engineer 并重新审批 Implementation。linked test 自身的 bug 留在 fresh-author → manifest-review 循环。
+只有需要改变产品源码、产品仓内测试或 testability interface 的失败才回 Software Engineer 并重新审批 Implementation。linked test 自身的 bug 留在 fresh-author → allowlist promotion → 完整套件重新哈希与审批循环。
 
 ### 6.4 理解 Release 的终点
 
 DevOps 消费当前 Change Contract、适用的 architecture evidence、`implementation-notes`、`engineering-provenance` 和 `test-report`。runbook 必须绑定当前 Run 以及每个选中输入的 artifact ID、项目相对路径和平台记录的 SHA-256，并说明版本/制品、供应链适用性、前置条件、rollout、health/smoke、monitoring、rollback/recovery、incident escalation、风险和人工 owner。
 
-`Ready for human go/no-go` 只表示准备材料通过语义审查，不表示已部署、已合并、已发布、已配置 CI/密钥或已获得发布授权。
+`Ready for human go/no-go` 只表示准备材料通过语义审查，不表示已部署、已合并、已发布、已配置 CI/密钥或已获得发布授权。Tester 提供测试命令和证据合同，DevOps 只能在 runbook 中记录预期 required check 与 provider 证据缺口；CI policy、凭据、分支保护和 required-check 配置始终由授权的人或仓库/provider system 完成。
 
 ## 7. Artifact ID 与物理路径
 
@@ -351,11 +351,11 @@ rg -n 'createRun' \
 
 ### 路线 A：两小时建立全局模型
 
-1. 20 分钟：读本手册第 2～5 节和根 [`README.md`](../../README.md) 的 Core model。
+1. 20 分钟：读本手册第 2～5 节和根 README 的 [Workflow at a glance](../../README.md#workflow-at-a-glance)。
 2. 20 分钟：逐行读 [`templates/ai-native.yaml`](../../templates/ai-native.yaml)，自己画出 phase → input/output → owner。
-3. 20 分钟：读 [`default.md`](../../templates/shared/.ai-sdlc/workflows/default.md)，重点看 impact routing、artifact resolution、bug fast path。
+3. 20 分钟：读 [`default.md`](../../templates/shared/.ai-sdlc/workflows/default.md)，重点看 Change Contract prerequisite、Six phases、Impact routing、Owner-aware artifact resolution 和 staleness rules。
 4. 25 分钟：选一个角色，对照其 Agent、workflow、config 和 templates；建议先选 Software Engineer。
-5. 20 分钟：读 [`platform/README.md`](../../platform/README.md) 的 Architecture、Human revisions 和 Security boundary。
+5. 20 分钟：读 Platform README 的 [Architecture at a glance](../../platform/README.md#architecture-at-a-glance)、runtime contract 的 [Human revisions and downstream invalidation](../../platform/docs/runtime-contract.md#human-revisions-and-downstream-invalidation)，以及 security model 的 [Supported trust model](../../platform/docs/security-model.md#supported-trust-model)。
 6. 15 分钟：完成第 12 节自测，不会的题回到对应章节。
 
 ### 路线 B：七次学习会话

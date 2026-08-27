@@ -1,4 +1,6 @@
-# Figma workflow
+# Figma specialist method
+
+This bounded method is invoked only from the Designer workflow when `figma-handoff` is selected. It does not replace the role's top-level procedure or define another Agent.
 
 Use this workflow only when `figma-handoff` is selected or the user gives you an approved Figma reference. Never assume a Figma tool, file access, or component library is available. Never save passwords, tokens, or private file IDs in role files.
 
@@ -44,20 +46,3 @@ When a library is available, keep a clear `Components used` list in the working 
 6. Create the registered `figma-handoff.md` with status and verification time, the actual operation, canonical URL, file ID, relevant page or frame node IDs, covered states and viewports, verified components, checks performed, and unresolved follow-up. Do not copy credentials or access tokens into the handoff.
 
 The handoff is evidence for a remote result, not the result itself. Never make up a Figma URL or identifier. Never say you changed a file unless you checked the change. Never call a result pixel-perfect without an approved reference and a rendered comparison.
-
-## Request template
-
-```text
-Use the project Designer Agent. Read ai-native.yaml, then follow
-.ai-sdlc/roles/designer/workflow.md and
-.ai-sdlc/roles/designer/references/figma-workflow.md.
-
-Task: [inspect/create/revise/compare]
-Target Figma file or reference: [URL or attached frame]
-PRD, story, or SPEC: [path]
-Screens, states, and viewports: [scope]
-Expected output: [SPEC handoff, Figma update, or visual comparison]
-
-Use only components and tokens verified in this project or target file. Report missing
-access, unknown components, checks you ran, and real node IDs.
-```

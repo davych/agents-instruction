@@ -22,9 +22,10 @@
 
 | Order | Layer / type | Exact path or artifact revision | Purpose | Resulting fact, constraint, or gap |
 |---|---|---|---|---|
-| 1 | Hot | <path / None> | <purpose> | <result> |
+| 1 | Project instruction | <path / None> | <purpose> | <result> |
 | 2 | Upstream artifact | <artifact and revision> | <purpose> | <result> |
 | 3 | Repository evidence | <path> | <purpose> | <result> |
+| 4 | Configured reference | <path / None> | <purpose> | <result> |
 
 ## Ordered action log
 
