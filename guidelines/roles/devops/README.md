@@ -149,7 +149,5 @@ The current Web runner is limited to local, trusted, disposable or otherwise rec
 - [DevOps config](../../../templates/shared/.ai-sdlc/roles/devops/config.yaml)
 - [DevOps workflow](../../../templates/shared/.ai-sdlc/roles/devops/workflow.md)
 - [Release runbook template](../../../templates/shared/.ai-sdlc/templates/release-runbook.md)
-- [Six-role prompt eval](../../../reviews/workflow-completion-v1/prompt-eval.md)
-- [SDLC standards map](../../../reviews/workflow-completion-v1/sdlc-standards-map.md)
 
 Return to [Role Relationships](../README.md).

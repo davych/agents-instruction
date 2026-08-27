@@ -233,5 +233,3 @@ yarn build
 ```
 
 CI runs the root initializer checks and the platform checks as separate jobs. The publish workflow runs tests before `npm publish`; it requires a repository secret named `NPM_TOKEN` and remains outside DevOps Agent authority.
-
-For the rationale and open gaps, read the [six-role prompt eval](../../reviews/workflow-completion-v1/prompt-eval.md) and [NIST SSDF / OWASP SAMM / SLSA map](../../reviews/workflow-completion-v1/sdlc-standards-map.md). The standards map is an implementation review, not a compliance certification.

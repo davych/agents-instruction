@@ -188,7 +188,7 @@ The pack can become `Ready for human acceptance` only when:
 - no Greenfield default silently replaces a Brownfield framework or convention;
 - the index links only current active material.
 
-The default review floors are three options, seven NFRs across five relevant quality families, and three findings per adversarial stressor. They are a deliberate V1 heuristic, not a risk-adaptive industry requirement. If a floor does not fit the project, Architect asks a human to change the config. It does not add irrelevant material to reach a number. Replacing these fixed floors with a risk-tiered policy is an architecture/configuration decision and remains an explicit prompt-eval follow-up.
+The default review floors are three options, seven NFRs across five relevant quality families, and three findings per adversarial stressor. They are a deliberate V1 heuristic, not a risk-adaptive industry requirement. If a floor does not fit the project, Architect asks a human to change the config. It does not add irrelevant material to reach a number. Replacing these fixed floors with a risk-tiered policy remains an explicit architecture and configuration decision.
 
 The architecture phase passes only after a human completes the acceptance evidence in the index.
 
@@ -257,7 +257,5 @@ The Architect Agent is rendered from one canonical source into GitHub Copilot, C
 - [Pattern template](../../../templates/shared/.ai-sdlc/templates/architecture-patterns.md)
 - [NFR template](../../../templates/shared/.ai-sdlc/templates/architecture-nfrs.md)
 - [Adversarial review template](../../../templates/shared/.ai-sdlc/templates/architecture-adversarial.md)
-- [Six-role prompt eval](../../../reviews/workflow-completion-v1/prompt-eval.md)
-- [SDLC standards map](../../../reviews/workflow-completion-v1/sdlc-standards-map.md)
 
 Return to [Role Relationships](../README.md).

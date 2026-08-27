@@ -129,4 +129,4 @@ Use these files for different questions:
 
 See [Configuration](../configuration/README.md) for artifact path resolution and [End-to-End Workflow](../workflow/README.md) for the phase graph.
 
-The current Web platform is limited to local, trusted, disposable or otherwise recoverable project state. Its unauthenticated API and non-sandboxed Codex runner are unresolved security-architecture blockers for remote, multi-user, or untrusted-repository operation. See the [six-role prompt eval](../../reviews/workflow-completion-v1/prompt-eval.md) and [SDLC standards map](../../reviews/workflow-completion-v1/sdlc-standards-map.md); the latter records coverage and gaps, not compliance certification.
+The current Web platform is limited to local, trusted, disposable or otherwise recoverable project state. Its unauthenticated API and non-sandboxed Codex runner are unresolved security-architecture blockers for remote, multi-user, or untrusted-repository operation.

@@ -172,7 +172,5 @@ The PM / BA Agent is rendered from one canonical source into GitHub Copilot, Cla
 - [PRD template](../../../templates/shared/.ai-sdlc/templates/prd.md)
 - [Story template](../../../templates/shared/.ai-sdlc/templates/story.md)
 - [Change Contract template](../../../templates/shared/.ai-sdlc/templates/change-contract.md)
-- [Six-role prompt eval](../../../reviews/workflow-completion-v1/prompt-eval.md)
-- [SDLC standards map](../../../reviews/workflow-completion-v1/sdlc-standards-map.md)
 
 Return to [Role Relationships](../README.md).

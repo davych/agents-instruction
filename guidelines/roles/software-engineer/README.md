@@ -78,8 +78,8 @@ Load only context relevant to the affected slice and record the paths actually r
 | Layer | Typical sources | Use |
 |---|---|---|
 | Hot | nearest `AGENTS.md` or `CLAUDE.md` | Always-on repository rules, commands, boundaries, and escalation gates |
-| Warm | `docs/context/stack.md`, `context/stack.md`, testing or architecture references | Verified stack, conventions, interfaces, and test practices |
-| Cold | `docs/context/gap-log.md`, `context/cold/gap-log.md`, history or replay records | Unknowns, deferred risks, historical decisions, and failure context |
+| Warm | project-configured stack, testing, interface, or architecture references | Verified stack, conventions, interfaces, and test practices |
+| Cold | project-configured decision, risk, history, or replay references | Unknowns, deferred risks, historical decisions, and failure context |
 
 Do not create or overwrite project instructions merely to complete a template. A missing optional context file is not evidence; record the gap only when it creates material uncertainty.
 
@@ -269,7 +269,5 @@ The Software Engineer Agent is rendered from one canonical source into GitHub Co
 - [Software Engineer workflow](../../../templates/shared/.ai-sdlc/roles/software-engineer/workflow.md)
 - [Software Engineer references](../../../templates/shared/.ai-sdlc/roles/software-engineer/references)
 - [Engineering artifact templates](../../../templates/shared/.ai-sdlc/templates)
-- [Six-role prompt eval](../../../reviews/workflow-completion-v1/prompt-eval.md)
-- [SDLC standards map](../../../reviews/workflow-completion-v1/sdlc-standards-map.md)
 
 Return to [Role Relationships](../README.md).

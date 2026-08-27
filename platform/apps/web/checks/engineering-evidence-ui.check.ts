@@ -105,7 +105,7 @@ test("AC-CLARITY-004/005: approval errors become deduplicated recovery actions",
   assert.equal(engineeringEvidenceGateGuidance({ code: "OTHER" }), null);
 });
 
-test("AC-CLARITY-020/021/022/025: the active FE-cc failure becomes one five-document evidence repair", () => {
+test("AC-CLARITY-020/021/022/025: an active gate failure becomes one five-document evidence repair", () => {
   const guidance = engineeringEvidenceGateGuidance({
     code: "ENGINEERING_EVIDENCE_GATE_FAILED",
     details: {

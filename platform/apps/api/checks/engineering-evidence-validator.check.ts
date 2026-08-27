@@ -1730,7 +1730,7 @@ test("AC-ENG-012: provenance requires the explicit PR creation or opening bounda
 });
 
 for (const [field, validReference] of [
-  ["Spec", "changes/software-engineer-evidence-pack/delta.md"],
+  ["Spec", "docs/product/change-contract.md"],
   ["Session log", "engineering-session-log.md"],
   ["Tests", "engineering-test-evidence.md"],
   ["Review", "engineering-review.md"],
@@ -1964,12 +1964,12 @@ function validPack(tier: "A" | "B" | "C" | "Limited") {
         "Delta-driven smallest complete vertical slice with frozen independent tests.",
         "",
         "## Evidence links",
-        "Spec: changes/software-engineer-evidence-pack/delta.md",
+        "Spec: docs/product/change-contract.md",
         "Session log: engineering-session-log.md",
         "Tests: engineering-test-evidence.md",
         "Review: engineering-review.md",
         "Repository: create-ai-native-sdlc",
-        "Branch: codex/software-engineer-evidence-pack",
+        "Branch: feature/evidence-gate",
         "Base commit: 1111111111111111111111111111111111111111",
         "Head commit: 2222222222222222222222222222222222222222",
         "Pull request: https://github.example/create-ai-native-sdlc/pull/42",
@@ -2179,7 +2179,7 @@ function canonicalTableTestEvidence(options: CanonicalTestEvidenceOptions): stri
     ],
     [
       "Requirements visible while authoring",
-      "changes/software-engineer-evidence-pack/delta.md#acceptance-criteria",
+      "docs/product/change-contract.md#acceptance-criteria",
     ],
     [
       "Implementation visible while authoring",
@@ -2187,7 +2187,7 @@ function canonicalTableTestEvidence(options: CanonicalTestEvidenceOptions): stri
         ? "No"
         : "Yes; exact source and diff exposure recorded after frozen intent"),
     ],
-    ["Test intent frozen at", "reviews/frozen-intent-2026-08-19.md#revision-1"],
+    ["Test intent frozen at", "docs/testing/frozen-test-intent.md#revision-1"],
     ["Later implementation access", "None"],
     ["Human waiver", "None"],
   ].filter(([field]) => field !== options.omitIsolationField);
@@ -2301,7 +2301,7 @@ function withCanonicalProvenanceGates(
     "| Gate | Evidence | Result |",
     "|---|---|---|",
     "| Acceptance and regression coverage | artifact:engineering-test-evidence@rev-1 | Pass |",
-    "| Isolation | Tier A; reviews/frozen-intent-2026-08-19.md | Pass |",
+    "| Isolation | Tier A; docs/testing/frozen-test-intent.md | Pass |",
     `| Project checks | artifacts/test-results/platform-test.tap | ${projectChecksResult} |`,
     "| Seven-lens plus adversarial review | artifact:engineering-review@rev-1 | Pass |",
     "",

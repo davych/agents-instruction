@@ -229,5 +229,3 @@ The six global phases and their owners are fixed in this V1. Changing their orde
 See [End-to-End Workflow](../workflow/README.md) before changing phase dependencies.
 
 The platform and its real runner are currently suitable only for local, trusted, disposable or otherwise recoverable projects. Path validation limits project-output targets; it is not an OS sandbox. The unauthenticated API and unsandboxed Codex process remain explicit security-architecture blockers for remote, multi-user, or untrusted-repository use.
-
-See the [six-role prompt eval](../../reviews/workflow-completion-v1/prompt-eval.md) and [SDLC standards map](../../reviews/workflow-completion-v1/sdlc-standards-map.md) for the V1 rationale, known prompt constraints, and standards-aligned gaps.

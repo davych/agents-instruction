@@ -183,8 +183,6 @@ The Tester Agent is rendered from one canonical source into GitHub Copilot, Clau
 - [Tester workflow](../../../templates/shared/.ai-sdlc/roles/tester/workflow.md)
 - [Playwright E2E reference](../../../templates/shared/.ai-sdlc/roles/tester/references/e2e-playwright.md)
 - [Test report template](../../../templates/shared/.ai-sdlc/templates/test-report.md)
-- [Six-role prompt eval](../../../reviews/workflow-completion-v1/prompt-eval.md)
-- [SDLC standards map](../../../reviews/workflow-completion-v1/sdlc-standards-map.md)
 
 The Tester role pack is ordinary Markdown supporting the one canonical Agent. It contains no `SKILL.md`, second Agent, or client-specific duplicate.
 

@@ -288,7 +288,5 @@ Child architecture artifacts listed as phase inputs give a role the exact eviden
 - [Software Engineer](../roles/software-engineer/README.md)
 - [Tester](../roles/tester/README.md)
 - [DevOps](../roles/devops/README.md)
-- [Six-role prompt eval](../../reviews/workflow-completion-v1/prompt-eval.md)
-- [SDLC standards map](../../reviews/workflow-completion-v1/sdlc-standards-map.md)
 
-The current Web runner is suitable only for local, trusted, disposable or otherwise recoverable project state. Its unauthenticated API and lack of OS process isolation are unresolved security-architecture blockers, so this workflow does not claim safe remote, multi-user, or untrusted-repository execution. The standards map records coverage and gaps; it is not a compliance certification.
+The current Web runner is suitable only for local, trusted, disposable or otherwise recoverable project state. Its unauthenticated API and lack of OS process isolation are unresolved security-architecture blockers, so this workflow does not claim safe remote, multi-user, or untrusted-repository execution.

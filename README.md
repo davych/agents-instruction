@@ -60,13 +60,6 @@ Use `implementation-plan`, `implementation-tasks`, and `engineering-session-log`
 - Tester independently maps risk and writes `test-report`. When E2E applies, a human explicitly links a separate E2E workspace; a fresh spec-only Test Author writes there, a human approves the exact generated-script manifest hash, and the platform runs standalone Playwright with a real headless Chromium. Playwright MCP remains optional non-gating exploration. When E2E does not apply, Tester records the stronger applicable unit, integration, contract, or declared observation evidence instead.
 - DevOps consumes the Change Contract, `implementation-notes`, `engineering-provenance`, accepted architecture evidence, and `test-report` to prepare the task-scoped runbook. It may document required-check expectations, but it does not configure CI, use secrets, merge, publish, deploy, or decide release. A human remains the go/no-go owner.
 
-There are also two Markdown namespaces in this repository:
-
-| Location | Meaning | What you do next |
-|---|---|---|
-| Initialized project `docs/ai-native/engineering/` or platform Run-scoped engineering paths | Delivery evidence produced for the product change | Review the pack above, approve or return it, then run Tester. |
-| This initializer repository's `changes/`, `sessions/`, and `reviews/` | Maintainer evidence for changes to the workflow project itself | Use it to review this repository change or prepare a PR; it is not an initialized project's next-phase input. |
-
 ## Complete workflow and E2E lifecycle
 
 ```mermaid
@@ -224,8 +217,6 @@ The Web platform also task-scopes `change-contract`, `design-spec`, `test-report
 | [Software Engineer](guidelines/roles/software-engineer/README.md) | Layered context, contract-driven implementation, independent tests, seven-lens review, and provenance |
 | [Tester](guidelines/roles/tester/README.md) | Optional MCP exploration, linked-workspace spec-only authoring, script-hash review, standalone real-browser execution, defects, and test report |
 | [DevOps](guidelines/roles/devops/README.md) | Evidence-bound Release preparation, semantic gate, monitoring, rollback, incident escalation, and human boundary |
-| [Prompt eval](reviews/workflow-completion-v1/prompt-eval.md) | Six-role prompt quality, portability, over-design findings, and deliberate non-changes |
-| [SDLC standards map](reviews/workflow-completion-v1/sdlc-standards-map.md) | NIST SSDF, OWASP SAMM, and SLSA coverage and remaining ownership gaps |
 
 ## Local validation
 

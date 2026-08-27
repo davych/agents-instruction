@@ -151,13 +151,6 @@ These layers are not OS process sandboxes and cannot contain an escaped backgrou
 
 Workflow definitions are currently read from the project's live `ai-native.yaml` for each action. Run creation pins every task-scoped path atomically: `change-contract`, `design-spec`, all seven engineering evidence files, `test-report`, and `release-runbook`. First execution, failures, and later reruns therefore keep the same path even if a configured default basename or directory changes. Legacy runs without a stored pin reuse the latest recorded path for each task-scoped artifact. Freezing the complete definition version per run remains a production-hardening step; avoid changing other workflow configuration while a run is active.
 
-## V1 review evidence
-
-- [Six-role prompt eval](../reviews/workflow-completion-v1/prompt-eval.md)
-- [NIST SSDF / OWASP SAMM / SLSA map](../reviews/workflow-completion-v1/sdlc-standards-map.md)
-
-These reviews describe implemented coverage and explicit gaps; they are not a compliance certification or a claim that untrusted execution is safe.
-
 ## Repository boundary
 
 `platform/` has its own `package.json`, Yarn configuration, dependency graph, and Docker service. Commands in this directory operate only on the platform workspaces. The repository-root initializer remains the source for newly initialized AI-native projects; its design artifact templates are kept aligned with the platform's selectable Design outputs.

@@ -81,14 +81,13 @@ AI 编程工具已经很擅长完成局部任务：生成代码、解释错误�
 
 > 用不可变的变更合同定义一次工作，用最小必要角色生成可审核产物，用证据和人工门禁控制每次交接。
 
-仓库由四层组成：
+仓库由三个核心部分构成：
 
 | 层 | 作用 | 主要位置 |
 |---|---|---|
 | 规范层 | 定义六个角色、六阶段、产物注册表和角色操作程序 | [`templates/`](../../templates) |
 | 初始化层 | 把一套 canonical 规范安全地安装到目标项目，并渲染唯一一套客户端原生 Agent | [`bin/cli.js`](../../bin/cli.js) |
 | 运行层 | 持久化 Run、影响判断、产物修订、审核、执行事件和语义门禁 | [`platform/`](../../platform) |
-| 证据层 | 记录本仓库自身变更的规格、会话和独立审核证据 | [`changes/`](../../changes)、[`sessions/`](../../sessions)、[`reviews/`](../../reviews) |
 
 ```mermaid
 flowchart LR
@@ -101,10 +100,9 @@ flowchart LR
   Run --> Human["人工审核与决策"]
 ```
 
-需要牢牢记住两点：
+需要牢牢记住一点：
 
-1. `templates/agents/` 中只有六份 canonical Markdown 角色源；Copilot、Claude Code、Codex 文件都是初始化时派生的，不是三套独立角色。
-2. `changes/`、`sessions/`、`reviews/` 是维护本仓库的工程证据，不是初始化后业务项目下一阶段要消费的 Run 产物。
+`templates/agents/` 中只有六份 canonical Markdown 角色源；Copilot、Claude Code、Codex 文件都是初始化时派生的，不是三套独立角色。
 
 ## 3. 核心词汇
 
@@ -527,8 +525,6 @@ yarn build
 - Tester：[`guidelines/roles/tester/README.md`](../roles/tester/README.md)
 - DevOps：[`guidelines/roles/devops/README.md`](../roles/devops/README.md)
 - 平台运行与安全边界：[`platform/README.md`](../../platform/README.md)
-- Prompt 质量评估：[`reviews/workflow-completion-v1/prompt-eval.md`](../../reviews/workflow-completion-v1/prompt-eval.md)
-- NIST SSDF / OWASP SAMM / SLSA 映射与已知缺口：[`reviews/workflow-completion-v1/sdlc-standards-map.md`](../../reviews/workflow-completion-v1/sdlc-standards-map.md)
 
 最后，用这句话检查自己是否真的理解了项目：
 

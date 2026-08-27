@@ -85,15 +85,6 @@ test("AC-TESTER-001: root guidance explains how one generated engineering eviden
   assert.match(readme, /(?:do not approve|request changes|return)[\s\S]{0,240}(?:Failed|Blocked|gap|missing)/iu);
 });
 
-test("AC-TESTER-002: root guidance separates Run deliverables from repository development evidence", async () => {
-  const readme = await source("README.md");
-
-  assert.match(readme, /`changes\/`[\s\S]{0,240}`sessions\/`[\s\S]{0,240}`reviews\/`/u);
-  assert.match(readme, /(?:delivery evidence|Run delivery|Run-scoped engineering paths|交付证据|交付产物)/iu);
-  assert.match(readme, /(?:development evidence|repository evidence|maintainer evidence|开发证据|维护证据)/iu);
-  assert.match(readme, /(?:not|isn't|is not|不是)[^.\n]{0,180}(?:next-phase input|Run delivery|initialized project|下一阶段输入|交付产物)/iu);
-});
-
 test("AC-TESTER-003: initializer installs one ordinary Tester role pack without a duplicate Skill or Agent", async () => {
   const canonicalWorkflow = await source("templates/shared/.ai-sdlc/roles/tester/workflow.md");
   const canonicalReference = await source("templates/shared/.ai-sdlc/roles/tester/references/e2e-playwright.md");
@@ -312,7 +303,7 @@ test("AC-TESTER-013: repository validation contracts stay executable without add
   const platformPackageText = await source("platform/package.json");
   const rootPackage = JSON.parse(rootPackageText);
   const platformPackage = JSON.parse(platformPackageText);
-  const validationGuide = await source("docs/context/testing.md");
+  const repositoryInstructions = await source("AGENTS.md");
   const dependencyEvidence = [
     rootPackageText,
     platformPackageText,
@@ -327,7 +318,8 @@ test("AC-TESTER-013: repository validation contracts stay executable without add
     "yarn workspace @ai-sdlc/contracts build && yarn workspaces foreach --all --parallel --interlaced run test",
   );
   assert.equal(platformPackage.scripts.build, "yarn workspaces foreach --all --topological run build");
-  assert.match(validationGuide, /root tests plus platform typecheck, tests, and build/iu);
+  assert.match(repositoryInstructions, /Root initializer checks: `npm test` and `npm pack --dry-run`/u);
+  assert.match(repositoryInstructions, /Platform checks: `yarn typecheck`, `yarn test`, and `yarn build` from `platform\/`/u);
   assert.match(await source("README.md"), /npm test[\s\S]{0,120}npm pack --dry-run/u);
   assert.doesNotMatch(dependencyEvidence, /"@playwright\/test"|playwright-core@|playwright@npm:/u);
 });

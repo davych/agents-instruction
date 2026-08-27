@@ -60,7 +60,7 @@ test("AC-CLARITY-009/012: implementable inputs pass before code execution", () =
   assert.deepEqual(result.issues, []);
 });
 
-test("AC-CLARITY-009: the reported FE-cc statuses are rejected as role-owned blockers", () => {
+test("AC-CLARITY-009: reported upstream statuses are rejected as role-owned blockers", () => {
   assert.throws(
     () => assertImplementationReady({
       selectedArtifacts: [
