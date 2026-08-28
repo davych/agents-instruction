@@ -1,5 +1,6 @@
 import type {
   AskAnswerDto,
+  AskHistoryMessage,
   AskProjectInput,
   AskProviderCheckDto,
   AskProviderId,
@@ -25,10 +26,12 @@ import {
   askAnswerJsonSchema,
   parseAndValidateAskAnswer,
 } from "./ask-answer.js";
-import { ASK_SYSTEM_PROMPT, buildAskPromptMessages } from "./ask-prompt.js";
+import { ASK_SYSTEM_PROMPT, buildBoundedAskPromptMessages } from "./ask-prompt.js";
 import {
   RepositoryRetrievalError,
   RepositoryRetriever,
+  type RepositoryContextPack,
+  type RepositoryRetrievalLimits,
   type RepositoryRevision,
 } from "./repository-retriever.js";
 
@@ -157,30 +160,34 @@ export class AskService {
           { providerId: input.providerId, retryable: false },
         );
       }
+      const profile = askPromptProfile(input.providerId);
       const context = await this.retriever.retrieve({
         projectRoot,
         question: input.question,
         expectedRevision: input.expectedRevision,
         knowledge,
         signal,
+        limits: profile.retrievalLimits,
       });
       assertActive(signal);
+      const retrievalTruncated = context.truncated || evidenceReachedProviderLimit(context, profile);
+      const prompt = buildBoundedAskPromptMessages({
+        question: input.question,
+        history: boundedProviderHistory(input.history, profile.historyCharacters),
+        revision: context.revision,
+        dirty: context.dirty,
+        truncated: retrievalTruncated,
+        sources: context.sources,
+        knowledge,
+        externalContext,
+      }, profile.promptCharacters);
       const modelResponse = await this.providers.complete(
         input.providerId,
         {
           systemPrompt: ASK_SYSTEM_PROMPT,
-          messages: buildAskPromptMessages({
-            question: input.question,
-            history: input.history,
-            revision: context.revision,
-            dirty: context.dirty,
-            truncated: context.truncated,
-            sources: context.sources,
-            knowledge,
-            externalContext,
-          }),
+          messages: prompt.messages,
           jsonSchema: askAnswerJsonSchema as unknown as Record<string, unknown>,
-          maxOutputTokens: 4_096,
+          maxOutputTokens: profile.maxOutputTokens,
         },
         signal,
       );
@@ -190,8 +197,8 @@ export class AskService {
         status,
         revision: context.revision,
         dirty: context.dirty,
-        truncated: context.truncated,
-        sources: context.sources,
+        truncated: prompt.repositoryEvidenceTruncated,
+        sources: prompt.sources,
         durationMs: Date.now() - startedAt,
       });
     } catch (error) {
@@ -214,6 +221,90 @@ export class AskService {
     }
     return this.knowledge.resolve({ projectId, revision, workspaceRoot, signal });
   }
+}
+
+interface AskPromptProfile {
+  retrievalLimits?: Partial<RepositoryRetrievalLimits>;
+  historyCharacters: number;
+  promptCharacters: number;
+  maxOutputTokens: number;
+}
+
+const OPENAI_PROMPT_PROFILE: AskPromptProfile = Object.freeze({
+  historyCharacters: 48_000,
+  promptCharacters: 100_000,
+  maxOutputTokens: 4_096,
+});
+
+const LOCAL_PROMPT_PROFILES: Readonly<Record<Exclude<AskProviderId, "openai">, AskPromptProfile>> =
+  Object.freeze({
+    lmstudio: Object.freeze({
+      retrievalLimits: Object.freeze({
+        maxSources: 6,
+        maxContextBytes: 12 * 1024,
+        maxExcerptBytes: 2 * 1024,
+        maxExcerptLines: 80,
+      }),
+      historyCharacters: 8_000,
+      promptCharacters: 10_000,
+      maxOutputTokens: 1_536,
+    }),
+    ollama: Object.freeze({
+      retrievalLimits: Object.freeze({
+        maxSources: 4,
+        maxContextBytes: 8 * 1024,
+        maxExcerptBytes: 2 * 1024,
+        maxExcerptLines: 60,
+      }),
+      historyCharacters: 4_000,
+      promptCharacters: 6_000,
+      maxOutputTokens: 1_024,
+    }),
+    custom: Object.freeze({
+      retrievalLimits: Object.freeze({
+        maxSources: 8,
+        maxContextBytes: 24 * 1024,
+        maxExcerptBytes: 3 * 1024,
+        maxExcerptLines: 100,
+      }),
+      historyCharacters: 12_000,
+      promptCharacters: 16_000,
+      maxOutputTokens: 2_048,
+    }),
+  });
+
+export function askPromptProfile(providerId: AskProviderId): AskPromptProfile {
+  return providerId === "openai" ? OPENAI_PROMPT_PROFILE : LOCAL_PROMPT_PROFILES[providerId];
+}
+
+function boundedProviderHistory(
+  history: readonly AskHistoryMessage[],
+  maximumCharacters: number,
+): AskHistoryMessage[] {
+  const bounded: AskHistoryMessage[] = [];
+  let remaining = maximumCharacters;
+  for (const message of [...history].reverse()) {
+    if (remaining <= 0) break;
+    const content = message.content.length <= remaining
+      ? message.content
+      : message.content.slice(-remaining).trimStart();
+    if (content) bounded.push({ role: message.role, content });
+    remaining -= content.length;
+  }
+  return bounded.reverse();
+}
+
+function evidenceReachedProviderLimit(
+  context: RepositoryContextPack,
+  profile: AskPromptProfile,
+): boolean {
+  const limits = profile.retrievalLimits;
+  if (!limits) return false;
+  return (
+    limits.maxSources !== undefined && context.sources.length >= limits.maxSources
+  ) || (
+    limits.maxContextBytes !== undefined && context.stats.sourceBytes >= limits.maxContextBytes
+  );
 }
 
 function materializeAnswer(input: {

@@ -16,6 +16,7 @@ export const ASK_SYSTEM_PROMPT = `你是当前软件项目的只读项目助手�
 - 使用简单、直接的中文，先给结论，再解释依据。
 - 明确区分“源码表明”和“根据有限证据推测”。证据不足时直接说仓库中无法确认。
 - 当 repositoryEvidenceTruncated 为 true 时，本轮只覆盖了部分仓库；不得据此断言某项实现、文件或配置在整个仓库中不存在，并必须写入 uncertainties。
+- 当 currentQuestionTruncated 为 true 时，只回答仍可确认的部分，并请用户缩短或拆分问题，不能猜测被截断的要求。
 - answer 中引用证据时使用 [sourceId] 这种标记，例如 [S123456789]。
 - evidence 只列真正支持答案的来源。不要为了凑格式而引用无关文件。
 - uncertainties 写清缺少的信息或推测。
@@ -32,6 +33,12 @@ export interface AskPromptMessage {
   content: string;
 }
 
+export interface BoundedAskPrompt {
+  messages: AskPromptMessage[];
+  sources: AskEvidenceSource[];
+  repositoryEvidenceTruncated: boolean;
+}
+
 export function buildAskPromptMessages(input: {
   question: string;
   history: readonly AskHistoryMessage[];
@@ -43,11 +50,85 @@ export function buildAskPromptMessages(input: {
   /** Server-selected, bounded tool context. Never supplied directly by the browser. */
   externalContext?: unknown;
 }): AskPromptMessage[] {
+  return renderAskPrompt(input, {
+    history: input.history.slice(-12),
+    sources: input.sources,
+    knowledge: input.knowledge ? knowledgeForPrompt(input.knowledge) : null,
+    externalContext: input.externalContext ?? null,
+    repositoryEvidenceTruncated: input.truncated,
+    currentQuestion: input.question,
+    currentQuestionTruncated: false,
+  });
+}
+
+/**
+ * Build the final serialized user message against one Provider-level budget.
+ * The current question is kept ahead of optional context; when pressure rises
+ * we discard old history, DeepWiki hints, tool context, then whole evidence
+ * sources. Evidence is never sliced after its sourceId has been derived.
+ */
+export function buildBoundedAskPromptMessages(
+  input: Parameters<typeof buildAskPromptMessages>[0],
+  maximumCharacters: number,
+): BoundedAskPrompt {
+  let history = input.history.slice(-12);
+  let sources = [...input.sources];
+  let knowledge: unknown = input.knowledge ? knowledgeForPrompt(input.knowledge) : null;
+  let externalContext = boundedJsonContext(input.externalContext, Math.max(800, Math.floor(maximumCharacters / 4)));
+  let repositoryEvidenceTruncated = input.truncated;
+  let currentQuestion = input.question;
+  let currentQuestionTruncated = false;
+
+  const render = () => renderAskPrompt(input, {
+    history,
+    sources,
+    knowledge,
+    externalContext,
+    repositoryEvidenceTruncated,
+    currentQuestion,
+    currentQuestionTruncated,
+  });
+  let messages = render();
+  while ((messages[0]?.content.length ?? 0) > maximumCharacters) {
+    if (history.length > 0) {
+      history = history.slice(1);
+    } else if (knowledge !== null) {
+      knowledge = null;
+    } else if (externalContext !== null) {
+      externalContext = null;
+    } else if (sources.length > 0) {
+      sources = sources.slice(0, -1);
+      repositoryEvidenceTruncated = true;
+    } else {
+      const overflow = (messages[0]?.content.length ?? 0) - maximumCharacters;
+      const nextLength = Math.max(500, currentQuestion.length - overflow - 100);
+      if (nextLength >= currentQuestion.length) break;
+      currentQuestion = boundedPromptText(currentQuestion, nextLength);
+      currentQuestionTruncated = true;
+    }
+    messages = render();
+  }
+
+  return { messages, sources, repositoryEvidenceTruncated };
+}
+
+function renderAskPrompt(
+  input: Pick<Parameters<typeof buildAskPromptMessages>[0], "revision" | "dirty">,
+  context: {
+    history: readonly AskHistoryMessage[];
+    sources: readonly AskEvidenceSource[];
+    knowledge: unknown;
+    externalContext: unknown;
+    repositoryEvidenceTruncated: boolean;
+    currentQuestion: string;
+    currentQuestionTruncated: boolean;
+  },
+): AskPromptMessage[] {
   // Keep earlier answers as quoted data in the current user turn. Replaying them
   // as privileged assistant messages would give repository-derived text more
   // authority than it should have after a prompt-injection attempt.
-  const history = input.history.slice(-12).map(({ role, content }) => ({ role, content }));
-  const evidence = input.sources.map((source) => ({
+  const history = context.history.map(({ role, content }) => ({ role, content }));
+  const evidence = context.sources.map((source) => ({
     sourceId: source.sourceId,
     path: source.path,
     startLine: source.startLine,
@@ -58,12 +139,13 @@ export function buildAskPromptMessages(input: {
   const payload = {
     repositoryRevision: input.revision,
     workingTreeHasUncommittedChanges: input.dirty,
-    repositoryEvidenceTruncated: input.truncated,
-    projectKnowledge: input.knowledge ? knowledgeForPrompt(input.knowledge) : null,
-    connectedToolContext: input.externalContext ?? null,
+    repositoryEvidenceTruncated: context.repositoryEvidenceTruncated,
+    projectKnowledge: context.knowledge,
+    connectedToolContext: context.externalContext,
     conversationHistory: history,
     repositoryEvidence: evidence,
-    currentQuestion: input.question,
+    currentQuestion: context.currentQuestion,
+    currentQuestionTruncated: context.currentQuestionTruncated,
   };
   return [{
     role: "user",
@@ -72,6 +154,47 @@ export function buildAskPromptMessages(input: {
       JSON.stringify(payload),
     ].join("\n\n"),
   }];
+}
+
+function boundedJsonContext(value: unknown, maximumCharacters: number): unknown {
+  if (value === undefined || value === null) return null;
+  const compact = compactJsonValue(value, 0);
+  const serialized = JSON.stringify(compact);
+  if (serialized.length <= maximumCharacters) return compact;
+  return {
+    contextTruncated: true,
+    serializedExcerpt: boundedPromptText(serialized, Math.max(200, maximumCharacters - 80)),
+  };
+}
+
+function compactJsonValue(value: unknown, depth: number): unknown {
+  if (value === null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") return boundedPromptText(value, 500);
+  if (depth >= 5) return "[…嵌套内容已截断…]";
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 12).map((item) => compactJsonValue(item, depth + 1));
+    if (items.length < value.length) items.push(`[…另有 ${value.length - items.length} 项…]`);
+    return items;
+  }
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .slice(0, 40)
+        .map(([key, item]) => [key, compactJsonValue(item, depth + 1)]),
+    );
+  }
+  return String(value);
+}
+
+function boundedPromptText(value: string, maximumCharacters: number): string {
+  if (value.length <= maximumCharacters) return value;
+  const marker = "\n[…已截断…]\n";
+  if (maximumCharacters <= marker.length + 2) return value.slice(0, maximumCharacters);
+  const available = maximumCharacters - marker.length;
+  const head = Math.ceil(available * 0.65);
+  return value.slice(0, head).trimEnd()
+    + marker
+    + value.slice(-(available - head)).trimStart();
 }
 
 function knowledgeForPrompt(knowledge: TrustedProjectKnowledge): unknown {

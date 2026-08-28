@@ -20,6 +20,7 @@ import { AppError } from "../../domain/errors.js";
 import type { AskService } from "../ask/ask-service.js";
 import type { CloudProjectService } from "../cloud-project-service.js";
 import type { AskProviderRegistry } from "../llm/provider-registry.js";
+import { AskProviderError } from "../llm/types.js";
 import type { WorkflowService } from "../workflow-service.js";
 import {
   AgentSdlcCoordinator,
@@ -223,6 +224,27 @@ export class AgentSessionService {
         messageId: userMessage.id,
         projectId: primary.projectId,
       });
+
+      const platformHelp = agentPlatformHelp(input.content, primary.repoAlias);
+      if (platformHelp) {
+        await this.store.completeAgentTurn({
+          sessionId,
+          userMessageId: userMessage.id,
+          content: platformHelp,
+          providerId,
+          model: "platform/static-help",
+        });
+        await this.store.appendAgentEvent({
+          sessionId,
+          kind: "turn.completed",
+          status: "completed",
+          summary: "已返回平台使用说明；本轮不需要调用模型、工具、Sandbox 或 SDLC。",
+          messageId: userMessage.id,
+          projectId: primary.projectId,
+        });
+        return this.get(sessionId);
+      }
+
       await this.store.appendAgentEvent({
         sessionId,
         kind: "provider.started",
@@ -478,7 +500,7 @@ export class AgentSessionService {
         sessionId,
         kind: "turn.failed",
         status: "failed",
-        summary: publicTurnFailure(error),
+        summary: agentTurnFailureSummary(error),
         messageId: userMessage.id,
       }).catch(() => undefined);
       await this.store.failAgentTurn({ sessionId, userMessageId: userMessage.id }).catch(() => undefined);
@@ -688,6 +710,40 @@ export function buildAgentExternalContext(
   };
 }
 
+export function agentPlatformHelp(content: string, repoAlias: string): string | null {
+  const compact = content.toLowerCase().replace(/[\s，。！？、,.!?：:；;"'“”‘’`~_-]+/gu, "");
+  const asksForHelp = compact.length <= 80 && (
+    compact === "hi"
+    || compact === "hello"
+    || compact === "hey"
+    || compact === "你好"
+    || compact === "嗨"
+    || compact === "哈喽"
+    || compact === "在吗"
+    || compact === "help"
+    || compact === "怎么用"
+    || compact.includes("你能做什么")
+    || compact.includes("你可以做什么")
+    || compact.includes("whatcanyoudo")
+  );
+  if (!asksForHelp) return null;
+  return [
+    `你好，我是 \`@${repoAlias}\` 的 Cloud SDLC Agent。你只要在这个对话框里说目标，不需要逐个角色开聊天。`,
+    "",
+    "我可以帮你：",
+    "",
+    "- 回答仓库结构、代码、构建、测试和 DeepWiki 问题；",
+    "- 把自然语言或已启用 MCP 读取到的 Issue 整理成一项任务；",
+    "- 在独立 Sandbox 中按 PM / BA → Designer → Architect → Software Engineer → Tester → DevOps 推进；",
+    "- 让后续角色自动读取已批准的上游产物，并在需要时重点 involve 某个角色；",
+    "- 保留每个角色的产物、审阅、代码变更和验证证据。",
+    "",
+    "你可以直接说：‘修复登录失败问题，involve Tester 做回归’，或者先问：‘这个仓库的登录流程在哪里？’",
+    "",
+    AGENT_WORK_BOUNDARY_MESSAGE,
+  ].join("\n");
+}
+
 function assertFixedRunReadOnlyRepositories(
   fixed: readonly ReadOnlyRepositoryContextDto[],
   mentioned: readonly ReadOnlyRepositoryContextDto[],
@@ -841,7 +897,34 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function publicTurnFailure(error: unknown): string {
-  if (error instanceof AppError && error.statusCode < 500) return error.message;
-  return "本轮未完成，未继续执行工具或 SDLC；请检查 Provider、仓库和 Sandbox 配置后重试。";
+export function agentTurnFailureSummary(error: unknown): string {
+  if (error instanceof AskProviderError) {
+    return `Provider 阶段失败：${error.message}；本轮未继续启动 Sandbox 或 SDLC。`;
+  }
+  if (error instanceof AppError && (
+    error.statusCode < 500
+    || PUBLIC_AGENT_5XX_ERROR_CODES.has(error.code)
+  )) return error.message;
+  return "本轮因未识别的服务端错误而中止；没有继续启动 Sandbox 或 SDLC。";
 }
+
+const PUBLIC_AGENT_5XX_ERROR_CODES = new Set([
+  "AGENT_PLAN_INVALID",
+  "AGENT_PROVIDER_NOT_CONFIGURED",
+  "AGENT_READ_ONLY_REPOSITORY_CONTEXT_UNAVAILABLE",
+  "AGENT_SANDBOX_BLUEPRINT_NOT_CONFIGURED",
+  "ASK_FAILED",
+  "ASK_PROVIDER_NOT_CONFIGURED",
+  "ASK_PROVIDER_AUTHENTICATION_FAILED",
+  "ASK_PROVIDER_REQUEST_INVALID",
+  "ASK_PROVIDER_CANCELLED",
+  "ASK_PROVIDER_TIMEOUT",
+  "ASK_PROVIDER_UNREACHABLE",
+  "ASK_PROVIDER_RATE_LIMITED",
+  "ASK_PROVIDER_MODEL_UNAVAILABLE",
+  "ASK_PROVIDER_REQUEST_REJECTED",
+  "ASK_PROVIDER_RESPONSE_TOO_LARGE",
+  "ASK_PROVIDER_PROTOCOL_ERROR",
+  "ASK_MODEL_RESPONSE_INVALID",
+  "ASK_REPOSITORY_UNAVAILABLE",
+]);

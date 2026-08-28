@@ -71,6 +71,18 @@ export class OpenAiChatProvider implements AskLlmProvider {
       max_tokens: request.maxOutputTokens,
       stream: false,
     };
+    // LM Studio's MLX runtime can let unbounded GPT-OSS reasoning escape a
+    // constrained JSON answer even when response_format is valid. Default
+    // short machine contracts to low, while callers may explicitly give a
+    // real task contract a bounded medium budget. Limit the compatibility hint
+    // to the known model family so unrelated endpoints never receive it.
+    if (
+      request.jsonSchema
+      && this.id === "lmstudio"
+      && this.options.model.toLowerCase().includes("gpt-oss")
+    ) {
+      body.reasoning_effort = request.reasoningEffort ?? "low";
+    }
     if (request.jsonSchema && this.options.structuredOutput) {
       body.response_format = {
         type: "json_schema",

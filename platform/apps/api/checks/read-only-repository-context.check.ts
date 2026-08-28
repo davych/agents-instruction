@@ -215,30 +215,19 @@ test("READONLY-REPO-CTX-04: more than four mentioned read repositories fail befo
 });
 
 test("READONLY-REPO-CTX-05: Planner consumes the context and fixes it into the work Change Contract", async () => {
-  let request: AskLlmCompleteRequest | undefined;
+  const requests: AskLlmCompleteRequest[] = [];
   const providers = {
     complete: async (_providerId: string, input: AskLlmCompleteRequest) => {
-      request = input;
+      requests.push(input);
       return {
         model: "planner-test",
-        text: JSON.stringify({
-          intent: "work",
-          reason: "用户明确要求修改主仓库并参考附加仓库",
-          involveRoles: [],
-          clarification: null,
-          task: {
-            title: "接入共享协议",
-            workType: "change",
-            summary: "让主仓库兼容共享协议",
-            currentBehavior: "当前未兼容",
-            expectedBehavior: "按验收标准完成兼容",
-            inScope: ["修改主仓库"],
-            outOfScope: [],
-            acceptanceCriteria: ["测试通过"],
-            regressionScope: ["现有协议"],
-            riskFlags: ["跨仓理解仅来自 Manifest"],
-          },
-        }),
+        text: JSON.stringify(requests.length === 1
+          ? { intent: "work", involveRoles: [] }
+          : {
+              title: "接入共享协议",
+              workType: "change",
+              clarification: null,
+            }),
         usage: { inputTokens: 1, outputTokens: 1 },
       };
     },
@@ -252,12 +241,14 @@ test("READONLY-REPO-CTX-05: Planner consumes the context and fixes it into the w
     readOnlyRepositories: [context],
   });
 
-  assert.ok(request);
-  const plannerPayload = JSON.parse(request.messages[0]!.content) as {
-    readOnlyRepositories: ReadOnlyRepositoryContextDto[];
-  };
-  assert.deepEqual(plannerPayload.readOnlyRepositories, [context]);
-  assert.match(request.systemPrompt, /固定的受限 Manifest 摘要/u);
+  assert.equal(requests.length, 2);
+  for (const request of requests) {
+    const plannerPayload = JSON.parse(request.messages[0]!.content) as {
+      readOnlyRepositories: ReadOnlyRepositoryContextDto[];
+    };
+    assert.deepEqual(plannerPayload.readOnlyRepositories, [context]);
+  }
+  assert.match(requests[1]!.systemPrompt, /固定的受限 Manifest 摘要/u);
   assert.equal(plan.intent, "work");
   if (plan.intent !== "work") throw new Error("expected work plan");
   const contract = planner.changeContract({
@@ -410,6 +401,84 @@ test("READONLY-REPO-CTX-07: the Agent chat branch passes read-only context throu
     (askExternalContext as { readOnlyRepositories: ReadOnlyRepositoryContextDto[] }).readOnlyRepositories,
     [context],
   );
+});
+
+test("CHAT-SDLC-14: platform help completes without invoking Planner, Ask, MCP, or Sandbox", async () => {
+  const sessionId = randomUUID();
+  const projectId = randomUUID();
+  const record = sessionRecord(sessionId, projectId, randomUUID());
+  const userMessage = {
+    id: randomUUID(),
+    sessionId,
+    sequence: 1,
+    role: "user" as const,
+    status: "running" as const,
+    content: "hi 你能做什么",
+    providerId: "openai" as const,
+    model: null,
+    clientMessageId: randomUUID(),
+    createdAt: now,
+    updatedAt: now,
+  };
+  let completedContent = "";
+  let completedModel = "";
+  const eventKinds: string[] = [];
+  const store = {
+    getAgentSession: async () => record,
+    beginAgentTurn: async () => ({ message: userMessage, replayed: false }),
+    getProjectAgentSettings: async () => ({
+      projectId,
+      repoAlias: "primary",
+      defaultProviderId: "openai",
+      sandboxBlueprintId: "default",
+      sandboxBlueprintVersion: "1",
+      enabledMcpServerIds: [],
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    }),
+    appendAgentEvent: async (event: { kind: string }) => { eventKinds.push(event.kind); },
+    completeAgentTurn: async (turn: { content: string; model: string }) => {
+      completedContent = turn.content;
+      completedModel = turn.model;
+    },
+  } as unknown as PgWorkflowStore;
+  const providers = {
+    runWithProvider: <T>(_providerId: string, operation: () => T): T => operation(),
+    status: () => ({
+      id: "openai",
+      label: "OpenAI",
+      configured: true,
+      model: "configured-model",
+      protocol: "openai-responses",
+      dataBoundary: "remote",
+      endpointLabel: "test",
+      capabilities: { streaming: false, structuredOutput: true, toolCalling: false },
+      message: "ready",
+    }),
+  } as unknown as AskProviderRegistry;
+  const fail = () => { throw new Error("platform help must not invoke this collaborator"); };
+  const service = new AgentSessionService(
+    store,
+    { answerFromSnapshot: fail } as unknown as AskService,
+    providers,
+    { plan: fail } as unknown as ConversationPlanner,
+    { chooseForTurn: fail } as unknown as AgentMcpToolRouter,
+    {} as WorkflowService,
+    { prepareAgentSandbox: fail } as unknown as CloudProjectService,
+    {} as SandboxBlueprintRegistry,
+    { resolve: async () => [] },
+  );
+
+  await service.sendMessage(sessionId, {
+    clientMessageId: userMessage.clientMessageId!,
+    expectedSequence: 0,
+    content: userMessage.content,
+  });
+
+  assert.match(completedContent, /Cloud SDLC Agent/u);
+  assert.equal(completedModel, "platform/static-help");
+  assert.deepEqual(eventKinds, ["message.accepted", "turn.completed"]);
 });
 
 test("READONLY-REPO-CTX-08: every role Task Envelope sees the immutable reference without gaining a mount", () => {

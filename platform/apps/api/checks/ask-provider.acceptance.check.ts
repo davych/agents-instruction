@@ -10,6 +10,9 @@ import {
 import type pg from "pg";
 
 import { buildApp } from "../src/app.ts";
+import type { AskEvidenceSource } from "../src/services/ask/ask-answer.ts";
+import { buildBoundedAskPromptMessages } from "../src/services/ask/ask-prompt.ts";
+import { askPromptProfile } from "../src/services/ask/ask-service.ts";
 import {
   loadAskProviderConfigurations,
   parseAskProviderBaseUrl,
@@ -194,6 +197,7 @@ test("ASK-AC-02/04: all four Provider registrations use their explicit wire prot
     );
     assert.equal("text" in body, false, "LM Studio must not receive the Responses JSON Schema shape");
     assert.equal("input" in body, false, "LM Studio must not receive Responses input items");
+    assert.equal("reasoning_effort" in body, false, "unrelated LM Studio models get no GPT-OSS hint");
     assert.equal(headers(capture.calls[0]!).has("authorization"), false);
   });
 
@@ -227,6 +231,26 @@ test("ASK-AC-02/04: all four Provider registrations use their explicit wire prot
     assert.equal(capture.calls.length, 1, "a failed strict check must not retry another protocol");
     assert.equal(capture.calls[0]?.url, "http://127.0.0.1:1234/v1/chat/completions");
     assert.equal(capture.calls.some(({ url }) => url.endsWith("/responses")), false);
+    assert.equal(requestBody(capture.calls[0]!).reasoning_effort, "low");
+  });
+
+  await t.test("LM Studio GPT-OSS honors an explicit bounded reasoning effort", async () => {
+    const capture = captureJsonFetch(chatResult("openai/gpt-oss-20b"));
+    const provider = new OpenAiChatProvider({
+      id: "lmstudio",
+      label: "LM Studio",
+      protocol: "openai-chat",
+      dataBoundary: "local",
+      baseUrl: new URL("http://127.0.0.1:1234/v1"),
+      model: "openai/gpt-oss-20b",
+      structuredOutput: true,
+      timeoutMs: 1_000,
+      maxResponseBytes: 32_000,
+      fetchImpl: capture.fetchImpl,
+    });
+
+    await provider.complete({ ...COMPLETE_REQUEST, reasoningEffort: "medium" });
+    assert.equal(requestBody(capture.calls[0]!).reasoning_effort, "medium");
   });
 
   await t.test("Ollama uses native POST /api/chat without streaming or model pulls", async () => {
@@ -293,6 +317,77 @@ test("ASK-AC-02/04: all four Provider registrations use their explicit wire prot
     assert.equal(headers(capture.calls[0]!).get("authorization"), "Bearer custom-key-marker");
     assert.equal("tools" in body, false, "Ask must not grant model tools");
   });
+});
+
+test("ASK-AC-04: local Provider prompt budgets leave room for constrained context windows", () => {
+  assert.equal(askPromptProfile("openai").retrievalLimits, undefined);
+  assert.deepEqual(askPromptProfile("lmstudio"), {
+    retrievalLimits: {
+      maxSources: 6,
+      maxContextBytes: 12 * 1024,
+      maxExcerptBytes: 2 * 1024,
+      maxExcerptLines: 80,
+    },
+    historyCharacters: 8_000,
+    promptCharacters: 10_000,
+    maxOutputTokens: 1_536,
+  });
+  assert.ok(
+    (askPromptProfile("ollama").retrievalLimits?.maxContextBytes ?? Infinity)
+      < (askPromptProfile("custom").retrievalLimits?.maxContextBytes ?? 0),
+  );
+});
+
+test("ASK-AC-04: LM Studio final serialized prompt stays inside its total budget", () => {
+  const profile = askPromptProfile("lmstudio");
+  const sources: AskEvidenceSource[] = Array.from({ length: 6 }, (_, index) => ({
+    sourceId: `S${index + 1}`,
+    path: `src/${"long-path-".repeat(20)}${index}.ts`,
+    startLine: 1,
+    endLine: 80,
+    sha256: String(index).repeat(64),
+    revision: "a".repeat(40),
+    excerpt: "证据内容".repeat(1_000),
+  }));
+  const signal = { path: "src/index.ts", summary: "知识摘要".repeat(100) };
+  const prompt = buildBoundedAskPromptMessages({
+    question: "当前问题".repeat(2_000),
+    history: Array.from({ length: 12 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" as const : "assistant" as const,
+      content: "很长的历史".repeat(2_000),
+    })),
+    revision: "a".repeat(40),
+    dirty: false,
+    truncated: false,
+    sources,
+    knowledge: {
+      version: 1,
+      revision: "a".repeat(40),
+      manifestHash: "b".repeat(64),
+      indexedAt: "2026-08-28T00:00:00.000Z",
+      summary: {
+        fileCount: 100,
+        totalBytes: 10_000,
+        languages: [],
+        entryPoints: Array.from({ length: 12 }, () => ({ ...signal, kind: "entry" as const })),
+        documents: Array.from({ length: 12 }, () => ({ ...signal, kind: "document" as const })),
+        tests: Array.from({ length: 12 }, () => ({ ...signal, kind: "test" as const })),
+        builds: Array.from({ length: 12 }, () => ({ ...signal, kind: "build" as const })),
+        keyPaths: Array.from({ length: 12 }, () => ({ ...signal, kind: "key-path" as const })),
+        truncated: false,
+      },
+      files: [],
+    },
+    externalContext: {
+      resolvedReadOnlyWorkItem: { description: "工单正文".repeat(4_000) },
+      readOnlyRepositories: [{ summary: "附加仓摘要".repeat(4_000) }],
+    },
+  }, profile.promptCharacters);
+
+  assert.ok(prompt.messages[0]!.content.length <= profile.promptCharacters);
+  assert.equal(prompt.repositoryEvidenceTruncated, true);
+  assert.ok(prompt.sources.length < sources.length);
+  assert.doesNotThrow(() => JSON.parse(prompt.messages[0]!.content.split("\n\n").at(-1)!));
 });
 
 test("ASK-AC-04: Responses accepts only a completed terminal status when status is present", async () => {

@@ -16,11 +16,21 @@ import {
   latestSessionRunId,
   type SdlcRoleId,
 } from "../src/services/agent/agent-sdlc-coordinator.ts";
-import { AGENT_WORK_BOUNDARY_MESSAGE } from "../src/services/agent/agent-session-service.ts";
-import { ConversationPlanner } from "../src/services/agent/conversation-planner.ts";
+import {
+  AGENT_WORK_BOUNDARY_MESSAGE,
+  agentPlatformHelp,
+  agentTurnFailureSummary,
+} from "../src/services/agent/agent-session-service.ts";
+import {
+  ConversationPlanner,
+  isClearlyReadOnlyQuestion,
+} from "../src/services/agent/conversation-planner.ts";
 import { AppError } from "../src/domain/errors.ts";
 import type { AskProviderRegistry } from "../src/services/llm/provider-registry.ts";
-import type { AskLlmCompleteRequest } from "../src/services/llm/types.ts";
+import {
+  AskProviderError,
+  type AskLlmCompleteRequest,
+} from "../src/services/llm/types.ts";
 import type { WorkflowService } from "../src/services/workflow-service.ts";
 
 const now = "2026-08-28T10:00:00.000Z";
@@ -139,29 +149,18 @@ test("CHAT-SDLC-05: an unavailable role worker keeps the Run resumable instead o
 });
 
 test("CHAT-SDLC-06: Planner treats involveRoles as optional focus labels, not the execution set", async () => {
-  let captured: AskLlmCompleteRequest | undefined;
+  const captured: AskLlmCompleteRequest[] = [];
   const providers = {
     complete: async (_providerId: string, request: AskLlmCompleteRequest) => {
-      captured = request;
+      captured.push(request);
       return {
-        text: JSON.stringify({
-          intent: "work",
-          reason: "需要修复一个明确问题",
-          involveRoles: [],
-          clarification: null,
-          task: {
-            title: "修复问题",
-            workType: "bug",
-            summary: "修复问题",
-            currentBehavior: "当前失败",
-            expectedBehavior: "恢复正常",
-            inScope: ["修复"],
-            outOfScope: [],
-            acceptanceCriteria: ["测试通过"],
-            regressionScope: ["相关路径"],
-            riskFlags: [],
-          },
-        }),
+        text: JSON.stringify(captured.length === 1
+          ? { intent: "work", involveRoles: [] }
+          : {
+              title: "修复问题",
+              workType: "bug",
+              clarification: null,
+            }),
         model: "planner-model",
         usage: { inputTokens: 10, outputTokens: 10 },
       };
@@ -175,14 +174,237 @@ test("CHAT-SDLC-06: Planner treats involveRoles as optional focus labels, not th
 
   assert.equal(result.intent, "work");
   assert.deepEqual(result.involveRoles, []);
-  assert.match(captured?.systemPrompt ?? "", /六个角色始终全部运行/u);
-  assert.match(captured?.systemPrompt ?? "", /只是.*关注.*标签/u);
+  assert.equal(captured.length, 2);
+  assert.match(captured[0]?.systemPrompt ?? "", /六个角色始终全部运行/u);
+  assert.match(captured[0]?.systemPrompt ?? "", /只是.*关注.*标签/u);
+  assert.match(captured[1]?.systemPrompt ?? "", /任务元数据整理器/u);
 });
 
 test("CHAT-SDLC-07: chat copy does not promise unimplemented external-write gates", () => {
   assert.match(AGENT_WORK_BOUNDARY_MESSAGE, /当前 MVP 不开放 DDL、Secret、外部写入/u);
   assert.match(AGENT_WORK_BOUNDARY_MESSAGE, /真正的人工门禁是每个阶段的 Artifact 审阅/u);
   assert.doesNotMatch(AGENT_WORK_BOUNDARY_MESSAGE, /外部写入会在这里暂停/u);
+});
+
+test("CHAT-SDLC-08: chat routing is light and work contracts preserve the user's objective", async () => {
+  const chatProviders = {
+    complete: async () => ({
+      text: '{"intent":"chat","involveRoles":[]}',
+      model: "openai/gpt-oss-20b",
+      usage: { inputTokens: 10, outputTokens: 10 },
+    }),
+  } as unknown as AskProviderRegistry;
+  const chat = await new ConversationPlanner(chatProviders).plan({
+    providerId: "lmstudio",
+    content: "hi 你能做什么",
+    repoAlias: "repo",
+  });
+  assert.equal(chat.intent, "chat");
+  assert.match(chat.reason, /普通咨询/u);
+
+  let workCall = 0;
+  const invalidWorkProviders = {
+    complete: async () => {
+      workCall += 1;
+      return {
+        text: JSON.stringify(workCall === 1
+          ? { intent: "work", involveRoles: [] }
+          : {
+              title: "",
+              workType: "bug",
+              clarification: null,
+            }),
+        model: "planner-model",
+        usage: { inputTokens: 10, outputTokens: 10 },
+      };
+    },
+  } as unknown as AskProviderRegistry;
+  await assert.rejects(
+    () => new ConversationPlanner(invalidWorkProviders).plan({
+      providerId: "lmstudio",
+      content: "修复问题",
+      repoAlias: "repo",
+    }),
+    (error: unknown) => error instanceof AppError && error.code === "AGENT_PLAN_INVALID",
+  );
+});
+
+test("CHAT-SDLC-09: turn failures preserve safe stage-specific reasons", () => {
+  assert.equal(
+    agentTurnFailureSummary(new AppError(
+      "模型没有返回可验证的会话计划，本轮没有启动沙盒或 SDLC",
+      502,
+      "AGENT_PLAN_INVALID",
+    )),
+    "模型没有返回可验证的会话计划，本轮没有启动沙盒或 SDLC",
+  );
+  const timeout = agentTurnFailureSummary(new AskProviderError(
+    "lmstudio",
+    "ASK_PROVIDER_TIMEOUT",
+    "模型服务响应超时，请检查服务状态或稍后重试",
+    "unreachable",
+    504,
+    true,
+  ));
+  assert.match(timeout, /Provider 阶段失败/u);
+  assert.match(timeout, /响应超时/u);
+  assert.doesNotMatch(timeout, /检查 Provider、仓库和 Sandbox/u);
+  assert.equal(
+    agentTurnFailureSummary(new AppError(
+      "database password=should-not-be-public",
+      500,
+      "INTERNAL_DATABASE_FAILURE",
+    )),
+    "本轮因未识别的服务端错误而中止；没有继续启动 Sandbox 或 SDLC。",
+  );
+  assert.equal(
+    agentTurnFailureSummary(new AppError(
+      "ASK internals password=should-not-be-public",
+      500,
+      "ASK_INTERNAL_DATABASE_FAILURE",
+    )),
+    "本轮因未识别的服务端错误而中止；没有继续启动 Sandbox 或 SDLC。",
+  );
+});
+
+test("CHAT-SDLC-10: greetings get platform help but real work still reaches the planner", () => {
+  const help = agentPlatformHelp("hi 你能做什么", "repo");
+  assert.match(help ?? "", /Cloud SDLC Agent/u);
+  assert.match(help ?? "", /不需要逐个角色开聊天/u);
+  assert.match(help ?? "", /PM \/ BA.*Designer.*Architect.*Software Engineer.*Tester.*DevOps/u);
+  assert.equal(
+    agentPlatformHelp("请实现一个帮助中心功能", "repo"),
+    null,
+  );
+});
+
+test("CHAT-SDLC-11: a model cannot upgrade an obvious read-only question into a Run", async () => {
+  let calls = 0;
+  const providers = {
+    complete: async () => {
+      calls += 1;
+      return {
+        text: JSON.stringify({ intent: "work", involveRoles: [] }),
+        model: "over-eager-router",
+        usage: { inputTokens: 10, outputTokens: 10 },
+      };
+    },
+  } as unknown as AskProviderRegistry;
+  const plan = await new ConversationPlanner(providers).plan({
+    providerId: "lmstudio",
+    content: "这个仓库是做什么的？请根据 README 回答。",
+    repoAlias: "repo",
+  });
+  assert.equal(plan.intent, "chat");
+  assert.equal(calls, 1, "read-only questions must not request work metadata");
+  assert.equal(isClearlyReadOnlyQuestion("请修复登录按钮，完成后告诉我结果？"), false);
+  assert.equal(isClearlyReadOnlyQuestion("如何修复登录按钮？"), true);
+  assert.equal(isClearlyReadOnlyQuestion("可以帮我修复登录按钮吗？"), false);
+  assert.equal(isClearlyReadOnlyQuestion("How do I fix the login button?"), true);
+  assert.equal(isClearlyReadOnlyQuestion("Could you fix the login button?"), false);
+  assert.equal(isClearlyReadOnlyQuestion("Why would you change this?"), true);
+  assert.equal(isClearlyReadOnlyQuestion("Why can you fix this?"), true);
+  assert.equal(isClearlyReadOnlyQuestion("为什么你可以帮我修复这个问题？"), true);
+  assert.equal(isClearlyReadOnlyQuestion("如果用户说‘请修复登录按钮’，系统会怎么处理？"), true);
+  assert.equal(isClearlyReadOnlyQuestion("当我输入“可以帮我修复登录吗”时，会启动 Run 吗？"), true);
+  assert.equal(isClearlyReadOnlyQuestion("Does the phrase 'please fix login' start a Run?"), true);
+  assert.equal(isClearlyReadOnlyQuestion("@repo 可以帮我修复登录按钮吗？"), false);
+  assert.equal(isClearlyReadOnlyQuestion("@repo Could you fix the login button?"), false);
+});
+
+test("CHAT-SDLC-12: a title-only MCP work item still creates a valid task contract", async () => {
+  let calls = 0;
+  const providers = {
+    complete: async () => ({
+      text: JSON.stringify(++calls === 1
+        ? { intent: "work", involveRoles: [] }
+        : { title: "处理登录故障", workType: "bug", clarification: null }),
+      model: "planner-model",
+      usage: { inputTokens: 10, outputTokens: 10 },
+    }),
+  } as unknown as AskProviderRegistry;
+  const plan = await new ConversationPlanner(providers).plan({
+    providerId: "lmstudio",
+    content: "读取 Jira OPS-42 并开始处理",
+    repoAlias: "repo",
+    workItem: {
+      source: {
+        kind: "mcp",
+        adapterId: "jira",
+        adapterLabel: "Jira",
+        reference: "OPS-42",
+        externalId: "OPS-42",
+        url: null,
+        fetchedAt: now,
+        fingerprint: "a".repeat(64),
+      },
+      title: "登录按钮无响应",
+      description: "",
+      suggestedWorkType: "bug",
+      acceptanceCriteria: [],
+      labels: [],
+    },
+  });
+
+  assert.equal(plan.intent, "work");
+  if (plan.intent !== "work") return;
+  assert.equal(plan.task.summary, "登录按钮无响应");
+  assert.match(plan.task.acceptanceCriteria[0]!, /登录按钮无响应/u);
+});
+
+test("CHAT-SDLC-13: LM Studio planning bounds the full long-session payload", async () => {
+  const captured: AskLlmCompleteRequest[] = [];
+  const providers = {
+    complete: async (_providerId: string, request: AskLlmCompleteRequest) => {
+      captured.push(request);
+      return {
+        text: JSON.stringify(captured.length === 1
+          ? { intent: "work", involveRoles: ["tester"] }
+          : { title: "修复长会话问题", workType: "bug", clarification: null }),
+        model: "planner-model",
+        usage: { inputTokens: 10, outputTokens: 10 },
+      };
+    },
+  } as unknown as AskProviderRegistry;
+  const escapeHeavy = "\\\"\u0001\n".repeat(3_000);
+  await new ConversationPlanner(providers).plan({
+    providerId: "lmstudio",
+    content: `请修复长会话问题 ${escapeHeavy}`,
+    repoAlias: "repo",
+    recentMessages: Array.from({ length: 8 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" as const : "assistant" as const,
+      content: escapeHeavy,
+    })),
+    readOnlyRepositories: Array.from({ length: 4 }, (_, index) => ({
+      repoAlias: `shared-${index}`,
+      sourceRevision: "b".repeat(40),
+      manifestHash: "c".repeat(64),
+      summary: escapeHeavy,
+    })),
+    workItem: {
+      source: {
+        kind: "mcp",
+        adapterId: "jira",
+        adapterLabel: "Jira",
+        reference: "OPS-99",
+        externalId: "OPS-99",
+        url: null,
+        fetchedAt: now,
+        fingerprint: "d".repeat(64),
+      },
+      title: "长会话问题",
+      description: escapeHeavy,
+      suggestedWorkType: "bug",
+      acceptanceCriteria: [escapeHeavy],
+      labels: [],
+    },
+  });
+
+  assert.equal(captured.length, 2);
+  for (const request of captured) {
+    assert.ok(request.messages[0]!.content.length <= 10_000);
+    assert.doesNotThrow(() => JSON.parse(request.messages[0]!.content));
+  }
 });
 
 function coordinatorFixture(

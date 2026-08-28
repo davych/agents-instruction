@@ -36,6 +36,8 @@ export interface AskLlmCompleteRequest {
   jsonSchema?: Record<string, unknown>;
   tools?: readonly AskLlmFunctionTool[];
   toolChoice?: AskLlmToolChoice;
+  /** Optional reasoning budget for model families that expose this control. */
+  reasoningEffort?: "low" | "medium" | "high";
   maxOutputTokens: number;
 }
 
@@ -161,6 +163,12 @@ export function assertCompleteRequest(
     || request.maxOutputTokens > 65_536
   ) {
     throw invalidRequest(providerId, "Ask maxOutputTokens 无效");
+  }
+  if (
+    request.reasoningEffort !== undefined
+    && !["low", "medium", "high"].includes(request.reasoningEffort)
+  ) {
+    throw invalidRequest(providerId, "Ask reasoningEffort 无效");
   }
   if (
     request.jsonSchema !== undefined

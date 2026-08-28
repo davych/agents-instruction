@@ -21,6 +21,7 @@ import test from "node:test";
 import {
   ASK_TRUNCATED_CONTEXT_UNCERTAINTY,
   InvalidAskModelResponseError,
+  askAnswerJsonSchema,
   parseAndValidateAskAnswer,
   type AskEvidenceSource,
 } from "../src/services/ask/ask-answer.ts";
@@ -518,13 +519,6 @@ test("ASK-AC-07/09: malformed or schema-invalid model JSON is rejected instead o
       workItemDraft: null,
       rawProviderSecret: "must not pass",
     }),
-    JSON.stringify({
-      answer: "bad citation id",
-      evidence: [{ sourceId: "../../secret", summary: "fake" }],
-      uncertainties: [],
-      suggestedQuestions: [],
-      workItemDraft: null,
-    }),
   ]) {
     assert.throws(
       () => parseAndValidateAskAnswer(invalid, sources),
@@ -532,4 +526,63 @@ test("ASK-AC-07/09: malformed or schema-invalid model JSON is rejected instead o
         && error.code === "ASK_MODEL_RESPONSE_INVALID",
     );
   }
+});
+
+test("ASK-AC-07: model grammar stays structural while runtime validation remains strict", () => {
+  assert.equal(JSON.stringify(askAnswerJsonSchema).includes('"pattern"'), false);
+  assert.throws(
+    () => parseAndValidateAskAnswer(JSON.stringify({
+      answer: "不能接受带控制字符的工作项",
+      evidence: [],
+      uncertainties: [],
+      suggestedQuestions: [],
+      workItemDraft: {
+        title: "bad\u0000title",
+        objective: "目标",
+        acceptanceCriteria: [],
+      },
+    }), []),
+    (error: unknown) => error instanceof InvalidAskModelResponseError,
+  );
+});
+
+test("ASK-AC-07: empty optional local-model metadata is ignored without weakening core fields", () => {
+  const validated = parseAndValidateAskAnswer(JSON.stringify({
+    answer: "可以说明项目能力。",
+    evidence: [],
+    uncertainties: ["", "  ", "当前没有仓库证据"],
+    suggestedQuestions: ["", "请解释项目入口"],
+    workItemDraft: null,
+  }), []);
+  assert.equal(validated.uncertainties.includes(""), false);
+  assert.equal(validated.uncertainties.includes("当前没有仓库证据"), true);
+  assert.deepEqual(validated.suggestedQuestions, ["请解释项目入口"]);
+
+  assert.throws(
+    () => parseAndValidateAskAnswer(JSON.stringify({
+      answer: "",
+      evidence: [],
+      uncertainties: [""],
+      suggestedQuestions: [""],
+      workItemDraft: null,
+    }), []),
+    (error: unknown) => error instanceof InvalidAskModelResponseError,
+  );
+});
+
+test("ASK-AC-07/09: malformed model citations are discarded instead of becoming evidence", () => {
+  const validated = parseAndValidateAskAnswer(JSON.stringify({
+    answer: "这是仍可展示的模型说明。",
+    evidence: [
+      { sourceId: "../../secret", summary: "fake" },
+      { sourceId: "S123...", summary: "truncated" },
+    ],
+    uncertainties: [],
+    suggestedQuestions: ["..."],
+    workItemDraft: null,
+  }), []);
+  assert.deepEqual(validated.citations, []);
+  assert.deepEqual(validated.suggestedQuestions, []);
+  assert.match(validated.uncertainties.join("\n"), /2 条格式错误/u);
+  assert.equal(JSON.stringify(validated).includes("../../secret"), false);
 });

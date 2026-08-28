@@ -39,6 +39,10 @@ const modelAnswerSchema = z.object({
 
 export type ModelAskAnswer = z.infer<typeof modelAnswerSchema>;
 
+// Keep the model-facing contract to structural JSON only. Content constraints
+// such as citation IDs and control-character rejection remain enforced by the
+// Zod boundary above; placing those regexes into LM Studio's MLX grammar can
+// crash the local structured-output engine before any JSON is returned.
 export const askAnswerJsonSchema = {
   type: "object",
   additionalProperties: false,
@@ -59,7 +63,7 @@ export const askAnswerJsonSchema = {
         additionalProperties: false,
         required: ["sourceId", "summary"],
         properties: {
-          sourceId: { type: "string", pattern: "^S[1-9][0-9]*$" },
+          sourceId: { type: "string" },
           summary: { type: "string" },
         },
       },
@@ -74,12 +78,12 @@ export const askAnswerJsonSchema = {
           additionalProperties: false,
           required: ["title", "objective", "acceptanceCriteria"],
           properties: {
-            title: { type: "string", pattern: "^[^\\u0000-\\u001f\\u007f]+$" },
-            objective: { type: "string", pattern: "^[^\\u0000]*$" },
+            title: { type: "string" },
+            objective: { type: "string" },
             acceptanceCriteria: {
               type: "array",
               maxItems: 20,
-              items: { type: "string", pattern: "^[^\\u0000]*$" },
+              items: { type: "string" },
             },
           },
         },
@@ -114,7 +118,7 @@ export function parseAndValidateAskAnswer(
   sources: readonly AskEvidenceSource[],
   options: { contextTruncated?: boolean } = {},
 ): ValidatedAskModelAnswer {
-  const parsed = parseJson(rawText);
+  const parsed = normalizeOptionalMetadata(parseJson(rawText));
   const result = modelAnswerSchema.safeParse(parsed);
   if (!result.success) throw new InvalidAskModelResponseError();
 
@@ -170,6 +174,52 @@ export function parseAndValidateAskAnswer(
     suggestedQuestions: uniqueStrings(result.data.suggestedQuestions),
     workItemDraft: result.data.workItemDraft,
   };
+}
+
+/**
+ * Empty optional list entries carry no meaning and constrained local models
+ * may emit them because the structural grammar cannot express Zod's trimmed
+ * min-length rule. Drop only those no-op strings; malformed values and every
+ * authority-bearing field still flow unchanged into strict validation.
+ */
+function normalizeOptionalMetadata(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const candidate = value as Record<string, unknown>;
+  const evidence = normalizedOptionalEvidence(candidate.evidence);
+  const uncertainties = withoutEmptyOptionalStrings(candidate.uncertainties);
+  return {
+    ...candidate,
+    evidence: evidence.value,
+    uncertainties: evidence.dropped > 0 && Array.isArray(uncertainties)
+      ? [
+          ...uncertainties,
+          `模型返回了 ${evidence.dropped} 条格式错误的证据引用，平台已忽略。`,
+        ]
+      : uncertainties,
+    suggestedQuestions: withoutEmptyOptionalStrings(candidate.suggestedQuestions),
+  };
+}
+
+function withoutEmptyOptionalStrings(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  return value.filter((item) => typeof item !== "string" || (
+    item.trim().length > 0 && !/^(?:\.{2,}|…+|\?+)$/u.test(item.trim())
+  ));
+}
+
+function normalizedOptionalEvidence(value: unknown): { value: unknown; dropped: number } {
+  if (!Array.isArray(value)) return { value, dropped: 0 };
+  const accepted = value.filter((item) => {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) return false;
+    const evidence = item as Record<string, unknown>;
+    return Object.keys(evidence).every((key) => key === "sourceId" || key === "summary")
+      && Object.keys(evidence).length === 2
+      && typeof evidence.sourceId === "string"
+      && /^S[1-9][0-9]*$/u.test(evidence.sourceId)
+      && typeof evidence.summary === "string"
+      && evidence.summary.trim().length > 0;
+  });
+  return { value: accepted, dropped: value.length - accepted.length };
 }
 
 function parseJson(rawText: string): unknown {
