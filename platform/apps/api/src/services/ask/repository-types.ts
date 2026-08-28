@@ -86,6 +86,11 @@ export interface RepositoryRetrievalRequest {
   expectedRevision?: string | null;
   /** Validated DeepWiki index for this exact immutable snapshot. */
   knowledge?: TrustedProjectKnowledge;
+  /**
+   * Optional server-owned relevance gate applied after every indexed file has
+   * been hash-checked. It is never populated from browser input.
+   */
+  sourcePathFilter?: (relativePath: string) => boolean;
   signal?: AbortSignal;
   limits?: Partial<RepositoryRetrievalLimits>;
 }

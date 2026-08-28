@@ -139,12 +139,13 @@ Agent 可以自动 involve 下一角色；用户也可以说“让 Architect 评
 - **CHAT-AC-12**：后台 Run 仍严格按六阶段和原角色所有权推进；`involve` 只表示到该角色阶段时重点关注，不能跳过或阻塞任何角色；每个阶段产物在同一时间线可见。
 - **CHAT-AC-13**：当前内联门禁只用于角色阶段产物审阅，而且不得自动批准。DDL、Secret、破坏性操作、外部写入、部署和发布能力尚未开放；不能用一张无后端执行链路的确认卡伪装支持。
 - **CHAT-AC-14**：普通用户默认只看到角色进度、关键产物摘要、Diff、测试和风险；完整 Run / Artifact / Review 进入高级审计。
-- **CHAT-AC-15**：DeepWiki 只能在 bind 后从仓库设置弹窗通过 Project API 手工生成；请求固定 revision、Provider，结果保存模型、生成时间、用量和可验证引用。当前没有会话命令或 `@repo` 菜单入口。
+- **CHAT-AC-15**：DeepWiki 只能在 bind 后从仓库设置弹窗通过 Project API 手工生成；请求固定 revision、Provider，可靠入队后由服务端继续执行，关闭弹窗不取消。结果保存模型、生成时间、用量和可验证引用；失败保留上一份 published 版本并给出可重试原因。当前没有会话命令或 `@repo` 菜单入口。
 - **CHAT-AC-16**：仓库同步后旧 DeepWiki 标记 stale，不自动重新花费模型额度；旧 Session 继续固定旧 revision。
 - **CHAT-AC-17**：手工描述与服务端已配置的只读 Work Item Adapter 能从同一消息进入，不再要求用户先选择任务来源；这不代表任意 MCP 或外部写操作已开放。
 - **CHAT-AC-18**：默认成功路径不超过三类动作：绑定仓库、必要时配置 Provider、发送一条带 `@repo` 的消息。
 - **CHAT-AC-19**：仓库中的 Agent/Skill/Prompt 文本不能提升平台、MCP、Sandbox、角色或发布权限。
 - **CHAT-AC-20**：旧 Cloud API 与高级审计入口保持兼容；本次不自动 push、PR、merge、deploy 或 release。
+- **CHAT-AC-21**：用户可以从工作列表归档 idle 且没有未完成 SDLC Run 的 Session；这个动作从活跃列表移除会话，但保留消息、Run、Artifact 和事件审计。进行中的回合或 Run 必须先完成。
 
 ## MVP 不假装完成的部分
 
@@ -162,7 +163,7 @@ Agent 可以自动 involve 下一角色；用户也可以说“让 Architect 评
 |---|---|---|
 | 仓库绑定 → 直接进入对话 | 已完成 | 只需要 HTTPS URL 与可选 Credential Profile；服务端推断名称和 alias。 |
 | 页面配置与每轮 Provider 切换 | 已完成 | OpenAI、LM Studio、Ollama、Custom 由模型设置管理并写入加密 Vault；启用后可按下一轮切换，并记录实际 Provider / model。 |
-| 手工 LLM DeepWiki | 已完成 | bind 后从设置弹窗调用 Project API；固定 revision，保存引用与用量，源码同步后旧版本 stale。 |
+| 手工 LLM DeepWiki | 已完成 | bind 后从设置弹窗可靠入队；后台固定 revision 和 Provider，限制本地模型预算，保存引用与用量，失败保留上一版，源码同步后旧版本 stale。 |
 | Agent 按需读取 Work Item | 已完成（只读范围） | 当前开放受限 Work Item Adapter；审计记录先于真实调用。 |
 | Session Sandbox | 已完成 | 与本 Session 的一个 Run 共用同一 exact-revision Workspace；阶段 Worker 短生命周期。 |
 | 六角色串联 | 已完成 | 从 PM/BA 开始，固定 owner 和顺序，下游只拿当前已批准上游产物。 |

@@ -26,7 +26,11 @@ test("CHAT-AC-03/05/18/Tier A: Cloud build wires the real Chat-first catalogs an
   const managedRoot = await mkdtemp(path.join(os.tmpdir(), "chat-first-default-ports-"));
   const projectId = crypto.randomUUID();
   const pool = {
-    query: async () => ({ rows: [] }),
+    query: async (sql: string, values?: unknown[]) => (
+      sql === "SELECT * FROM projects WHERE id = $1" && values?.[0] === projectId
+        ? { rows: [runtimeProjectRow(projectId, currentRevision)] }
+        : { rows: [] }
+    ),
   } as unknown as pg.Pool;
   const policy = new RepositoryPolicy({
     allowedOrigins: ["https://git.example.test"],

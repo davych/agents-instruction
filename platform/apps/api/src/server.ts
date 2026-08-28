@@ -59,6 +59,7 @@ try {
   });
   const app = await buildApp({
     pool,
+    closePoolOnClose: true,
     logger: true,
     allowedProjectRoots: parseAllowedRoots(process.env.AI_SDLC_ALLOWED_PROJECT_ROOTS),
     codexBinary: process.env.AI_SDLC_CODEX_BIN,
@@ -134,7 +135,6 @@ try {
       },
     },
   });
-  app.addHook("onClose", async () => pool.end());
   await app.listen({
     host,
     port: Number(process.env.PORT ?? 4100)

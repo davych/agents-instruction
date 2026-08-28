@@ -38,6 +38,10 @@ export interface AskLlmCompleteRequest {
   toolChoice?: AskLlmToolChoice;
   /** Optional reasoning budget for model families that expose this control. */
   reasoningEffort?: "low" | "medium" | "high";
+  /** Optional sampling temperature for generation tasks; omitted for provider defaults. */
+  temperature?: number;
+  /** Server-owned operation deadline; bounded before any upstream request. */
+  timeoutMs?: number;
   maxOutputTokens: number;
 }
 
@@ -165,10 +169,30 @@ export function assertCompleteRequest(
     throw invalidRequest(providerId, "Ask maxOutputTokens 无效");
   }
   if (
+    request.timeoutMs !== undefined
+    && (
+      !Number.isSafeInteger(request.timeoutMs)
+      || request.timeoutMs < 1_000
+      || request.timeoutMs > 300_000
+    )
+  ) {
+    throw invalidRequest(providerId, "Ask timeoutMs 无效");
+  }
+  if (
     request.reasoningEffort !== undefined
     && !["low", "medium", "high"].includes(request.reasoningEffort)
   ) {
     throw invalidRequest(providerId, "Ask reasoningEffort 无效");
+  }
+  if (
+    request.temperature !== undefined
+    && (
+      !Number.isFinite(request.temperature)
+      || request.temperature < 0
+      || request.temperature > 2
+    )
+  ) {
+    throw invalidRequest(providerId, "Ask temperature 无效");
   }
   if (
     request.jsonSchema !== undefined

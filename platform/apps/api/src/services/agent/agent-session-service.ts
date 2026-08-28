@@ -85,13 +85,19 @@ export class AgentSessionService {
     return detail(await this.store.getAgentSession(sessionId));
   }
 
+  archive(sessionId: string): Promise<AgentSessionDto> {
+    return this.store.archiveAgentSession(sessionId);
+  }
+
   async create(unparsedInput: CreateAgentSessionInput): Promise<AgentSessionDto> {
     const input = createAgentSessionSchema.parse(unparsedInput);
     if (!input.primaryProjectId) {
-      return this.store.createAgentSession({
+      const created = await this.store.createAgentSession({
+        id: input.clientRequestId,
         title: input.title,
         providerId: input.providerId,
       });
+      return created.session;
     }
     const project = await this.store.getProject(input.primaryProjectId);
     if (
@@ -118,7 +124,8 @@ export class AgentSessionService {
     }
     const settings = await this.store.getProjectAgentSettings(project.id);
     const providerId = input.providerId ?? settings.defaultProviderId;
-    const session = await this.store.createAgentSession({
+    const created = await this.store.createAgentSession({
+      id: input.clientRequestId,
       title: input.title ?? `${project.name} Agent Session`,
       providerId,
       primaryRepository: {
@@ -127,14 +134,16 @@ export class AgentSessionService {
         sourceRevision: project.currentRevision,
       },
     });
-    await this.store.appendAgentEvent({
-      sessionId: session.id,
-      kind: "session.created",
-      status: "completed",
-      summary: `@${settings.repoAlias} 已按 ${project.currentRevision.slice(0, 12)} 固定到当前会话。`,
-      projectId: project.id,
-    });
-    return detail(await this.store.getAgentSession(session.id)).session;
+    if (!created.replayed) {
+      await this.store.appendAgentEvent({
+        sessionId: created.session.id,
+        kind: "session.created",
+        status: "completed",
+        summary: `@${settings.repoAlias} 已按 ${project.currentRevision.slice(0, 12)} 固定到当前会话。`,
+        projectId: project.id,
+      });
+    }
+    return detail(await this.store.getAgentSession(created.session.id)).session;
   }
 
   sendMessage(

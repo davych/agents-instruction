@@ -134,7 +134,7 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  const navigate = useCallback((next: RouteState) => {
+  const navigate = useCallback((next: RouteState, options: { replace?: boolean } = {}) => {
     if (!allowAppNavigation()) return;
     const params = new URLSearchParams();
     if (next.projectId) params.set("project", next.projectId);
@@ -147,8 +147,12 @@ export default function App() {
     if (next.runId && next.view === "tickets" && next.ticketId) params.set("ticket", next.ticketId);
     const query = params.toString();
     const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}`;
-    const nextIndex = historyIndexRef.current + 1;
-    window.history.pushState(indexedHistoryState(nextIndex), "", nextUrl);
+    const nextIndex = options.replace ? historyIndexRef.current : historyIndexRef.current + 1;
+    if (options.replace) {
+      window.history.replaceState(indexedHistoryState(nextIndex), "", nextUrl);
+    } else {
+      window.history.pushState(indexedHistoryState(nextIndex), "", nextUrl);
+    }
     historyIndexRef.current = nextIndex;
     renderedUrlRef.current = nextUrl;
     navigationKindRef.current = "push";
@@ -265,6 +269,7 @@ export default function App() {
         />
       ) : route.projectId ? (
         <AgentWorkspacePage
+          key={route.projectId}
           projectId={route.projectId}
           sessionId={route.sessionId}
           onSessionChange={(sessionId) => navigate({
@@ -272,6 +277,11 @@ export default function App() {
             sessionId,
             projectView: "workspace",
           })}
+          onSessionReplace={(sessionId) => navigate({
+            projectId: route.projectId,
+            sessionId,
+            projectView: "workspace",
+          }, { replace: true })}
           onBack={() => navigate({})}
           onOpenRun={(runId) => navigate({ projectId: route.projectId, sessionId: route.sessionId, runId })}
           onOpenProviderSettings={() => setProviderSettingsOpen(true)}

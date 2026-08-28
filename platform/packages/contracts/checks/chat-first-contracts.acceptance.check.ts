@@ -42,6 +42,7 @@ const turnId = "44444444-4444-4444-8444-444444444444";
 const eventId = "55555555-5555-4555-8555-555555555555";
 const generationId = "66666666-6666-4666-8666-666666666666";
 const clientMessageId = "77777777-7777-4777-8777-777777777777";
+const clientRequestId = "88888888-8888-4888-8888-888888888888";
 const revision = "a".repeat(40);
 const now = "2026-08-28T10:00:00.000Z";
 
@@ -202,7 +203,12 @@ test("CHAT-AC-03/06/09/17: Session creation stays light and each message owns id
 
   accepts(createSession, {});
   accepts(createSession, { title: "修复登录问题" });
-  accepts(createSession, { providerId: "openai", primaryProjectId: projectId });
+  accepts(createSession, {
+    clientRequestId,
+    providerId: "openai",
+    primaryProjectId: projectId,
+  });
+  rejects(createSession, { clientRequestId: "not-a-uuid" });
   rejects(createSession, { rootPath: "/srv/repository" });
 
   const message = {

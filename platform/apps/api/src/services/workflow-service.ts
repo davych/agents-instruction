@@ -263,6 +263,13 @@ export class WorkflowService {
     });
   }
 
+  async assertCloudAgentSessionAccess(sessionId: string): Promise<void> {
+    if (!this.cloudProjects) return;
+    assertRemoteCloudProject({
+      sourceKind: await this.store.projectSourceKindForAgentSession(sessionId),
+    });
+  }
+
   async createProject(input: CreateProjectInput, signal?: AbortSignal) {
     assertProjectCreationActive(signal);
     if (input.sourceKind === "remote-git") {

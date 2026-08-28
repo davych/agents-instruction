@@ -53,11 +53,27 @@ test("CHAT-AC-08/09: a selected MCP call is durably queued/running before the ad
   assert.ok(start >= 0 && queued > start && running > queued && execute > running && failed > execute);
 });
 
-test("CHAT-AC-09/10/15: startup recovery fails closed without replaying tools or LLM generations", async () => {
-  const statements: string[] = [];
+test("CHAT-AC-09/10/15: startup recovery preserves fresh DeepWiki owners and fails only stale jobs", async () => {
+  const now = Date.now();
+  const deepWikiRows = [
+    { status: "generating", updatedAt: new Date(now - 60_000) },
+    { status: "validating", updatedAt: new Date(now - 11 * 60_000) },
+  ];
+  const statements: Array<{ sql: string; values?: unknown[] }> = [];
   const client = {
-    async query(sql: string) {
-      statements.push(sql.replace(/\s+/gu, " ").trim());
+    async query(sql: string, values?: unknown[]) {
+      const normalized = sql.replace(/\s+/gu, " ").trim();
+      statements.push({ sql: normalized, values });
+      if (normalized.startsWith("UPDATE deepwiki_generations")) {
+        const timeoutSeconds = Number(values?.[1]);
+        const cutoff = now - timeoutSeconds * 1_000;
+        const stale = deepWikiRows.filter(({ status, updatedAt }) => (
+          ["queued", "scanning", "generating", "validating"].includes(status)
+          && updatedAt.getTime() < cutoff
+        ));
+        for (const row of stale) row.status = "failed";
+        return { rows: [], rowCount: stale.length };
+      }
       return { rows: [], rowCount: /^(?:UPDATE)/iu.test(sql.trim()) ? 1 : null };
     },
     release() {},
@@ -75,11 +91,16 @@ test("CHAT-AC-09/10/15: startup recovery fails closed without replaying tools or
     sandboxes: 1,
     deepWikiGenerations: 1,
   });
-  const transcript = statements.join("\n");
+  const transcript = statements.map(({ sql }) => sql).join("\n");
   assert.match(transcript, /UPDATE agent_tool_calls SET status = 'failed'/u);
   assert.match(transcript, /平台没有自动重放/u);
   assert.match(transcript, /UPDATE deepwiki_generations SET status = 'failed'/u);
+  assert.match(transcript, /updated_at < now\(\) - make_interval/u);
   assert.match(transcript, /UPDATE agent_sessions SET turn_state = 'idle'/u);
-  assert.equal(statements.at(0), "BEGIN");
-  assert.equal(statements.at(-1), "COMMIT");
+  assert.equal(deepWikiRows[0]?.status, "generating", "a fresh winner must survive another instance starting");
+  assert.equal(deepWikiRows[1]?.status, "failed", "an abandoned job beyond the window is recoverable");
+  const deepWikiRecovery = statements.find(({ sql }) => sql.startsWith("UPDATE deepwiki_generations"));
+  assert.equal(deepWikiRecovery?.values?.[1], 600);
+  assert.equal(statements.at(0)?.sql, "BEGIN");
+  assert.equal(statements.at(-1)?.sql, "COMMIT");
 });

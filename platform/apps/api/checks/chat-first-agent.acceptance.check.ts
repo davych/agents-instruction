@@ -39,6 +39,7 @@ const toolCallId = "77777777-7777-4777-8777-777777777777";
 const gateId = "88888888-8888-4888-8888-888888888888";
 const generationId = "99999999-9999-4999-8999-999999999999";
 const clientMessageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const createClientRequestId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const revision = "a".repeat(40);
 const now = "2026-08-28T10:00:00.000Z";
 
@@ -290,6 +291,7 @@ const project = {
 interface AcceptanceCalls {
   bindings: BindRemoteRepositoryInput[];
   createSessions: CreateAgentSessionInput[];
+  archives: string[];
   sendMessages: Array<{ sessionId: string; input: SendAgentMessageInput }>;
   updateSettings: Array<{ projectId: string; input: UpdateProjectAgentSettingsInput }>;
   activations: Array<{ projectId: string; serverId: string; enabled: boolean }>;
@@ -300,6 +302,7 @@ async function acceptanceApp() {
   const calls: AcceptanceCalls = {
     bindings: [],
     createSessions: [],
+    archives: [],
     sendMessages: [],
     updateSettings: [],
     activations: [],
@@ -323,6 +326,10 @@ async function acceptanceApp() {
     agentSessions: {
       list: async () => [session],
       get: async () => detail,
+      archive: async (requestedSessionId: string) => {
+        calls.archives.push(requestedSessionId);
+        return { ...session, status: "archived" as const };
+      },
       create: async (input: CreateAgentSessionInput) => {
         calls.createSessions.push(input);
         return { ...session, currentProviderId: input.providerId ?? session.currentProviderId };
@@ -351,6 +358,7 @@ async function acceptanceApp() {
     },
     deepWikiGenerations: {
       getLatest: async () => generation,
+      getLatestPublished: async () => generation,
       generate: async (requestedProjectId: string, input: GenerateDeepWikiInput) => {
         calls.deepWiki.push({ projectId: requestedProjectId, input });
         return generation;
@@ -416,10 +424,19 @@ test("CHAT-AC-03/04/06/09/10: Session HTTP surface restores context and accepts 
     const created = await app.inject({
       method: "POST",
       url: "/api/agent-sessions",
-      payload: { primaryProjectId: projectId, providerId: "openai" },
+      payload: {
+        clientRequestId: createClientRequestId,
+        primaryProjectId: projectId,
+        providerId: "openai",
+      },
     });
     assert.equal(created.statusCode, 201);
     assert.equal(agentSessionSchema.safeParse(jsonRecord(created.body).session).success, true);
+    assert.deepEqual(calls.createSessions.at(-1), {
+      clientRequestId: createClientRequestId,
+      primaryProjectId: projectId,
+      providerId: "openai",
+    });
 
     const listed = await app.inject({ method: "GET", url: "/api/agent-sessions" });
     assert.equal(listed.statusCode, 200);
@@ -492,6 +509,37 @@ test("CHAT-AC-03/04/06/09/10: Session HTTP surface restores context and accepts 
       assert.equal(response.statusCode, 400, JSON.stringify(forbidden));
       assert.equal(calls.sendMessages.length, before, "invalid input must not reach the Agent");
       assertNoPrivateRuntimeData(response.body);
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+test("Agent Session DELETE strictly accepts no options and returns the server-archived Session", async () => {
+  const { app, calls } = await acceptanceApp();
+  try {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const archived = await app.inject({
+        method: "DELETE",
+        url: `/api/agent-sessions/${sessionId}`,
+      });
+      assert.equal(archived.statusCode, 200);
+      const body = jsonRecord(archived.body);
+      assert.equal(agentSessionSchema.safeParse(body.session).success, true);
+      assert.equal((body.session as typeof session).status, "archived");
+      assertNoPrivateRuntimeData(archived.body);
+    }
+    assert.deepEqual(calls.archives, [sessionId, sessionId]);
+
+    for (const request of [
+      { url: `/api/agent-sessions/${sessionId}`, payload: { hardDelete: true } },
+      { url: `/api/agent-sessions/${sessionId}?force=true` },
+      { url: "/api/agent-sessions/not-a-uuid" },
+    ]) {
+      const before = calls.archives.length;
+      const invalid = await app.inject({ method: "DELETE", ...request });
+      assert.equal(invalid.statusCode, 400);
+      assert.equal(calls.archives.length, before, "invalid delete options must not reach the service");
     }
   } finally {
     await app.close();
@@ -582,6 +630,14 @@ test("CHAT-AC-15/16: DeepWiki is manually generated for one revision and Provide
     });
     assert.equal(latest.statusCode, 200);
     assert.equal(deepWikiGenerationSchema.safeParse(jsonRecord(latest.body).generation).success, true);
+
+    const published = await app.inject({
+      method: "GET",
+      url: `/api/projects/${projectId}/deepwiki/generations/published`,
+    });
+    assert.equal(published.statusCode, 200);
+    assert.equal(deepWikiGenerationSchema.safeParse(jsonRecord(published.body).generation).success, true);
+    assertNoPrivateRuntimeData(published.body);
 
     const started = await app.inject({
       method: "POST",

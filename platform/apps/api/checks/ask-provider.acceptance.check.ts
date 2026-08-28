@@ -135,7 +135,7 @@ test("ASK-AC-02/04: all four Provider registrations use their explicit wire prot
       fetchImpl: capture.fetchImpl,
     });
 
-    const result = await provider.complete(COMPLETE_REQUEST);
+    const result = await provider.complete({ ...COMPLETE_REQUEST, temperature: 0.3 });
     assert.deepEqual(result, {
       text: "{\"answer\":\"ok\"}",
       model: "openai-model",
@@ -148,6 +148,7 @@ test("ASK-AC-02/04: all four Provider registrations use their explicit wire prot
     assert.equal(body.instructions, COMPLETE_REQUEST.systemPrompt);
     assert.deepEqual(body.input, COMPLETE_REQUEST.messages);
     assert.equal(body.max_output_tokens, COMPLETE_REQUEST.maxOutputTokens);
+    assert.equal(body.temperature, 0.3);
     assert.equal(body.store, false);
     assert.equal((body.text as { format?: { type?: string } }).format?.type, "json_schema");
     assert.equal(headers(capture.calls[0]!).get("authorization"), "Bearer openai-key-marker");
@@ -169,12 +170,13 @@ test("ASK-AC-02/04: all four Provider registrations use their explicit wire prot
       fetchImpl: capture.fetchImpl,
     });
 
-    const result = await provider.complete(COMPLETE_REQUEST);
+    const result = await provider.complete({ ...COMPLETE_REQUEST, temperature: 0.2 });
     assert.equal(result.text, "{\"answer\":\"ok\"}");
     assert.equal(capture.calls[0]?.url, "http://127.0.0.1:1234/v1/chat/completions");
     const body = requestBody(capture.calls[0]!);
     assert.equal(body.model, "lm-model");
     assert.equal(body.max_tokens, 321);
+    assert.equal(body.temperature, 0.2);
     assert.deepEqual(body.messages, [
       { role: "system", content: COMPLETE_REQUEST.systemPrompt },
       ...COMPLETE_REQUEST.messages,
@@ -251,6 +253,13 @@ test("ASK-AC-02/04: all four Provider registrations use their explicit wire prot
 
     await provider.complete({ ...COMPLETE_REQUEST, reasoningEffort: "medium" });
     assert.equal(requestBody(capture.calls[0]!).reasoning_effort, "medium");
+    await provider.complete({
+      ...COMPLETE_REQUEST,
+      jsonSchema: undefined,
+      reasoningEffort: "low",
+    });
+    assert.equal(requestBody(capture.calls[1]!).reasoning_effort, "low");
+    assert.equal("response_format" in requestBody(capture.calls[1]!), false);
   });
 
   await t.test("Ollama uses native POST /api/chat without streaming or model pulls", async () => {
@@ -268,7 +277,7 @@ test("ASK-AC-02/04: all four Provider registrations use their explicit wire prot
       fetchImpl: capture.fetchImpl,
     });
 
-    const result = await provider.complete(COMPLETE_REQUEST);
+    const result = await provider.complete({ ...COMPLETE_REQUEST, temperature: 0.1 });
     assert.equal(result.model, "ollama-model");
     assert.equal(capture.calls[0]?.url, "http://127.0.0.1:11434/api/chat");
     const body = requestBody(capture.calls[0]!);
@@ -279,7 +288,7 @@ test("ASK-AC-02/04: all four Provider registrations use their explicit wire prot
       ...COMPLETE_REQUEST.messages,
     ]);
     assert.deepEqual(body.format, COMPLETE_REQUEST.jsonSchema);
-    assert.equal((body.options as { num_predict?: number }).num_predict, 321);
+    assert.deepEqual(body.options, { num_predict: 321, temperature: 0.1 });
     assert.equal("tools" in body, false, "Ask must not grant model tools");
   });
 
@@ -896,4 +905,48 @@ test("ASK-AC-04/09: Provider HTTP enforces caller cancellation, timeout, and max
         && error.code === "ASK_PROVIDER_RESPONSE_TOO_LARGE",
     );
   });
+});
+
+test("ASK-AC-04/09: a bounded server-owned operation may extend the configured Provider deadline", async () => {
+  let calls = 0;
+  const delayedFetch = (async () => {
+    calls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    return new Response(JSON.stringify(chatResult("lm-model")), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  const provider = new OpenAiChatProvider({
+    id: "lmstudio",
+    label: "LM Studio",
+    protocol: "openai-chat",
+    dataBoundary: "local",
+    baseUrl: new URL("http://127.0.0.1:1234/v1"),
+    model: "lm-model",
+    structuredOutput: true,
+    timeoutMs: 15,
+    maxResponseBytes: 32_000,
+    fetchImpl: delayedFetch,
+  });
+
+  const result = await provider.complete({ ...COMPLETE_REQUEST, timeoutMs: 1_000 });
+  assert.equal(result.model, "lm-model");
+  assert.equal(calls, 1);
+
+  for (const timeoutMs of [999, 300_001, Number.NaN]) {
+    await assert.rejects(
+      () => provider.complete({ ...COMPLETE_REQUEST, timeoutMs }),
+      (error: unknown) => error instanceof AskProviderError
+        && error.code === "ASK_PROVIDER_REQUEST_INVALID",
+    );
+  }
+  for (const temperature of [-0.1, 2.1, Number.NaN]) {
+    await assert.rejects(
+      () => provider.complete({ ...COMPLETE_REQUEST, temperature }),
+      (error: unknown) => error instanceof AskProviderError
+        && error.code === "ASK_PROVIDER_REQUEST_INVALID",
+    );
+  }
+  assert.equal(calls, 1, "invalid operation controls fail before an upstream request");
 });

@@ -241,7 +241,7 @@ API 是可信协调层，不是租户隔离边界。Worker 不拿 Git Token、�
 
 ## DeepWiki、Prompt 与 Control Pack 的真实边界
 
-绑定仓库时只建立不花模型额度的 Repository Manifest：它针对一个 exact revision 确定性记录文件/语言规模、常见入口、文档、测试/构建线索和关键路径摘要。LLM DeepWiki 在绑定后由用户手工选择 Provider 生成，并保存 revision、模型、引用和用量。源码更新后，旧 LLM DeepWiki 会标记为 stale；旧 Session 和旧 Run 仍固定旧版本。
+绑定仓库时只建立不花模型额度的 Repository Manifest：它针对一个 exact revision 确定性记录文件/语言规模、常见入口、文档、测试/构建线索和关键路径摘要。LLM DeepWiki 在绑定后由用户手工选择 Provider 生成；API 先把任务排入服务端后台，关闭设置弹窗或离开页面不会取消它。生成会按 Provider 控制源码片段、输入和输出预算，保存 revision、模型、引用和用量；格式偶发不完整时服务端只自动整理一次。失败会显示可重试原因，并继续保留上一份已发布版本。源码更新后，旧 LLM DeepWiki 会标记为 stale；旧 Session 和旧 Run 仍固定旧版本。
 
 这不是 DeepWiki 网站的完整复刻，也不是全仓向量搜索或可浏览语义图谱。它的目标是让 Agent 在不依赖仓库内 `CLAUDE.md` 的情况下，拿到可验证、版本固定的项目上下文。
 

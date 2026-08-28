@@ -140,6 +140,7 @@ export interface RepositoryBindingServiceLike {
 export interface AgentSessionServiceLike {
   list(projectId?: string): Promise<AgentSessionDto[]>;
   get(sessionId: string): Promise<AgentSessionDetailDto>;
+  archive(sessionId: string): Promise<AgentSessionDto>;
   create(input: CreateAgentSessionInput): Promise<AgentSessionDto>;
   sendMessage(
     sessionId: string,
@@ -171,15 +172,19 @@ export interface McpCatalogLike {
 
 export interface DeepWikiGenerationServiceLike {
   getLatest(projectId: string): Promise<DeepWikiGenerationDto | null>;
+  getLatestPublished(projectId: string): Promise<DeepWikiGenerationDto | null>;
   generate(
     projectId: string,
     input: GenerateDeepWikiInput,
     signal?: AbortSignal,
   ): Promise<DeepWikiGenerationDto>;
+  waitForIdle?(): Promise<void>;
 }
 
 export interface AppOptions {
   pool: pg.Pool;
+  /** Production ownership: drain background work before closing this Pool. */
+  closePoolOnClose?: boolean;
   logger?: boolean;
   allowedProjectRoots?: string[];
   codexBinary?: string;
@@ -443,6 +448,30 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   if (options.cloud) {
     app.addHook("preHandler", async (request) => {
       const pathname = request.url.split("?", 1)[0] ?? request.url;
+      if (pathname === "/api/agent-sessions" && request.method === "GET") {
+        const { projectId } = agentSessionListQuerySchema.parse(request.query ?? {});
+        if (!projectId) {
+          throw new AppError(
+            "Cloud Agent Session 列表必须指定目标仓库",
+            400,
+            "CLOUD_AGENT_SESSION_PROJECT_REQUIRED",
+          );
+        }
+        await service.assertCloudProjectAccess(projectId);
+        return;
+      }
+      if (pathname === "/api/agent-sessions" && request.method === "POST") {
+        const input = createAgentSessionSchema.parse(request.body ?? {});
+        if (!input.primaryProjectId) {
+          throw new AppError(
+            "Cloud Agent Session 必须绑定一个远端仓库",
+            400,
+            "CLOUD_AGENT_SESSION_PROJECT_REQUIRED",
+          );
+        }
+        await service.assertCloudProjectAccess(input.primaryProjectId);
+        return;
+      }
       const projectMatch = /^\/api\/projects\/([0-9a-f-]{36})(?:\/|$)/iu.exec(pathname);
       if (projectMatch?.[1]) {
         await service.assertCloudProjectAccess(projectMatch[1]);
@@ -466,6 +495,11 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       const askThreadMatch = /^\/api\/ask-threads\/([0-9a-f-]{36})(?:\/|$)/iu.exec(pathname);
       if (askThreadMatch?.[1]) {
         await service.assertCloudAskThreadAccess(askThreadMatch[1]);
+        return;
+      }
+      const agentSessionMatch = /^\/api\/agent-sessions\/([0-9a-f-]{36})(?:\/|$)/iu.exec(pathname);
+      if (agentSessionMatch?.[1]) {
+        await service.assertCloudAgentSessionAccess(agentSessionMatch[1]);
       }
     });
   }
@@ -638,6 +672,20 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     return parsePublicPortResult(agentSessionDetailSchema, detail);
   });
 
+  app.delete("/api/agent-sessions/:id", async (request) => {
+    const { id } = agentSessionParamsSchema.parse(request.params);
+    emptyQuerySchema.parse(request.query ?? {});
+    emptyQuerySchema.parse(request.body === undefined ? {} : request.body);
+    const session = await requireChatFirstPort(
+      agentSessions,
+      "Agent Session 服务",
+    ).archive(id);
+    return parsePublicPortResult(
+      z.object({ session: agentSessionSchema }).strict(),
+      { session },
+    );
+  });
+
   app.post("/api/agent-sessions/:id/messages", async (request, reply) => {
     const { id } = agentSessionParamsSchema.parse(request.params);
     const input = sendAgentMessageSchema.parse(request.body);
@@ -720,6 +768,19 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       deepWikiGenerations,
       "DeepWiki 生成服务",
     ).getLatest(id);
+    return parsePublicPortResult(
+      z.object({ generation: deepWikiGenerationSchema.nullable() }).strict(),
+      { generation },
+    );
+  });
+
+  app.get("/api/projects/:id/deepwiki/generations/published", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    emptyQuerySchema.parse(request.query ?? {});
+    const generation = await requireChatFirstPort(
+      deepWikiGenerations,
+      "DeepWiki 生成服务",
+    ).getLatestPublished(id);
     return parsePublicPortResult(
       z.object({ generation: deepWikiGenerationSchema.nullable() }).strict(),
       { generation },
@@ -1042,7 +1103,14 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   });
 
   app.addHook("onClose", async () => {
-    await service.waitForIdle();
+    try {
+      await Promise.all([
+        service.waitForIdle(),
+        deepWikiGenerations?.waitForIdle?.() ?? Promise.resolve(),
+      ]);
+    } finally {
+      if (options.closePoolOnClose) await options.pool.end();
+    }
   });
   if (options.cloud && options.recoverChatAgentRuntimeOnStart) {
     await store.recoverChatAgentRuntimeAfterRestart();

@@ -142,6 +142,7 @@ test("CLOUD-AC-14: legacy-local resources stay hidden behind ID-only Cloud route
         query.includes("FROM artifacts a")
         || query.includes("FROM executions e")
         || query.includes("FROM ask_threads at")
+        || query.includes("FROM agent_sessions s")
       ) {
         ownershipLookups += 1;
         return { rows: [{ source_kind: "legacy_local" }] };
@@ -164,6 +165,7 @@ test("CLOUD-AC-14: legacy-local resources stay hidden behind ID-only Cloud route
   const artifactId = "11111111-1111-4111-8111-111111111111";
   const executionId = "22222222-2222-4222-8222-222222222222";
   const threadId = "33333333-3333-4333-8333-333333333333";
+  const sessionId = "44444444-4444-4444-8444-444444444444";
   try {
     const requests = [
       { method: "GET" as const, url: `/api/artifacts/${artifactId}` },
@@ -171,6 +173,9 @@ test("CLOUD-AC-14: legacy-local resources stay hidden behind ID-only Cloud route
       { method: "GET" as const, url: `/api/executions/${executionId}/events` },
       { method: "GET" as const, url: `/api/ask-threads/${threadId}` },
       { method: "POST" as const, url: `/api/ask-threads/${threadId}/messages`, payload: {} },
+      { method: "GET" as const, url: `/api/agent-sessions/${sessionId}` },
+      { method: "DELETE" as const, url: `/api/agent-sessions/${sessionId}` },
+      { method: "POST" as const, url: `/api/agent-sessions/${sessionId}/messages`, payload: {} },
     ];
     for (const request of requests) {
       const response = await app.inject(request);
@@ -178,6 +183,72 @@ test("CLOUD-AC-14: legacy-local resources stay hidden behind ID-only Cloud route
       assert.equal(response.json().error.code, "CLOUD_PROJECT_NOT_FOUND");
     }
     assert.equal(ownershipLookups, requests.length);
+  } finally {
+    await app.close();
+    await rm(managedRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLOUD-AC-14: Cloud Session collection requires one visible remote Project", async () => {
+  const managedRoot = await mkdtemp(path.join(os.tmpdir(), "ai-sdlc-cloud-session-list-"));
+  const projectId = "55555555-5555-4555-8555-555555555555";
+  const now = new Date("2026-08-28T12:00:00.000Z");
+  let projectLookups = 0;
+  const pool = {
+    async query(query: string) {
+      if (query === "SELECT * FROM projects WHERE id = $1") {
+        projectLookups += 1;
+        return { rows: [{
+          id: projectId,
+          name: "operator-local",
+          summary: "must stay outside Cloud",
+          root_path: "/private/operator/project",
+          config_path: "/private/operator/project/ai-native.yaml",
+          source_kind: "legacy_local",
+          repository_state: "ready",
+          definition_mode: "repository",
+          created_at: now,
+          updated_at: now,
+        }] };
+      }
+      return { rows: [] };
+    },
+  } as unknown as pg.Pool;
+  const app = await buildApp({
+    pool,
+    fakeCodex: true,
+    cloud: {
+      managedRoot,
+      repositoryPolicy: new RepositoryPolicy({
+        allowedOrigins: ["https://git.example.test"],
+        lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      }),
+      credentials: createGitCredentialRegistryFromEnv({}),
+    },
+  });
+  try {
+    for (const request of [
+      { method: "GET" as const, url: "/api/agent-sessions" },
+      { method: "POST" as const, url: "/api/agent-sessions", payload: {} },
+    ]) {
+      const response = await app.inject(request);
+      assert.equal(response.statusCode, 400);
+      assert.equal(response.json().error.code, "CLOUD_AGENT_SESSION_PROJECT_REQUIRED");
+    }
+    for (const request of [
+      { method: "GET" as const, url: `/api/agent-sessions?projectId=${projectId}` },
+      {
+        method: "POST" as const,
+        url: "/api/agent-sessions",
+        payload: { primaryProjectId: projectId },
+      },
+    ]) {
+      const response = await app.inject(request);
+      assert.equal(response.statusCode, 404);
+      assert.equal(response.json().error.code, "CLOUD_PROJECT_NOT_FOUND");
+      assert.doesNotMatch(response.body, /private\/operator/u);
+    }
+    assert.equal(projectLookups, 2);
   } finally {
     await app.close();
     await rm(managedRoot, { recursive: true, force: true });

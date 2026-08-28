@@ -157,7 +157,7 @@ sequenceDiagram
 | 聚合 | 关键表 | 关键约束 |
 |---|---|---|
 | Project / Repository | `projects`, `project_agent_settings`, `managed_workspaces`, `knowledge_snapshots` | 远程仓必须是 HTTPS；活动 snapshot 唯一；revision 为完整 SHA-1/SHA-256；Control Pack 版本独立于仓库 |
-| Conversation | `agent_sessions`, `agent_session_repositories`, `agent_messages`, `agent_events` | 每 Session 最多一个 `write` 仓；消息/事件 sequence 唯一；用户消息有幂等键和 fingerprint |
+| Conversation | `agent_sessions`, `agent_session_repositories`, `agent_messages`, `agent_events` | 每 Session 最多一个 `write` 仓；消息/事件 sequence 唯一；用户消息有幂等键和 fingerprint；“删除”只把 idle 且没有 active Run 的 Session 归档，不级联删除审计记录 |
 | Tool / Gate | `agent_tool_calls`, `agent_human_gates` | 工具参数和输出只留 SHA-256/安全摘要；Human Gate 表结构为受限能力预留，当前 Cloud 主链真正生效的人工门禁是 Artifact Review，通用外部副作用 Gate 尚未接入生产链路 |
 | Sandbox / Run linkage | `agent_sandboxes`, `agent_session_runs`, `workflow_runs` | Sandbox、Run、主仓 revision 一致；一个 Workspace 不被多个 Run 复用 |
 | SDLC | `phase_runs`, `executions`, `artifacts`, `reviews`, `tickets`, `execution_events` | 固定六阶段；每个 Artifact key 只有一个未 supersede 的 head；Review 固定实际 head IDs |
@@ -174,7 +174,7 @@ sequenceDiagram
 | Execution / Phase | `ready -> running -> awaiting_review -> approved` | Runner 失败使 Execution 和 Phase 进入 failed；`request_changes` 使当前阶段进入 changes_requested，并使受影响下游失效 |
 | Artifact | `pending -> approved` 或 `changes_requested`；新 revision 把旧 head 置为 superseded | revision 以 parent ID 串联；stale reviewer 因 head ID 不同而被拒绝 |
 | Run | `active -> completed` | 只有最后一个阶段批准后完成；失败阶段保留在同一 Run 中供修复后继续 |
-| DeepWiki generation | `queued -> scanning -> generating -> validating -> ready` | 失败保留安全错误；仓库 revision 变化后 ready 结果变 stale，不自动重跑 |
+| DeepWiki generation | `queued -> scanning -> generating -> validating -> ready` | HTTP 只负责可靠入队，后台任务不继承浏览器取消信号；格式无效时最多自动整理一次；失败保留安全错误和上一份 published 结果；发布前再次核对 revision，仓库变化后结果只能 stale/failed，不自动重跑 |
 
 三个贯穿全链的绑定值是：源码 `revision`、Control Pack `definitionVersion`、内容 `manifestHash/contentHash`。只要其中一项与当前持久记录或物理 Workspace 不一致，Ask、阶段输入选择或审批都会拒绝继续。
 
@@ -242,7 +242,7 @@ Worker 环境采用 allowlist，只可能转发 Codex/OpenAI runtime key、显�
 | 能力 | 触发 | 数据来源 | 结果与边界 |
 |---|---|---|---|
 | DeepWiki Lite | 每次成功导入新 revision 时自动执行 | 固定 Git tree/object，不扫描任意工作区文件 | 确定性 manifest、语言/路径信号和逐文件 hash；排除依赖/构建目录、敏感文件、symlink、binary 和超限内容 |
-| LLM DeepWiki | 用户手工触发 | Lite map 加上服务端选择的有界源码 excerpt | 保存 revision、Provider、模型、manifest、引用和 usage；引用必须匹配服务端 source ID；同步后标记 stale |
+| LLM DeepWiki | 用户手工触发，服务端异步执行 | Lite map 加上按 Provider 限额选择的源码 excerpt，并排除 lock、source map、SVG 等低价值材料 | 保存 revision、Provider、模型、manifest、引用和 usage；引用必须匹配服务端短 source ID；失败不覆盖上一份 published 结果；同步后标记 stale |
 | Project Ask | 每个只读问题 | 固定 revision 上的有界 retrieval | 返回验证过的 path/line/hash 引用、未知项和实际 Provider；没有执行工具 |
 
 `ProjectKnowledgeResolver` 不会因为数据库行写着 ready 就信任索引。它重新解析持久 JSON，确认 Project/revision/workspace/manifest 一致，并对物理 Git snapshot 做 revision 绑定或重建索引比较。实现见 [deepwiki-lite.ts](../../apps/api/src/services/deepwiki-lite.ts)、[project-knowledge.ts](../../apps/api/src/services/project-knowledge.ts) 和 [deepwiki-generation-service.ts](../../apps/api/src/services/agent/deepwiki-generation-service.ts)。
@@ -355,7 +355,7 @@ flowchart TB
 | Worker 超时或非零退出 | TERM 后 KILL，尝试强制删除精确容器；Execution/Phase 标记 failed | 修正配置/代码后在同一 Run 重试当前阶段 |
 | Worker 容器无法确认清理 | Workspace 在当前 API 进程内 quarantine，不再并发使用 | 下次启动 preflight 先删除同 deployment 的遗留 Worker，再开放服务 |
 | 阶段执行中 API 重启 | schema migration 把 queued/running Execution 与 Phase 标为 failed | 人工重新启动阶段；不伪造完成 |
-| Chat runtime 重启 | running 消息/工具/DeepWiki 标 failed，pending gate 取消，starting Sandbox 标 failed，Session 恢复 idle | 用户显式重试；外部工具和模型调用不自动重放 |
+| Chat runtime 重启 | running 消息/工具标 failed，pending gate 取消，starting Sandbox 标 failed，Session 恢复 idle；DeepWiki 先保留仍可能由另一实例持有的新任务，状态轮询会在 10 分钟安全窗口后把遗留任务标为 failed | 用户显式重试；外部工具和模型调用不自动重放，也不会让 DeepWiki 永久停在运行中 |
 | Artifact 生成失败 | 已选 Artifact 输出路径由事务式保护恢复；未选 Artifact 和控制文件受保护 | 修正后重跑；一般产品源码修改没有全局自动回滚保证 |
 | revision/index/hash 不一致 | Ask、Run 或审批 fail closed | 重新同步/新建 Session/重建证据，不能静默换 revision |
 

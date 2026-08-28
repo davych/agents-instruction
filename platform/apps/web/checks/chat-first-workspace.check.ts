@@ -144,6 +144,56 @@ test("CHAT-AC-09: composer sends the client idempotency key and expected sequenc
   assert.doesNotMatch(workspace.text, /maxToolRounds\s*:|timeoutMs\s*:|maxToolOutputBytes\s*:/u);
 });
 
+test("Agent Sessions are archived from independent row/header actions and current routes recover safely", async () => {
+  const [workspace, app, api] = await Promise.all([
+    readWorkspace(),
+    source("App.tsx"),
+    source("lib/api.ts"),
+  ]);
+  const implementation = `${workspace.text}\n${app}\n${api}`;
+
+  assert.match(api, /archiveAgentSession[\s\S]{0,500}method:\s*["']DELETE["']/u);
+  assert.doesNotMatch(implementation, /deleteAgentSession/u, "browser deletion must remain server-side archival, not physical deletion");
+  assert.match(workspace.text, /activeSessions\.map[\s\S]{0,1600}onSessionChange[\s\S]{0,1600}requestArchive/u);
+  assert.match(workspace.text, /aria-label=[^\n]*删除当前 Agent Session/u);
+  assert.equal(
+    workspace.text.match(/title=["']删除 Agent Session？["']/gu)?.length,
+    1,
+    "Session deletion uses one confirmation layer",
+  );
+  assert.match(workspace.text, /target\.turnState !== ["']idle["']/u);
+  assert.match(workspace.text, /sendMutation\.isPending/u);
+  assert.match(workspace.text, /inlineReviewBusy/u);
+  assert.match(workspace.text, /refetchInterval:[\s\S]{0,180}turnState[\s\S]{0,80}!== ["']idle["'][\s\S]{0,80}1_500/u);
+  assert.match(workspace.text, /synchronizeAgentSessionSummary\(current, session\)/u);
+  assert.match(workspace.text, /queryClient\.removeQueries\(\{ queryKey: \[["']agent-session["'], archived\.id\], exact: true \}\)/u);
+  assert.match(workspace.text, /current\.filter\(\(\{ id \}\) => id !== archived\.id\)/u);
+  assert.match(workspace.text, /session\?\.status !== ["']active["']/u);
+  assert.match(workspace.text, /disabled=\{!sessionActive/u);
+  assert.match(workspace.text, /aria-label=["']管理 Agent Sessions["'][\s\S]{0,100}setSessionMenuOpen\(true\)/u);
+  assert.match(workspace.text, /open=\{sessionMenuOpen\}[\s\S]{0,2200}新建 Agent Session[\s\S]{0,2200}requestArchive/u);
+
+  assert.match(app, /window\.history\.replaceState/u);
+  assert.match(app, /onSessionReplace[\s\S]{0,300}replace:\s*true/u);
+  assert.match(app, /<AgentWorkspacePage[\s\S]{0,100}key=\{route\.projectId\}/u);
+  assert.match(workspace.text, /remainingSessionIds\[archivedIndex\]\s*\?\?\s*remainingSessionIds\[archivedIndex - 1\]/u);
+  assert.match(workspace.text, /replacementId[\s\S]{0,400}requestCreateSession\(["']replace["']\)/u);
+  assert.match(workspace.text, /最后一个可用 Session[\s\S]{0,100}自动创建/u);
+  assert.match(workspace.text, /onSuccess:[\s\S]{0,400}creationRequestedRef\.current = false/u);
+  assert.match(workspace.text, /createInFlightRef\.current[\s\S]{0,300}requestCreateSession/u);
+  assert.match(workspace.text, /createSessionIntentRef[\s\S]{0,300}clientRequestId:\s*string/u);
+  assert.match(workspace.text, /clientRequestId:\s*request\.clientRequestId/u);
+  assert.match(workspace.text, /createSessionIntentRef\.current\?\.clientRequestId === request\.clientRequestId/u);
+  assert.match(workspace.text, /createSessionMutation\.mutate\(intent\)/u);
+  assert.doesNotMatch(
+    workspace.text,
+    /api\.createAgentSession\([\s\S]{0,240}clientRequestId:\s*crypto\.randomUUID\(\)/u,
+    "a retry must reuse one Session creation intent instead of minting an id in mutationFn",
+  );
+  assert.match(workspace.text, /archiveInFlightRef\.current[\s\S]{0,300}archiveMutation\.mutate/u);
+  assert.match(workspace.text, /routeSessionIdRef\.current !== routeSessionId/u);
+});
+
 test("CHAT-AC-11/12/14: SDLC runs behind the conversation and exposes a compact timeline, evidence, and advanced audit", async () => {
   const workspace = await readWorkspace();
 
@@ -180,7 +230,7 @@ test("CHAT-AC-11/12/14: awaiting review is handled inline without bypassing Arti
 });
 
 test("CHAT-AC-15/16: DeepWiki generation is an explicit post-bind action with Provider and revision context", async () => {
-  const workspace = await readWorkspace();
+  const [workspace, api] = await Promise.all([readWorkspace(), source("lib/api.ts")]);
 
   assert.match(workspace.text, /生成 DeepWiki|generateDeepWiki/u);
   assert.match(workspace.text, /providerId|Provider|模型/u);
@@ -189,8 +239,41 @@ test("CHAT-AC-15/16: DeepWiki generation is an explicit post-bind action with Pr
   assert.match(workspace.text, /手动|按需|生成/u);
   assert.match(workspace.text, /设置弹窗通过 Project API 手动生成/u);
   assert.match(workspace.text, /会话命令和 @repo 菜单暂未提供/u);
+  assert.match(workspace.text, /DEEP_WIKI_ACTIVE_STATUSES[\s\S]{0,200}["']queued["'][\s\S]{0,80}["']scanning["'][\s\S]{0,80}["']generating["'][\s\S]{0,80}["']validating["']/u);
+  assert.match(workspace.text, /refetchInterval:[^\n]*deepWikiGenerationActive[^\n]*1_500/u);
+  assert.match(workspace.text, /const busy = pending \|\| active/u, "queued server work must outlive the short POST mutation");
+  assert.match(workspace.text, /等待服务端开始|正在扫描仓库|正在生成项目知识|正在校验生成结果/u);
+  assert.match(workspace.text, /generation\.errorMessage/u);
+  assert.match(workspace.text, /DeepWiki 生成失败/u);
+  assert.match(workspace.text, /重试生成/u);
+  assert.match(workspace.text, /关闭这个设置弹窗不会中止生成/u);
+  assert.match(api, /getLatestPublishedDeepWiki[\s\S]{0,400}deepwiki\/generations\/published/u);
+  assert.match(workspace.text, /deepWikiGenerationPublished[\s\S]{0,400}setQueryData\(\[["']deepwiki-published["']/u);
+  assert.match(workspace.text, /function deepWikiGenerationPublished[\s\S]{0,180}generation\.status === ["']ready["']/u);
+  assert.doesNotMatch(workspace.text, /function deepWikiGenerationPublished[\s\S]{0,180}generation\.status === ["']stale["']/u);
+  assert.match(workspace.text, /invalidateQueries\(\{ queryKey: \[["']deepwiki-published["']/u);
+  assert.match(workspace.text, /deepWikiInFlightRef\.current[\s\S]{0,500}deepWikiMutation\.mutate/u);
+  assert.match(workspace.text, /deepWikiGenerationIntentRef[\s\S]{0,500}clientRequestId:\s*string[\s\S]{0,300}baselineGenerationId/u);
+  assert.match(workspace.text, /clientRequestId:\s*intent\.clientRequestId/u);
+  assert.match(workspace.text, /deepWikiGenerationIntentRef\.current\?\.clientRequestId === intent\.clientRequestId[\s\S]{0,160}deepWikiGenerationIntentRef\.current = undefined/u);
+  assert.match(workspace.text, /latest\.id === intent\.baselineGenerationId[\s\S]{0,160}deepWikiGenerationIntentRef\.current = undefined/u);
+  assert.match(workspace.text, /intent\.expectedRevision !== expectedRevision/u);
+  assert.match(workspace.text, /intent\.providerId !== targetProvider\.id/u);
+  assert.match(workspace.text, /onError:[\s\S]{0,600}queryKey:\s*\[["']deepwiki["'], intent\.projectId\][\s\S]{0,300}deepWikiQuery\.refetch\(\)/u);
+  assert.doesNotMatch(workspace.text, /generateDeepWiki\([\s\S]{0,300}clientRequestId:\s*crypto\.randomUUID\(\)/u);
+  assert.match(workspace.text, /latestStatusError[\s\S]{0,1500}publishedStatusError/u);
+  assert.match(workspace.text, /查看上一个可用版本/u);
+  assert.match(workspace.text, /查看已发布版本/u);
+  assert.match(workspace.text, /旧 DeepWiki 仍可阅读，不会被失败任务覆盖/u);
   assert.doesNotMatch(workspace.text, /useEffect\([^)]*generateDeepWiki|onBound[^\n]{0,500}generateDeepWiki/u);
   assert.doesNotMatch(workspace.text, /用户可在仓库设置、会话命令或[^\n]*@repo[^\n]*菜单中[^\n]*生成/u);
+});
+
+test("a failed manual Session create remains visible in the desktop conversation without leaking across routes", async () => {
+  const workspace = await readWorkspace();
+
+  assert.match(workspace.text, /createSessionFailureIsCurrent[\s\S]{0,250}routeProjectId === projectId[\s\S]{0,160}routeSessionId === sessionId/u);
+  assert.match(workspace.text, /sessionActive && createSessionFailureIsCurrent[\s\S]{0,500}新会话创建失败[\s\S]{0,500}failedCreateNavigation \?\? ["']push["']/u);
 });
 
 test("CHAT-AC-19/20: the default workspace offers Patch/audit, not privilege elevation or automatic external delivery", async () => {

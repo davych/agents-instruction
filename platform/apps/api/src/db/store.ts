@@ -86,6 +86,14 @@ import {
   validateArchitecturePartialExecution,
 } from "../domain/workflow.js";
 
+// MVP stale-job recovery window. This deliberately exceeds the longest
+// Provider request (180s), its one repair/retry request (90s), and leaves
+// several minutes for repository scanning and persistence. It prevents a
+// crashed worker from blocking a revision forever without pretending to be a
+// full owner lease/heartbeat protocol.
+const DEEPWIKI_STALE_JOB_TIMEOUT_SECONDS = 10 * 60;
+const DEEPWIKI_STALE_JOB_MESSAGE = "DeepWiki 生成超过安全执行窗口，已终止，请手工重试";
+
 export interface ArtifactRecordInput {
   artifactKey: string;
   filePath: string;
@@ -1342,13 +1350,34 @@ export class PgWorkflowStore {
       workspaceId: string;
       sourceRevision: GitRevision;
     };
-  }): Promise<AgentSessionDto> {
+  }): Promise<{ session: AgentSessionDto; replayed: boolean }> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       const sessionId = input.id ?? randomUUID();
+      const title = input.title?.trim() || "新对话";
       let providerId = input.providerId;
       let repositorySettings: ProjectAgentSettingsDto | null = null;
+      const existingResult = await client.query(
+        "SELECT * FROM agent_sessions WHERE id = $1 FOR UPDATE",
+        [sessionId],
+      );
+      if (existingResult.rows[0]) {
+        if (input.primaryRepository) {
+          repositorySettings = mapProjectAgentSettings(
+            await ensureProjectAgentSettings(client, input.primaryRepository.projectId),
+          );
+          providerId ??= repositorySettings.defaultProviderId;
+        }
+        const replayed = await readAgentSessionSummary(client, sessionId);
+        assertAgentSessionCreationReplay(replayed, {
+          title,
+          providerId: providerId ?? "openai",
+          primaryProjectId: input.primaryRepository?.projectId,
+        });
+        await client.query("COMMIT");
+        return { session: replayed, replayed: true };
+      }
       if (input.primaryRepository) {
         repositorySettings = mapProjectAgentSettings(
           await ensureProjectAgentSettings(client, input.primaryRepository.projectId),
@@ -1356,13 +1385,36 @@ export class PgWorkflowStore {
         providerId ??= repositorySettings.defaultProviderId;
         await assertReadyProjectSnapshot(client, input.primaryRepository);
       }
+      const effectiveProviderId = providerId ?? "openai";
       const { rows } = await client.query(
         `INSERT INTO agent_sessions
            (id, title, status, turn_state, current_provider_id)
          VALUES ($1, $2, 'active', 'idle', $3)
+         ON CONFLICT (id) DO NOTHING
          RETURNING *`,
-        [sessionId, input.title?.trim() || "新对话", providerId ?? "openai"],
+        [sessionId, title, effectiveProviderId],
       );
+      if (!rows[0]) {
+        const racedResult = await client.query(
+          "SELECT * FROM agent_sessions WHERE id = $1 FOR UPDATE",
+          [sessionId],
+        );
+        if (!racedResult.rows[0]) {
+          throw new AppError(
+            "Agent Session 创建结果已变化",
+            409,
+            "AGENT_SESSION_CREATE_STATE_CHANGED",
+          );
+        }
+        const replayed = await readAgentSessionSummary(client, sessionId);
+        assertAgentSessionCreationReplay(replayed, {
+          title,
+          providerId: effectiveProviderId,
+          primaryProjectId: input.primaryRepository?.projectId,
+        });
+        await client.query("COMMIT");
+        return { session: replayed, replayed: true };
+      }
       if (input.primaryRepository && repositorySettings) {
         await client.query(
           `INSERT INTO agent_session_repositories
@@ -1379,7 +1431,7 @@ export class PgWorkflowStore {
       }
       const session = await readAgentSessionSummary(client, String(rows[0].id));
       await client.query("COMMIT");
-      return session;
+      return { session, replayed: false };
     } catch (error) {
       await client.query("ROLLBACK");
       if ((error as { code?: string }).code === "23505") {
@@ -1397,12 +1449,18 @@ export class PgWorkflowStore {
         ? `SELECT DISTINCT s.*
            FROM agent_sessions s
            JOIN agent_session_repositories sr ON sr.session_id = s.id
-           WHERE sr.project_id = $1
+           WHERE sr.project_id = $1 AND s.status = 'active'
            ORDER BY s.updated_at DESC`
-        : "SELECT * FROM agent_sessions ORDER BY updated_at DESC",
+        : "SELECT * FROM agent_sessions WHERE status = 'active' ORDER BY updated_at DESC",
       input.projectId ? [input.projectId] : [],
     );
-    return Promise.all(rows.map((row) => readAgentSessionSummary(this.pool, String(row.id))));
+    const sessions = await Promise.all(
+      rows.map((row) => readAgentSessionSummary(this.pool, String(row.id))),
+    );
+    // The first SELECT and the richer summary reads are intentionally separate.
+    // Re-check the status from the later read so a concurrent archive cannot
+    // leak an archived Session back through this active-only API.
+    return sessions.filter(({ status }) => status === "active");
   }
 
   async getAgentSession(id: string): Promise<AgentSessionRecord> {
@@ -1415,6 +1473,70 @@ export class PgWorkflowStore {
       this.listAgentSessionRuns(id),
     ]);
     return { ...summary, messages, events, toolCalls, humanGates, sessionRuns };
+  }
+
+  async archiveAgentSession(id: string): Promise<AgentSessionDto> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const sessionResult = await client.query(
+        "SELECT * FROM agent_sessions WHERE id = $1 FOR UPDATE",
+        [id],
+      );
+      const session = sessionResult.rows[0];
+      if (!session) throw notFound("Agent Session");
+      if (session.status === "archived") {
+        const archived = await readAgentSessionSummary(client, id);
+        await client.query("COMMIT");
+        return archived;
+      }
+      if (session.turn_state !== "idle") {
+        throw new AppError(
+          "Agent Session 只有在空闲时才能删除",
+          409,
+          "AGENT_SESSION_ARCHIVE_BUSY",
+        );
+      }
+      const activeRun = await client.query(
+        `SELECT wr.id
+         FROM agent_session_runs asr
+         JOIN workflow_runs wr ON wr.id = asr.workflow_run_id
+         WHERE asr.session_id = $1 AND wr.status = 'active'
+         ORDER BY wr.created_at, wr.id
+         LIMIT 1
+         FOR UPDATE OF wr`,
+        [id],
+      );
+      if (activeRun.rows[0]) {
+        throw new AppError(
+          "这个 Agent Session 还有未完成的 SDLC Run，请先完成当前流程再删除",
+          409,
+          "AGENT_SESSION_ARCHIVE_ACTIVE_RUN",
+        );
+      }
+      const archivedResult = await client.query(
+        `UPDATE agent_sessions
+         SET status = 'archived', updated_at = now()
+         WHERE id = $1 AND status = 'active' AND turn_state = 'idle'
+         RETURNING *`,
+        [id],
+      );
+      if (!archivedResult.rows[0]) {
+        throw new AppError(
+          "Agent Session 状态已变化",
+          409,
+          "AGENT_SESSION_ARCHIVE_STATE_CHANGED",
+        );
+      }
+      const archived = await readAgentSessionSummary(client, id);
+      await client.query("COMMIT");
+      return archived;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async bindAgentSessionRepository(input: {
@@ -2029,10 +2151,11 @@ export class PgWorkflowStore {
   }
 
   /**
-   * Fail closed after a process restart. In-memory turn workers and DeepWiki
-   * generators cannot be resumed safely, so their durable rows are finalized
-   * with a public reason and Sessions become usable again. No queued external
-   * side effect is replayed.
+   * Fail closed after a process restart. In-memory turn workers cannot be
+   * resumed safely, so their durable rows are finalized and Sessions become
+   * usable again. DeepWiki may be owned by another healthy API instance, so
+   * only jobs beyond the conservative stale window are finalized. No queued
+   * external side effect is replayed.
    */
   async recoverChatAgentRuntimeAfterRestart(): Promise<{
     sessions: number;
@@ -2080,10 +2203,14 @@ export class PgWorkflowStore {
       );
       const deepWikiGenerations = await client.query(
         `UPDATE deepwiki_generations
-         SET status = 'failed', content = NULL,
-             error_message = '服务重启前生成没有完成，请手工重试',
-             generated_at = now(), updated_at = now()
-         WHERE status IN ('queued', 'scanning', 'generating', 'validating')`,
+         SET status = 'failed', model = NULL, manifest_hash = NULL,
+             content = NULL, citations = '[]'::jsonb,
+             input_tokens = NULL, output_tokens = NULL,
+             error_message = $1, generated_at = now(), stale_at = NULL,
+             updated_at = now()
+         WHERE status IN ('queued', 'scanning', 'generating', 'validating')
+           AND updated_at < now() - make_interval(secs => $2::double precision)`,
+        [DEEPWIKI_STALE_JOB_MESSAGE, DEEPWIKI_STALE_JOB_TIMEOUT_SECONDS],
       );
       await client.query("COMMIT");
       return {
@@ -2806,6 +2933,18 @@ export class PgWorkflowStore {
         [input.projectId],
       );
       if (!project.rows[0]) throw notFound("项目");
+      await client.query(
+        `UPDATE deepwiki_generations
+         SET status = 'failed', model = NULL, manifest_hash = NULL,
+             content = NULL, citations = '[]'::jsonb,
+             input_tokens = NULL, output_tokens = NULL,
+             error_message = $1, generated_at = now(), stale_at = NULL,
+             updated_at = now()
+         WHERE project_id = $2
+           AND status IN ('queued', 'scanning', 'generating', 'validating')
+           AND updated_at < now() - make_interval(secs => $3::double precision)`,
+        [DEEPWIKI_STALE_JOB_MESSAGE, input.projectId, DEEPWIKI_STALE_JOB_TIMEOUT_SECONDS],
+      );
       if (input.clientRequestId) {
         const replay = await client.query(
           `SELECT * FROM deepwiki_generations
@@ -2879,6 +3018,17 @@ export class PgWorkflowStore {
     }
   }
 
+  async claimDeepWikiGeneration(id: string): Promise<DeepWikiGenerationDto | null> {
+    const { rows } = await this.pool.query(
+      `UPDATE deepwiki_generations
+       SET status = 'scanning', updated_at = now()
+       WHERE id = $1 AND status = 'queued'
+       RETURNING *`,
+      [id],
+    );
+    return rows[0] ? mapDeepWikiGeneration(rows[0]) : null;
+  }
+
   async transitionDeepWikiGeneration(input: {
     id: string;
     expectedStatus: DeepWikiGenerationStatus;
@@ -2930,32 +3080,87 @@ export class PgWorkflowStore {
         throw new AppError("DeepWiki token usage 格式无效", 400, "DEEPWIKI_USAGE_INVALID");
       }
     }
-    const { rows } = await this.pool.query(
-      `UPDATE deepwiki_generations
-       SET status = 'ready', model = $1, content = $2, citations = $3::jsonb,
-           input_tokens = $4, output_tokens = $5, manifest_hash = $6,
-           error_message = NULL, generated_at = now(), stale_at = NULL,
-           updated_at = now()
-       WHERE id = $7 AND status IN ('queued', 'scanning', 'generating', 'validating')
-       RETURNING *`,
-      [
-        model,
-        content,
-        JSON.stringify(citations),
-        usage.inputTokens,
-        usage.outputTokens,
-        manifestHash,
-        input.id,
-      ],
-    );
-    if (!rows[0]) {
-      throw new AppError(
-        "DeepWiki 生成不存在或状态已变化",
-        409,
-        "DEEPWIKI_STATE_CHANGED",
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const generationResult = await client.query(
+        `SELECT project_id, workspace_id, revision
+         FROM deepwiki_generations
+         WHERE id = $1`,
+        [input.id],
       );
+      const generation = generationResult.rows[0];
+      if (!generation) throw notFound("DeepWiki Generation");
+
+      // Snapshot activation locks the same Project row first. Whichever
+      // transaction wins is therefore observed atomically: completion either
+      // publishes the still-current Workspace as ready, or preserves the
+      // immutable old result as stale after a repository sync.
+      const projectResult = await client.query(
+        "SELECT active_revision FROM projects WHERE id = $1 FOR UPDATE",
+        [generation.project_id],
+      );
+      if (!projectResult.rows[0]) throw notFound("项目");
+      const workspaceResult = await client.query(
+        `SELECT project_id, revision, state, active
+         FROM managed_workspaces
+         WHERE id = $1
+         FOR SHARE`,
+        [generation.workspace_id],
+      );
+      const workspace = workspaceResult.rows[0];
+      if (
+        !workspace
+        || workspace.project_id !== generation.project_id
+        || workspace.revision !== generation.revision
+        || workspace.state !== "ready"
+      ) {
+        throw new AppError(
+          "DeepWiki 固定的仓库快照已变化，生成结果没有发布",
+          409,
+          "DEEPWIKI_SNAPSHOT_CHANGED",
+        );
+      }
+      const publishedStatus = (
+        projectResult.rows[0].active_revision === generation.revision
+        && workspace.active === true
+      ) ? "ready" : "stale";
+      const { rows } = await client.query(
+        `UPDATE deepwiki_generations
+         SET status = $1, model = $2, content = $3, citations = $4::jsonb,
+             input_tokens = $5, output_tokens = $6, manifest_hash = $7,
+             error_message = NULL, generated_at = now(),
+             stale_at = CASE WHEN $1 = 'stale' THEN now() ELSE NULL END,
+             updated_at = now()
+         WHERE id = $8 AND status IN ('queued', 'scanning', 'generating', 'validating')
+         RETURNING *`,
+        [
+          publishedStatus,
+          model,
+          content,
+          JSON.stringify(citations),
+          usage.inputTokens,
+          usage.outputTokens,
+          manifestHash,
+          input.id,
+        ],
+      );
+      if (!rows[0]) {
+        throw new AppError(
+          "DeepWiki 生成不存在或状态已变化",
+          409,
+          "DEEPWIKI_STATE_CHANGED",
+        );
+      }
+      const completed = mapDeepWikiGeneration(rows[0]);
+      await client.query("COMMIT");
+      return completed;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
     }
-    return mapDeepWikiGeneration(rows[0]);
   }
 
   async failDeepWikiGeneration(id: string, message: string): Promise<DeepWikiGenerationDto> {
@@ -2991,10 +3196,57 @@ export class PgWorkflowStore {
   }
 
   async getLatestDeepWikiGeneration(projectId: string): Promise<DeepWikiGenerationDto | null> {
+    // A hard-killed worker cannot run its catch/finally path. Startup recovery
+    // intentionally leaves fresh rows alone because another API instance may
+    // still own them. Reconcile the same conservative stale window while the
+    // UI polls so an orphan created shortly before restart cannot remain in an
+    // active state forever. This update is idempotent and its status/age
+    // predicate cannot overwrite a healthy completion.
+    await this.pool.query(
+      `UPDATE deepwiki_generations
+       SET status = 'failed', model = NULL, manifest_hash = NULL,
+           content = NULL, citations = '[]'::jsonb,
+           input_tokens = NULL, output_tokens = NULL,
+           error_message = $1, generated_at = now(), stale_at = NULL,
+           updated_at = now()
+       WHERE project_id = $2
+         AND status IN ('queued', 'scanning', 'generating', 'validating')
+         AND updated_at < now() - make_interval(secs => $3::double precision)`,
+      [DEEPWIKI_STALE_JOB_MESSAGE, projectId, DEEPWIKI_STALE_JOB_TIMEOUT_SECONDS],
+    );
     const { rows } = await this.pool.query(
       `SELECT * FROM deepwiki_generations
        WHERE project_id = $1
        ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [projectId],
+    );
+    return rows[0] ? mapDeepWikiGeneration(rows[0]) : null;
+  }
+
+  async getLatestPublishedDeepWikiGeneration(
+    projectId: string,
+  ): Promise<DeepWikiGenerationDto | null> {
+    // A completion that discovers a superseded revision writes generated_at
+    // and stale_at in one statement, so those timestamps are equal. A result
+    // invalidated by a later transaction has distinct timestamps. Do not rely
+    // on ordering: PostgreSQL now() is the transaction start time, so a later
+    // lock holder can legitimately write an earlier timestamp.
+    const { rows } = await this.pool.query(
+      `SELECT dg.* FROM deepwiki_generations dg
+       JOIN projects p ON p.id = dg.project_id
+       WHERE dg.project_id = $1
+         AND (
+           dg.status = 'ready'
+           OR (
+             dg.status = 'stale'
+             AND dg.generated_at IS NOT NULL
+             AND dg.stale_at IS DISTINCT FROM dg.generated_at
+           )
+         )
+       ORDER BY (dg.status = 'ready' AND dg.revision = p.active_revision) DESC,
+                dg.stale_at DESC NULLS LAST,
+                dg.generated_at DESC, dg.created_at DESC, dg.id DESC
        LIMIT 1`,
       [projectId],
     );
@@ -5053,6 +5305,27 @@ export class PgWorkflowStore {
     return rows[0].source_kind === "remote_git" ? "remote-git" : "legacy-local";
   }
 
+  async projectSourceKindForAgentSession(
+    sessionId: string,
+  ): Promise<RuntimeProject["sourceKind"]> {
+    const { rows } = await this.pool.query(
+      `SELECT s.id,
+              CASE
+                WHEN COUNT(p.id) > 0 AND BOOL_AND(p.source_kind = 'remote_git')
+                  THEN 'remote_git'
+                ELSE 'legacy_local'
+              END AS source_kind
+       FROM agent_sessions s
+       LEFT JOIN agent_session_repositories sr ON sr.session_id = s.id
+       LEFT JOIN projects p ON p.id = sr.project_id
+       WHERE s.id = $1
+       GROUP BY s.id`,
+      [sessionId],
+    );
+    if (!rows[0]) throw notFound("Agent Session");
+    return rows[0].source_kind === "remote_git" ? "remote-git" : "legacy-local";
+  }
+
   private async resetDownstreamPhases(
     client: pg.PoolClient,
     runId: string,
@@ -5284,6 +5557,30 @@ async function readAgentSessionSummary(
     createdAt: iso(session.created_at),
     updatedAt: iso(session.updated_at),
   });
+}
+
+function assertAgentSessionCreationReplay(
+  session: AgentSessionDto,
+  expected: {
+    title: string;
+    providerId: AskProviderId;
+    primaryProjectId?: string;
+  },
+): void {
+  const primaryProjectId = session.repositories.find(
+    ({ accessMode }) => accessMode === "write",
+  )?.projectId;
+  if (
+    session.title !== expected.title
+    || session.currentProviderId !== expected.providerId
+    || primaryProjectId !== expected.primaryProjectId
+  ) {
+    throw new AppError(
+      "clientRequestId 已用于另一项 Agent Session 创建请求",
+      409,
+      "AGENT_SESSION_IDEMPOTENCY_CONFLICT",
+    );
+  }
 }
 
 function mapAgentSessionRepository(row: any): AgentSessionRepositoryDto {

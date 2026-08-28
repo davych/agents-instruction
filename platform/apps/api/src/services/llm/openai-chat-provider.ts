@@ -71,15 +71,16 @@ export class OpenAiChatProvider implements AskLlmProvider {
       max_tokens: request.maxOutputTokens,
       stream: false,
     };
+    if (request.temperature !== undefined) body.temperature = request.temperature;
     // LM Studio's MLX runtime can let unbounded GPT-OSS reasoning escape a
     // constrained JSON answer even when response_format is valid. Default
     // short machine contracts to low, while callers may explicitly give a
     // real task contract a bounded medium budget. Limit the compatibility hint
     // to the known model family so unrelated endpoints never receive it.
     if (
-      request.jsonSchema
-      && this.id === "lmstudio"
+      this.id === "lmstudio"
       && this.options.model.toLowerCase().includes("gpt-oss")
+      && (request.jsonSchema !== undefined || request.reasoningEffort !== undefined)
     ) {
       body.reasoning_effort = request.reasoningEffort ?? "low";
     }
@@ -114,7 +115,7 @@ export class OpenAiChatProvider implements AskLlmProvider {
       url: providerEndpoint(this.options.baseUrl, "chat/completions"),
       body,
       headers: bearerHeaders(this.options.apiKey),
-      timeoutMs: this.options.timeoutMs,
+      timeoutMs: request.timeoutMs ?? this.options.timeoutMs,
       maxResponseBytes: this.options.maxResponseBytes,
       signal,
       fetchImpl: this.options.fetchImpl,

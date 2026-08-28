@@ -607,7 +607,12 @@ export const api = {
   },
 
   async createAgentSession(
-    input: { title?: string; providerId?: AskProviderId; primaryProjectId?: string } = {},
+    input: {
+      clientRequestId?: string;
+      title?: string;
+      providerId?: AskProviderId;
+      primaryProjectId?: string;
+    } = {},
     options: { signal?: AbortSignal } = {},
   ): Promise<AgentSession> {
     const response = await request<unknown>("/api/agent-sessions", {
@@ -627,6 +632,17 @@ export const api = {
       { signal: options.signal },
     );
     return mergeAgentSessionDetail(response);
+  },
+
+  async archiveAgentSession(
+    sessionId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<AgentSession> {
+    const response = await request<unknown>(
+      `/api/agent-sessions/${encodeURIComponent(sessionId)}`,
+      { method: "DELETE", signal: options.signal },
+    );
+    return parseEntityResponse(response, "session", "Agent 会话归档响应", isAgentSession);
   },
 
   async sendAgentMessage(
@@ -709,6 +725,24 @@ export const api = {
     if (response.generation === null) return null;
     if (!isDeepWikiGeneration(response.generation)) {
       throw new ApiError("DeepWiki 响应无效。", 502, "INVALID_API_RESPONSE");
+    }
+    return response.generation;
+  },
+
+  async getLatestPublishedDeepWiki(
+    projectId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<DeepWikiGeneration | null> {
+    const response = await request<unknown>(
+      `/api/projects/${encodeURIComponent(projectId)}/deepwiki/generations/published`,
+      { signal: options.signal },
+    );
+    if (!isRecord(response) || !("generation" in response)) {
+      throw new ApiError("DeepWiki 已发布版本响应无效。", 502, "INVALID_API_RESPONSE");
+    }
+    if (response.generation === null) return null;
+    if (!isDeepWikiGeneration(response.generation)) {
+      throw new ApiError("DeepWiki 已发布版本响应无效。", 502, "INVALID_API_RESPONSE");
     }
     return response.generation;
   },

@@ -393,6 +393,7 @@ export const updateProjectAgentSettingsSchema = z.object({
 export type UpdateProjectAgentSettingsInput = z.infer<typeof updateProjectAgentSettingsSchema>;
 
 export const createAgentSessionSchema = z.object({
+  clientRequestId: z.string().uuid().optional(),
   title: z.string().trim().min(1).max(200)
     .regex(/^[^\u0000-\u001f\u007f]+$/u)
     .optional(),

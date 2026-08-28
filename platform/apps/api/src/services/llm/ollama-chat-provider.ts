@@ -79,7 +79,10 @@ export class OllamaChatProvider implements AskLlmProvider {
         })),
       ],
       stream: false,
-      options: { num_predict: request.maxOutputTokens },
+      options: {
+        num_predict: request.maxOutputTokens,
+        ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
+      },
     };
     if (request.jsonSchema) body.format = request.jsonSchema;
     // Ollama documents native `tools`, but not OpenAI's `tool_choice` field.
@@ -100,7 +103,7 @@ export class OllamaChatProvider implements AskLlmProvider {
       url: providerEndpoint(this.options.baseUrl, "api/chat"),
       body,
       headers: bearerHeaders(this.options.apiKey),
-      timeoutMs: this.options.timeoutMs,
+      timeoutMs: request.timeoutMs ?? this.options.timeoutMs,
       maxResponseBytes: this.options.maxResponseBytes,
       signal,
       fetchImpl: this.options.fetchImpl,

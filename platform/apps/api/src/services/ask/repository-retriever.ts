@@ -233,9 +233,13 @@ export class RepositoryRetriever {
       }
       assertExpectedRevision(input.expectedRevision, initialRevision.revision);
 
-      const evidenceFiles = input.knowledge
+      const verifiedEvidenceFiles = input.knowledge
         ? knowledgeBoundFiles(scan.files, input.knowledge.files)
         : scan.files;
+      const sourcePathFilter = input.sourcePathFilter;
+      const evidenceFiles = sourcePathFilter
+        ? verifiedEvidenceFiles.filter((file) => sourcePathFilter(file.relativePath))
+        : verifiedEvidenceFiles;
       const sources = buildSources(
         evidenceFiles,
         input.question,

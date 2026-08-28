@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -19,6 +19,7 @@ import {
   LoaderCircle,
   Eye,
   EyeOff,
+  Menu,
   MessageSquarePlus,
   PackageCheck,
   Play,
@@ -27,6 +28,7 @@ import {
   ShieldAlert,
   Sparkles,
   TestTube2,
+  Trash2,
   Wrench,
 } from "lucide-react";
 
@@ -80,10 +82,40 @@ const PROVIDER_NAMES: Record<AskProviderId, string> = {
   custom: "Custom",
 };
 
+const DEEP_WIKI_ACTIVE_STATUSES: DeepWikiGeneration["status"][] = [
+  "queued",
+  "scanning",
+  "generating",
+  "validating",
+];
+
+const DEEP_WIKI_STATUS_LABELS: Record<DeepWikiGeneration["status"], string> = {
+  queued: "等待服务端开始",
+  scanning: "正在扫描仓库",
+  generating: "正在生成项目知识",
+  validating: "正在校验生成结果",
+  ready: "已生成",
+  failed: "生成失败",
+  stale: "已过期",
+};
+
+function deepWikiGenerationActive(generation?: DeepWikiGeneration | null): boolean {
+  return Boolean(generation && DEEP_WIKI_ACTIVE_STATUSES.includes(generation.status));
+}
+
+function deepWikiGenerationPublished(generation?: DeepWikiGeneration | null): boolean {
+  return Boolean(
+    generation
+    && generation.status === "ready"
+    && generation.content,
+  );
+}
+
 export function AgentWorkspacePage({
   projectId,
   sessionId,
   onSessionChange,
+  onSessionReplace,
   onBack,
   onOpenRun,
   onOpenProviderSettings,
@@ -91,6 +123,7 @@ export function AgentWorkspacePage({
   projectId: string;
   sessionId?: string;
   onSessionChange: (sessionId: string) => void;
+  onSessionReplace: (sessionId?: string) => void;
   onBack: () => void;
   onOpenRun: (runId: string) => void;
   onOpenProviderSettings: () => void;
@@ -101,9 +134,33 @@ export function AgentWorkspacePage({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sendError, setSendError] = useState<string>();
   const [inlineReviewBusy, setInlineReviewBusy] = useState(false);
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+  const [archiveCandidate, setArchiveCandidate] = useState<AgentSession>();
+  const [archiveError, setArchiveError] = useState<string>();
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const conversationEndRef = useRef<HTMLDivElement>(null);
   const creationRequestedRef = useRef(false);
+  const createInFlightRef = useRef<string>();
+  const createSessionIntentRef = useRef<{
+    clientRequestId: string;
+    navigation: "push" | "replace";
+    routeProjectId: string;
+    routeSessionId?: string;
+    providerId?: AskProviderId;
+  }>();
+  const archiveInFlightRef = useRef<string>();
+  const mountedRef = useRef(true);
+  const routeProjectIdRef = useRef(projectId);
+  const routeSessionIdRef = useRef(sessionId);
+  routeProjectIdRef.current = projectId;
+  routeSessionIdRef.current = sessionId;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const projectQuery = useQuery({
     queryKey: ["project", projectId],
@@ -117,6 +174,9 @@ export function AgentWorkspacePage({
     queryKey: ["agent-sessions", projectId],
     queryFn: ({ signal }) => api.listAgentSessions(projectId, { signal }),
     staleTime: 3_000,
+    refetchInterval: (query) => query.state.data?.some(({ turnState }) => turnState !== "idle")
+      ? 1_500
+      : false,
   });
   const sessionQuery = useQuery({
     queryKey: ["agent-session", sessionId],
@@ -133,6 +193,10 @@ export function AgentWorkspacePage({
 
   const project = projectQuery.data?.project;
   const session = sessionQuery.data;
+  const activeSessions = useMemo(
+    () => (sessionsQuery.data ?? []).filter(({ status }) => status === "active"),
+    [sessionsQuery.data],
+  );
   const configuredProviders = (providersQuery.data ?? []).filter(providerEnabled);
   const selectedProviderId = providerId ?? session?.currentProviderId ?? configuredProviders[0]?.id;
   const providerSelection = providerSelectionState(selectedProviderId, providersQuery.data ?? []);
@@ -141,29 +205,104 @@ export function AgentWorkspacePage({
     ?? session?.repositories.find(({ accessMode }) => accessMode === "write");
 
   const createSessionMutation = useMutation({
-    mutationFn: () => api.createAgentSession({
-      primaryProjectId: projectId,
-      ...(selectedProviderId ? { providerId: selectedProviderId } : {}),
+    mutationFn: (request: {
+      clientRequestId: string;
+      navigation: "push" | "replace";
+      routeProjectId: string;
+      routeSessionId?: string;
+      providerId?: AskProviderId;
+    }) => api.createAgentSession({
+      clientRequestId: request.clientRequestId,
+      primaryProjectId: request.routeProjectId,
+      ...(request.providerId ? { providerId: request.providerId } : {}),
     }),
-    onSuccess: (created) => {
+    onSuccess: (created, request) => {
+      if (createSessionIntentRef.current?.clientRequestId === request.clientRequestId) {
+        createSessionIntentRef.current = undefined;
+      }
+      if (routeProjectIdRef.current === request.routeProjectId) creationRequestedRef.current = false;
       queryClient.setQueryData(["agent-session", created.id], created);
-      void queryClient.invalidateQueries({ queryKey: ["agent-sessions", projectId] });
-      onSessionChange(created.id);
+      queryClient.setQueryData<AgentSession[]>(["agent-sessions", request.routeProjectId], (current = []) => (
+        [created, ...current.filter(({ id }) => id !== created.id)]
+      ));
+      void queryClient.invalidateQueries({ queryKey: ["agent-sessions", request.routeProjectId] });
+      if (
+        !mountedRef.current
+        || routeProjectIdRef.current !== request.routeProjectId
+        || routeSessionIdRef.current !== request.routeSessionId
+      ) return;
+      setSessionMenuOpen(false);
+      if (request.navigation === "replace") onSessionReplace(created.id);
+      else onSessionChange(created.id);
+    },
+    onSettled: (_data, _error, request) => {
+      if (createInFlightRef.current === request.clientRequestId) createInFlightRef.current = undefined;
     },
   });
 
+  const requestCreateSession = useCallback((navigation: "push" | "replace") => {
+    if (createInFlightRef.current) return;
+    const routeProjectId = routeProjectIdRef.current;
+    const routeSessionId = routeSessionIdRef.current;
+    let intent = createSessionIntentRef.current;
+    if (
+      !intent
+      || intent.navigation !== navigation
+      || intent.routeProjectId !== routeProjectId
+      || intent.routeSessionId !== routeSessionId
+      || intent.providerId !== selectedProviderId
+    ) {
+      intent = {
+        clientRequestId: crypto.randomUUID(),
+        navigation,
+        routeProjectId,
+        routeSessionId,
+        providerId: selectedProviderId,
+      };
+      createSessionIntentRef.current = intent;
+    }
+    createInFlightRef.current = intent.clientRequestId;
+    createSessionMutation.mutate(intent);
+  }, [createSessionMutation.mutate, selectedProviderId]);
+
   useEffect(() => {
-    if (sessionId || !sessionsQuery.isSuccess) return;
-    const existing = sessionsQuery.data.find(({ status }) => status === "active");
+    creationRequestedRef.current = false;
+    createInFlightRef.current = undefined;
+    createSessionIntentRef.current = undefined;
+    archiveInFlightRef.current = undefined;
+  }, [projectId]);
+
+  useEffect(() => {
+    const intent = createSessionIntentRef.current;
+    if (
+      intent?.routeProjectId === projectId
+      && activeSessions.some(({ id }) => id === intent.clientRequestId)
+    ) {
+      createSessionIntentRef.current = undefined;
+      creationRequestedRef.current = false;
+    }
+  }, [activeSessions, projectId]);
+
+  useEffect(() => {
+    if (!session) return;
+    queryClient.setQueryData<AgentSession[]>(["agent-sessions", projectId], (current) => (
+      synchronizeAgentSessionSummary(current, session)
+    ));
+  }, [projectId, queryClient, session]);
+
+  useEffect(() => {
+    if (!sessionsQuery.isSuccess) return;
+    if (sessionId && activeSessions.some(({ id }) => id === sessionId)) return;
+    const existing = activeSessions[0];
     if (existing) {
-      onSessionChange(existing.id);
+      onSessionReplace(existing.id);
       return;
     }
     const ready = project?.repository?.activeSnapshot?.revision;
-    if (!ready || creationRequestedRef.current || createSessionMutation.isPending) return;
+    if (!ready || creationRequestedRef.current || Boolean(createInFlightRef.current) || createSessionMutation.isPending) return;
     creationRequestedRef.current = true;
-    createSessionMutation.mutate();
-  }, [createSessionMutation, onSessionChange, project?.repository?.activeSnapshot?.revision, sessionId, sessionsQuery.data, sessionsQuery.isSuccess]);
+    requestCreateSession("replace");
+  }, [activeSessions, createSessionMutation.isPending, onSessionReplace, project?.repository?.activeSnapshot?.revision, requestCreateSession, sessionId, sessionsQuery.isSuccess]);
 
   useEffect(() => {
     if (!session || providerId) return;
@@ -176,7 +315,7 @@ export function AgentWorkspacePage({
 
   const sendMutation = useMutation({
     mutationFn: async (message: string) => {
-      if (!session) throw new Error("Agent Session 仍在准备中。");
+      if (!session || session.status !== "active") throw new Error("Agent Session 已归档或仍在准备中。");
       return api.sendAgentMessage(session.id, {
         clientMessageId: crypto.randomUUID(),
         expectedSequence: session.lastMessageSequence,
@@ -197,10 +336,73 @@ export function AgentWorkspacePage({
     },
   });
 
+  const archiveMutation = useMutation({
+    mutationFn: ({ target }: {
+      operationId: string;
+      target: AgentSession;
+      activeSessionIds: string[];
+      routeProjectId: string;
+      routeSessionId?: string;
+    }) => (
+      api.archiveAgentSession(target.id)
+    ),
+    onSuccess: (archived, { target, activeSessionIds, routeProjectId, routeSessionId }) => {
+      queryClient.setQueryData<AgentSession[]>(["agent-sessions", routeProjectId], (current = []) => (
+        current.filter(({ id }) => id !== archived.id)
+      ));
+      queryClient.removeQueries({ queryKey: ["agent-session", archived.id], exact: true });
+      void queryClient.invalidateQueries({ queryKey: ["agent-sessions", routeProjectId] });
+      if (!mountedRef.current || routeProjectIdRef.current !== routeProjectId) return;
+      setArchiveCandidate(undefined);
+      setArchiveError(undefined);
+      if (target.id !== routeSessionId || routeSessionIdRef.current !== routeSessionId) return;
+
+      const replacementId = nextActiveSessionId(activeSessionIds, target.id);
+      if (replacementId) {
+        onSessionReplace(replacementId);
+        return;
+      }
+      creationRequestedRef.current = true;
+      requestCreateSession("replace");
+    },
+    onError: (error, { routeProjectId }) => {
+      if (!mountedRef.current || routeProjectIdRef.current !== routeProjectId) return;
+      setArchiveError(error instanceof Error ? error.message : "Agent Session 没有删除，请重试。");
+      void sessionsQuery.refetch();
+      if (routeSessionIdRef.current) void sessionQuery.refetch();
+    },
+    onSettled: (_data, _error, request) => {
+      if (archiveInFlightRef.current === request.operationId) archiveInFlightRef.current = undefined;
+    },
+  });
+
+  const currentSessionBusy = Boolean(
+    session && (
+      session.turnState !== "idle"
+      || sendMutation.isPending
+      || inlineReviewBusy
+    )
+  );
+  const archiveBlocked = (target: AgentSession) => (
+    target.status !== "active"
+    || target.turnState !== "idle"
+    || Boolean(archiveInFlightRef.current)
+    || archiveMutation.isPending
+    || Boolean(createInFlightRef.current)
+    || createSessionMutation.isPending
+    || (target.id === sessionId && (sendMutation.isPending || inlineReviewBusy))
+  );
+  const requestArchive = (target: AgentSession) => {
+    if (archiveBlocked(target)) return;
+    setSessionMenuOpen(false);
+    setArchiveError(undefined);
+    setArchiveCandidate(target);
+  };
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const message = content.trim();
-    if (!message || sendMutation.isPending || inlineReviewBusy) return;
+    if (!message || session?.status !== "active" || sendMutation.isPending || inlineReviewBusy) return;
     setSendError(undefined);
     sendMutation.mutate(message);
   };
@@ -219,7 +421,7 @@ export function AgentWorkspacePage({
   );
 
   const continueApprovedRun = async (approvedPhaseId: string) => {
-    if (!session || !runId) throw new Error("当前会话或 Run 已变化，请刷新后继续。");
+    if (!session || session.status !== "active" || !runId) throw new Error("当前会话或 Run 已变化，请刷新后继续。");
     const latestSession = await api.getAgentSession(session.id);
     queryClient.setQueryData(["agent-session", latestSession.id], latestSession);
     if (latestSession.turnState !== "idle") {
@@ -244,12 +446,28 @@ export function AgentWorkspacePage({
   if (projectQuery.isError) {
     return <ErrorState error={projectQuery.error} retry={() => void projectQuery.refetch()} />;
   }
-  if (sessionQuery.isError) {
+  if (sessionsQuery.isError) {
+    return <ErrorState error={sessionsQuery.error} retry={() => void sessionsQuery.refetch()} />;
+  }
+  if (sessionQuery.isError && activeSessions.some(({ id }) => id === sessionId)) {
     return <ErrorState error={sessionQuery.error} retry={() => void sessionQuery.refetch()} />;
   }
 
   const repositoryReady = Boolean(project?.repository?.activeSnapshot?.revision);
-  const waitingForSession = !session;
+  const sessionActive = session?.status === "active"
+    && activeSessions.some(({ id }) => id === session.id);
+  const waitingForSession = !sessionActive;
+  const createSessionFailureIsCurrent = createSessionMutation.isError
+    && createSessionMutation.variables?.routeProjectId === projectId
+    && createSessionMutation.variables.routeSessionId === sessionId;
+  const failedCreateNavigation = createSessionFailureIsCurrent
+    ? createSessionMutation.variables.navigation
+    : undefined;
+  const archiveTarget = archiveCandidate
+    ? archiveCandidate.id === session?.id
+      ? session
+      : activeSessions.find(({ id }) => id === archiveCandidate.id) ?? archiveCandidate
+    : undefined;
   return (
     <div className="-mx-4 -my-8 min-h-[calc(100vh-4rem)] sm:-mx-6 lg:-mx-8 lg:-my-10">
       <div className="grid min-h-[calc(100vh-4rem)] bg-white/80 xl:grid-cols-[260px_minmax(0,1fr)_320px]">
@@ -279,29 +497,46 @@ export function AgentWorkspacePage({
                 className="h-7 w-7"
                 aria-label="新建 Agent Session"
                 disabled={!repositoryReady || createSessionMutation.isPending}
-                onClick={() => createSessionMutation.mutate()}
+                onClick={() => requestCreateSession("push")}
               >
                 <MessageSquarePlus className="h-4 w-4" aria-hidden />
               </Button>
             </div>
             <div className="space-y-1">
-              {(sessionsQuery.data ?? []).map((item) => (
-                <button
+              {activeSessions.map((item) => (
+                <div
                   key={item.id}
-                  type="button"
-                  onClick={() => onSessionChange(item.id)}
                   className={cn(
-                    "w-full rounded-xl px-3 py-2.5 text-left transition",
+                    "group flex items-center rounded-xl transition",
                     item.id === sessionId ? "bg-white shadow-sm ring-1 ring-slate-200" : "hover:bg-white/80",
                   )}
                 >
-                  <div className="truncate text-sm font-medium text-slate-800">{item.title}</div>
-                  <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-400">
-                    <span>{PROVIDER_NAMES[item.currentProviderId]}</span>
-                    <span>·</span>
-                    <span>{item.lastMessageSequence} 条消息</span>
-                  </div>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => onSessionChange(item.id)}
+                    className="min-w-0 flex-1 px-3 py-2.5 text-left"
+                  >
+                    <div className="truncate text-sm font-medium text-slate-800">{item.title}</div>
+                    <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-400">
+                      <span>{PROVIDER_NAMES[item.currentProviderId]}</span>
+                      <span>·</span>
+                      <span>{item.lastMessageSequence} 条消息</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`删除 Agent Session：${item.title}`}
+                    title={item.turnState === "idle" ? "删除 Agent Session" : "会话忙碌时不能删除"}
+                    disabled={archiveBlocked(item)}
+                    onClick={() => requestArchive(item)}
+                    className={cn(
+                      "mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-rose-50 hover:text-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:cursor-not-allowed disabled:opacity-30",
+                      item.id === sessionId ? "opacity-100" : "opacity-70 hover:opacity-100 focus-visible:opacity-100",
+                    )}
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden />
+                  </button>
+                </div>
               ))}
             </div>
           </div>
@@ -317,7 +552,7 @@ export function AgentWorkspacePage({
         </aside>
 
         <section className="flex min-w-0 flex-col">
-          <header className="flex min-h-16 items-center justify-between gap-4 border-b border-slate-200 bg-white/90 px-4 py-3 sm:px-6">
+          <header className="flex min-h-16 items-center justify-between gap-2 border-b border-slate-200 bg-white/90 px-4 py-3 sm:gap-4 sm:px-6">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <button type="button" className="xl:hidden" onClick={onBack} aria-label="返回仓库列表">
@@ -328,18 +563,42 @@ export function AgentWorkspacePage({
                 </h1>
                 {session?.turnState === "running" ? <Badge variant="info">运行中</Badge> : null}
                 {session?.turnState === "waiting_human" ? <Badge variant="warning">等待决定</Badge> : null}
+                {session?.status === "archived" ? <Badge variant="muted">已归档</Badge> : null}
               </div>
-              <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
+              <div className="mt-1 flex items-center gap-2 overflow-hidden text-xs text-slate-500">
                 <span className="font-mono text-teal-700">@{repo?.repoAlias ?? "repo"}</span>
                 <span>·</span>
                 <span>{repo?.accessMode === "read" ? "只读" : "可写主仓库"}</span>
-                <span>·</span>
-                <span className="font-mono">revision {repo?.sourceRevision.slice(0, 10) ?? "准备中"}</span>
+                <span className="hidden sm:inline">·</span>
+                <span className="hidden font-mono sm:inline">revision {repo?.sourceRevision.slice(0, 10) ?? "准备中"}</span>
               </div>
             </div>
-            <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
-              <Settings2 className="h-4 w-4" aria-hidden /> 设置
-            </Button>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="xl:hidden"
+                aria-label="管理 Agent Sessions"
+                onClick={() => setSessionMenuOpen(true)}
+              >
+                <Menu className="h-4 w-4" aria-hidden />
+                <span className="hidden md:inline">Sessions</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label="删除当前 Agent Session"
+                title={currentSessionBusy ? "会话忙碌时不能删除" : "删除当前 Agent Session"}
+                disabled={!sessionActive || currentSessionBusy || archiveMutation.isPending || createSessionMutation.isPending}
+                onClick={() => session && requestArchive(session)}
+              >
+                <Trash2 className="h-4 w-4" aria-hidden />
+                <span className="hidden sm:inline">删除</span>
+              </Button>
+              <Button variant="outline" size="sm" aria-label="仓库能力设置" onClick={() => setSettingsOpen(true)}>
+                <Settings2 className="h-4 w-4" aria-hidden /> <span className="hidden sm:inline">设置</span>
+              </Button>
+            </div>
           </header>
 
           <div className="flex-1 overflow-y-auto bg-slate-50/40 px-4 py-6 sm:px-6">
@@ -351,12 +610,34 @@ export function AgentWorkspacePage({
                   description={project?.repository?.operation?.message ?? "源码快照准备好后即可发送消息；DeepWiki 不会自动生成。"}
                 />
               ) : null}
-              {waitingForSession && repositoryReady ? (
+              {waitingForSession && repositoryReady && !createSessionFailureIsCurrent ? (
                 <StatusNotice
                   icon={<LoaderCircle className="h-5 w-5 animate-spin" />}
                   title="正在创建长期会话"
                   description="消息、Provider、工具调用、Sandbox 和 SDLC 产物都会保存在服务端。"
                 />
+              ) : null}
+              {waitingForSession && repositoryReady && createSessionFailureIsCurrent ? (
+                <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-rose-800">
+                  <div className="text-sm font-semibold">新会话创建失败</div>
+                  <p className="mt-1 text-xs leading-5">
+                    {createSessionMutation.error instanceof Error ? createSessionMutation.error.message : "请稍后重试。"}
+                  </p>
+                  <Button className="mt-3" size="sm" variant="outline" onClick={() => requestCreateSession("replace")}>
+                    重试新建 Session
+                  </Button>
+                </div>
+              ) : null}
+              {sessionActive && createSessionFailureIsCurrent ? (
+                <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-rose-800">
+                  <div className="text-sm font-semibold">新会话创建失败</div>
+                  <p className="mt-1 text-xs leading-5">
+                    {createSessionMutation.error instanceof Error ? createSessionMutation.error.message : "请稍后重试。"}
+                  </p>
+                  <Button className="mt-3" size="sm" variant="outline" onClick={() => requestCreateSession(failedCreateNavigation ?? "push")}>
+                    重试新建 Session
+                  </Button>
+                </div>
               ) : null}
               {session && (session.messages?.length ?? 0) === 0 ? (
                 <WelcomeMessage alias={repo?.repoAlias ?? "repo"} />
@@ -391,13 +672,13 @@ export function AgentWorkspacePage({
               {session ? (
                 <ConversationActivity key={session.id} sessionId={session.id} events={session.events ?? []} />
               ) : null}
-              {runId && awaitingReviewPhase ? (
+              {sessionActive && runId && awaitingReviewPhase ? (
                 <InlinePhaseReviewCard
                   key={`${awaitingReviewPhase.id ?? awaitingReviewPhase.phaseId}:${artifactHeadsSignature(awaitingReviewPhase.artifacts)}`}
                   runId={runId}
                   phase={awaitingReviewPhase}
                   canContinue={Boolean(selectedProvider && providerEnabled(selectedProvider) && selectedProvider.capabilities.toolCalling)}
-                  conversationBusy={session?.turnState !== "idle" || sendMutation.isPending}
+                  conversationBusy={!sessionActive || session?.turnState !== "idle" || sendMutation.isPending}
                   onBusyChange={setInlineReviewBusy}
                   onContinue={() => continueApprovedRun(awaitingReviewPhase.phaseId)}
                   onOpenRun={() => onOpenRun(runId)}
@@ -436,7 +717,7 @@ export function AgentWorkspacePage({
                   className="min-h-20 resize-none border-0 px-3 py-2 shadow-none focus:ring-0"
                   placeholder={`告诉 Agent 要做什么，例如：@${repo?.repoAlias ?? "repo"} 修好登录问题，involve Tester 并跑测试`}
                   value={content}
-                  disabled={!session || !repositoryReady || sendMutation.isPending || inlineReviewBusy}
+                  disabled={!sessionActive || !repositoryReady || sendMutation.isPending || inlineReviewBusy}
                   onChange={(event) => setContent(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey) {
@@ -489,7 +770,7 @@ export function AgentWorkspacePage({
                     size="sm"
                     variant="primary"
                     loading={sendMutation.isPending}
-                    disabled={!content.trim() || !session || !selectedProvider || !providerEnabled(selectedProvider) || !repositoryReady || inlineReviewBusy}
+                    disabled={!content.trim() || !sessionActive || !selectedProvider || !providerEnabled(selectedProvider) || !repositoryReady || inlineReviewBusy}
                   >
                     <Send className="h-4 w-4" aria-hidden /> 发送
                   </Button>
@@ -519,8 +800,161 @@ export function AgentWorkspacePage({
           onOpenProviderSettings={onOpenProviderSettings}
         />
       ) : null}
+
+      <Dialog
+        open={sessionMenuOpen}
+        onOpenChange={setSessionMenuOpen}
+        title="Agent Sessions"
+        description="新建、切换或归档这个仓库的长期会话。"
+        className="max-w-md"
+      >
+        <div className="space-y-3 overflow-y-auto p-4 sm:p-6">
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full justify-start"
+            loading={createSessionMutation.isPending}
+            disabled={!repositoryReady}
+            onClick={() => requestCreateSession("push")}
+          >
+            <MessageSquarePlus className="h-4 w-4" aria-hidden /> 新建 Agent Session
+          </Button>
+          {createSessionFailureIsCurrent ? (
+            <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700">
+              {createSessionMutation.error instanceof Error ? createSessionMutation.error.message : "新会话创建失败，请重试。"}
+            </div>
+          ) : null}
+          <div className="space-y-1" aria-label="Agent Session 列表">
+            {activeSessions.map((item) => (
+              <div
+                key={item.id}
+                className={cn(
+                  "flex items-center rounded-xl border px-1",
+                  item.id === sessionId ? "border-teal-200 bg-teal-50/70" : "border-transparent bg-slate-50",
+                )}
+              >
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 px-3 py-3 text-left"
+                  onClick={() => {
+                    setSessionMenuOpen(false);
+                    if (item.id !== sessionId) onSessionChange(item.id);
+                  }}
+                >
+                  <div className="truncate text-sm font-semibold text-slate-800">{item.title}</div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    {PROVIDER_NAMES[item.currentProviderId]} · {item.lastMessageSequence} 条消息
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-rose-50 hover:text-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:cursor-not-allowed disabled:opacity-30"
+                  aria-label={`删除 Agent Session：${item.title}`}
+                  title={item.turnState === "idle" ? "删除 Agent Session" : "会话忙碌时不能删除"}
+                  disabled={archiveBlocked(item)}
+                  onClick={() => requestArchive(item)}
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(archiveCandidate)}
+        onOpenChange={(open) => {
+          if (!open && !archiveMutation.isPending) {
+            setArchiveCandidate(undefined);
+            setArchiveError(undefined);
+          }
+        }}
+        title="删除 Agent Session？"
+        description="这会把会话归档并从当前仓库的 Session 列表中移除；关联消息、事件、Run 和审计记录仍保留。"
+        closeDisabled={archiveMutation.isPending}
+      >
+        <div className="space-y-4 p-6">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="truncate text-sm font-semibold text-slate-900">{archiveTarget?.title}</div>
+            <p className="mt-1 text-xs leading-5 text-slate-500">
+              {activeSessions.length === 1
+                ? "这是最后一个可用 Session。删除成功后会自动创建并打开一个新 Session。"
+                : archiveTarget?.id === sessionId
+                  ? "删除当前 Session 后会自动打开列表中的相邻 Session。"
+                  : "删除后会继续停留在当前 Session。"}
+            </p>
+          </div>
+          {archiveError ? (
+            <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+              {archiveError}
+            </div>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={archiveMutation.isPending}
+              onClick={() => {
+                setArchiveCandidate(undefined);
+                setArchiveError(undefined);
+              }}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              loading={archiveMutation.isPending}
+              disabled={!archiveTarget || (archiveTarget ? archiveBlocked(archiveTarget) : true)}
+              onClick={() => {
+                if (!archiveTarget || archiveInFlightRef.current || archiveBlocked(archiveTarget)) return;
+                const operationId = crypto.randomUUID();
+                archiveInFlightRef.current = operationId;
+                archiveMutation.mutate({
+                  operationId,
+                  target: archiveTarget,
+                  activeSessionIds: activeSessions.map(({ id }) => id),
+                  routeProjectId: routeProjectIdRef.current,
+                  routeSessionId: routeSessionIdRef.current,
+                });
+              }}
+            >
+              <Trash2 className="h-4 w-4" aria-hidden /> 确认删除
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
+}
+
+function nextActiveSessionId(activeSessionIds: string[], archivedSessionId: string): string | undefined {
+  const archivedIndex = activeSessionIds.indexOf(archivedSessionId);
+  const remainingSessionIds = activeSessionIds.filter((id) => id !== archivedSessionId);
+  if (archivedIndex < 0) return remainingSessionIds[0];
+  return remainingSessionIds[archivedIndex] ?? remainingSessionIds[archivedIndex - 1];
+}
+
+function synchronizeAgentSessionSummary(
+  current: AgentSession[] | undefined,
+  detail: AgentSession,
+): AgentSession[] | undefined {
+  if (!current) return current;
+  if (detail.status !== "active") return current.filter(({ id }) => id !== detail.id);
+  return current.map((item) => item.id === detail.id
+    ? {
+        ...item,
+        title: detail.title,
+        status: detail.status,
+        turnState: detail.turnState,
+        currentProviderId: detail.currentProviderId,
+        lastMessageSequence: detail.lastMessageSequence,
+        lastEventSequence: detail.lastEventSequence,
+        sandbox: detail.sandbox,
+        updatedAt: detail.updatedAt,
+      }
+    : item);
 }
 
 function WelcomeMessage({ alias }: { alias: string }) {
@@ -1061,6 +1495,14 @@ function RepositorySettingsDialog({
   const queryClient = useQueryClient();
   const [error, setError] = useState<string>();
   const [repoAliasDraft, setRepoAliasDraft] = useState("");
+  const deepWikiInFlightRef = useRef(false);
+  const deepWikiGenerationIntentRef = useRef<{
+    projectId: string;
+    clientRequestId: string;
+    baselineGenerationId?: string;
+    expectedRevision: string;
+    providerId: AskProviderId;
+  }>();
   const settingsQuery = useQuery({
     queryKey: ["agent-settings", project.id],
     queryFn: ({ signal }) => api.getProjectAgentSettings(project.id, { signal }),
@@ -1085,8 +1527,30 @@ function RepositorySettingsDialog({
     queryKey: ["deepwiki", project.id],
     queryFn: ({ signal }) => api.getLatestDeepWiki(project.id, { signal }),
     enabled: open && Boolean(project.repository?.activeSnapshot),
+    refetchInterval: (query) => deepWikiGenerationActive(query.state.data) ? 1_500 : false,
     retry: false,
   });
+  const publishedDeepWikiQuery = useQuery({
+    queryKey: ["deepwiki-published", project.id],
+    queryFn: ({ signal }) => api.getLatestPublishedDeepWiki(project.id, { signal }),
+    enabled: open && Boolean(project.repository?.activeSnapshot),
+    retry: false,
+  });
+
+  useEffect(() => {
+    const latest = deepWikiQuery.data;
+    if (!deepWikiGenerationPublished(latest)) return;
+    void queryClient.cancelQueries({ queryKey: ["deepwiki-published", project.id], exact: true });
+    queryClient.setQueryData(["deepwiki-published", project.id], latest);
+  }, [deepWikiQuery.data, project.id, queryClient]);
+
+  useEffect(() => {
+    const intent = deepWikiGenerationIntentRef.current;
+    const latest = deepWikiQuery.data;
+    if (!intent || !latest || latest.id === intent.baselineGenerationId) return;
+    deepWikiGenerationIntentRef.current = undefined;
+    setError(undefined);
+  }, [deepWikiQuery.data]);
 
   const updateMutation = useMutation({
     mutationFn: (patch: Parameters<typeof api.updateProjectAgentSettings>[1]) => (
@@ -1107,25 +1571,39 @@ function RepositorySettingsDialog({
     onError: (mutationError) => setError(mutationError instanceof Error ? mutationError.message : "MCP 激活失败"),
   });
   const deepWikiMutation = useMutation({
-    mutationFn: () => {
-      const revision = project.repository?.activeSnapshot?.revision;
-      if (!revision) throw new Error("仓库版本尚未固定。");
-      const targetProviderId = selectedProviderId ?? settingsQuery.data?.defaultProviderId;
-      const targetProvider = providersQuery.data?.find(({ id }) => id === targetProviderId);
-      if (!targetProvider || !providerEnabled(targetProvider)) {
-        throw new Error("所选 Provider 已停用或不可用，请先在模型设置中启用，或选择另一个 Provider。");
+    mutationFn: (intent: NonNullable<typeof deepWikiGenerationIntentRef.current>) => (
+      api.generateDeepWiki(intent.projectId, {
+        expectedRevision: intent.expectedRevision,
+        providerId: intent.providerId,
+        clientRequestId: intent.clientRequestId,
+      })
+    ),
+    onSuccess: (generation, intent) => {
+      if (deepWikiGenerationIntentRef.current?.clientRequestId === intent.clientRequestId) {
+        deepWikiGenerationIntentRef.current = undefined;
       }
-      return api.generateDeepWiki(project.id, {
-        expectedRevision: revision,
-        providerId: targetProvider.id,
-        clientRequestId: crypto.randomUUID(),
-      });
-    },
-    onSuccess: (generation) => {
-      queryClient.setQueryData(["deepwiki", project.id], generation);
+      queryClient.setQueryData(["deepwiki", generation.projectId], generation);
+      if (deepWikiGenerationPublished(generation)) {
+        void queryClient.cancelQueries({ queryKey: ["deepwiki-published", generation.projectId], exact: true });
+        queryClient.setQueryData(["deepwiki-published", generation.projectId], generation);
+      } else {
+        void queryClient.invalidateQueries({ queryKey: ["deepwiki-published", generation.projectId] });
+      }
       setError(undefined);
     },
-    onError: (mutationError) => setError(mutationError instanceof Error ? mutationError.message : "DeepWiki 生成失败"),
+    onError: (mutationError, intent) => {
+      const message = mutationError instanceof Error ? mutationError.message : "DeepWiki 生成失败";
+      setError(`${message}；正在核对服务端是否已接收这次生成请求。`);
+      void queryClient.invalidateQueries({
+        queryKey: ["deepwiki", intent.projectId],
+        exact: true,
+        refetchType: "none",
+      });
+      void deepWikiQuery.refetch();
+    },
+    onSettled: () => {
+      deepWikiInFlightRef.current = false;
+    },
   });
 
   const settings = settingsQuery.data;
@@ -1135,6 +1613,42 @@ function RepositorySettingsDialog({
   useEffect(() => {
     if (settings) setRepoAliasDraft(settings.repoAlias);
   }, [settings]);
+  const requestDeepWikiGeneration = () => {
+    if (deepWikiInFlightRef.current || deepWikiGenerationActive(deepWikiQuery.data)) return;
+    const expectedRevision = project.repository?.activeSnapshot?.revision;
+    if (!expectedRevision) {
+      setError("仓库版本尚未固定。");
+      return;
+    }
+    const targetProviderId = selectedProviderId ?? settingsQuery.data?.defaultProviderId;
+    const targetProvider = providersQuery.data?.find(({ id }) => id === targetProviderId);
+    if (!targetProvider || !providerEnabled(targetProvider)) {
+      setError("所选 Provider 已停用或不可用，请先在模型设置中启用，或选择另一个 Provider。");
+      return;
+    }
+    let intent = deepWikiGenerationIntentRef.current;
+    if (
+      !intent
+      || intent.projectId !== project.id
+      || intent.expectedRevision !== expectedRevision
+      || intent.providerId !== targetProvider.id
+    ) {
+      intent = {
+        projectId: project.id,
+        clientRequestId: crypto.randomUUID(),
+        baselineGenerationId: deepWikiQuery.data?.id,
+        expectedRevision,
+        providerId: targetProvider.id,
+      };
+      deepWikiGenerationIntentRef.current = intent;
+    }
+    if (deepWikiGenerationPublished(deepWikiQuery.data)) {
+      void queryClient.cancelQueries({ queryKey: ["deepwiki-published", project.id], exact: true });
+      queryClient.setQueryData(["deepwiki-published", project.id], deepWikiQuery.data);
+    }
+    deepWikiInFlightRef.current = true;
+    deepWikiMutation.mutate(intent);
+  };
   const save = (patch: Omit<Parameters<typeof api.updateProjectAgentSettings>[1], "expectedVersion">) => {
     if (!settings) return;
     updateMutation.mutate({ expectedVersion: settings.version, ...patch });
@@ -1258,12 +1772,17 @@ function RepositorySettingsDialog({
 
             <DeepWikiPanel
               generation={deepWikiQuery.data}
+              publishedGeneration={publishedDeepWikiQuery.data}
+              latestStatusLoading={deepWikiQuery.isLoading}
+              latestStatusError={deepWikiQuery.error instanceof Error ? deepWikiQuery.error.message : undefined}
+              publishedStatusLoading={publishedDeepWikiQuery.isLoading}
+              publishedStatusError={publishedDeepWikiQuery.error instanceof Error ? publishedDeepWikiQuery.error.message : undefined}
               revision={project.repository?.activeSnapshot?.revision}
               providerId={selectedProviderId ?? settings.defaultProviderId}
               providerAvailable={deepWikiProviderAvailable}
               providerStatusLoading={providersQuery.isLoading || providersQuery.isFetching}
               pending={deepWikiMutation.isPending}
-              onGenerate={() => deepWikiMutation.mutate()}
+              onGenerate={requestDeepWikiGeneration}
               onOpenProviderSettings={() => {
                 onOpenChange(false);
                 onOpenProviderSettings();
@@ -1322,6 +1841,11 @@ function McpToggle({
 
 function DeepWikiPanel({
   generation,
+  publishedGeneration,
+  latestStatusLoading,
+  latestStatusError,
+  publishedStatusLoading,
+  publishedStatusError,
   revision,
   providerId,
   providerAvailable,
@@ -1331,6 +1855,11 @@ function DeepWikiPanel({
   onOpenProviderSettings,
 }: {
   generation?: DeepWikiGeneration | null;
+  publishedGeneration?: DeepWikiGeneration | null;
+  latestStatusLoading: boolean;
+  latestStatusError?: string;
+  publishedStatusLoading: boolean;
+  publishedStatusError?: string;
   revision?: string;
   providerId: AskProviderId;
   providerAvailable: boolean;
@@ -1339,7 +1868,19 @@ function DeepWikiPanel({
   onGenerate: () => void;
   onOpenProviderSettings: () => void;
 }) {
-  const stale = generation?.status === "stale" || Boolean(generation && revision && generation.revision !== revision);
+  const active = deepWikiGenerationActive(generation);
+  const busy = pending || active;
+  const statusLabel = generation ? DEEP_WIKI_STATUS_LABELS[generation.status] : undefined;
+  const readableGeneration = generation?.content ? generation : publishedGeneration;
+  const showingPublishedFallback = Boolean(
+    readableGeneration && (!generation?.content || readableGeneration.id !== generation.id),
+  );
+  const showingPreviousVersion = showingPublishedFallback && Boolean(generation);
+  const latestStale = generation?.status === "stale"
+    || Boolean(generation && revision && generation.revision !== revision);
+  const readableStale = readableGeneration?.status === "stale"
+    || Boolean(readableGeneration && revision && readableGeneration.revision !== revision);
+  const stale = latestStale || (!generation && readableStale);
   return (
     <section className="border-t border-slate-100 pt-5">
       <div className="flex items-start justify-between gap-4">
@@ -1347,7 +1888,17 @@ function DeepWikiPanel({
           <div className="flex items-center gap-2">
             <DatabaseZap className="h-4 w-4 text-teal-600" />
             <h3 className="text-sm font-semibold text-slate-900">DeepWiki</h3>
-            {stale ? <Badge variant="warning">stale · 已过期</Badge> : generation?.status === "ready" ? <Badge variant="success">已生成</Badge> : null}
+            {active ? (
+              <Badge variant="info">{statusLabel}</Badge>
+            ) : generation?.status === "failed" ? (
+              <Badge variant="danger">生成失败</Badge>
+            ) : stale ? (
+              <Badge variant="warning">stale · 已过期</Badge>
+            ) : generation?.status === "ready" ? (
+              <Badge variant="success">已生成</Badge>
+            ) : readableGeneration ? (
+              <Badge variant="muted">已发布版本</Badge>
+            ) : null}
           </div>
           <p className="mt-1 text-xs leading-5 text-slate-500">
             当前只在这个设置弹窗通过 Project API 手动生成。使用 {PROVIDER_NAMES[providerId]}，固定版本 {revision?.slice(0, 10) ?? "尚未就绪"}；绑定仓库时不会自动花费模型额度，会话命令和 @repo 菜单暂未提供。
@@ -1357,10 +1908,23 @@ function DeepWikiPanel({
               所选 Provider 已停用或不可用。先启用它，或选择另一个已启用的 Provider，才能生成 DeepWiki。
             </p>
           ) : null}
+          {active ? (
+            <p className="mt-2 text-xs leading-5 text-sky-700" role="status">
+              {statusLabel}。任务由服务端继续处理，关闭这个设置弹窗不会中止生成。
+            </p>
+          ) : null}
+          {active && latestStale ? (
+            <p className="mt-2 text-xs leading-5 text-amber-700">
+              这项任务基于较早的仓库 revision；完成后请为当前固定版本重新生成。
+            </p>
+          ) : null}
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
-          <Button size="sm" variant="outline" loading={pending} disabled={!revision || providerStatusLoading || !providerAvailable} onClick={onGenerate}>
-            <Sparkles className="h-4 w-4" /> 生成 DeepWiki
+          <Button size="sm" variant="outline" loading={busy} disabled={!revision || providerStatusLoading || !providerAvailable} onClick={onGenerate}>
+            {!busy ? <Sparkles className="h-4 w-4" /> : null}
+            {active
+              ? statusLabel
+              : generation?.status === "failed" ? "重试生成" : stale ? "重新生成 DeepWiki" : "生成 DeepWiki"}
           </Button>
           {!providerStatusLoading && !providerAvailable ? (
             <Button type="button" size="sm" variant="ghost" onClick={onOpenProviderSettings}>
@@ -1369,10 +1933,47 @@ function DeepWikiPanel({
           ) : null}
         </div>
       </div>
-      {generation?.content ? (
+      {generation?.status === "failed" ? (
+        <div role="alert" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-800">
+          <div className="font-semibold">DeepWiki 生成失败</div>
+          <p className="mt-1 text-xs leading-5">{generation.errorMessage ?? "服务端没有提供失败详情，请重试生成。"}</p>
+        </div>
+      ) : null}
+      {latestStatusError ? (
+        <div role="alert" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800">
+          最新生成状态暂时无法读取：{latestStatusError}。{readableGeneration?.content ? "下面明确显示已发布版本。" : "请稍后重试。"}
+        </div>
+      ) : latestStatusLoading && readableGeneration?.content ? (
+        <p className="mt-3 text-xs leading-5 text-slate-500" role="status">
+          正在确认最新生成状态；当前先显示已发布版本。
+        </p>
+      ) : null}
+      {publishedStatusError && !generation?.content ? (
+        <div role="alert" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800">
+          已发布版本暂时无法读取：{publishedStatusError}
+        </div>
+      ) : publishedStatusLoading && !readableGeneration?.content && (active || generation?.status === "failed") ? (
+        <p className="mt-3 text-xs leading-5 text-slate-500" role="status">正在读取上一个已发布版本…</p>
+      ) : null}
+      {readableGeneration?.content ? (
         <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-          <summary className="cursor-pointer text-xs font-semibold text-slate-700">查看项目知识 · {generation.model}</summary>
-          <MarkdownPreview content={generation.content} mode="untrusted" className="mt-4 text-xs" />
+          <summary className="cursor-pointer text-xs font-semibold text-slate-700">
+            {showingPreviousVersion
+              ? "查看上一个可用版本"
+              : showingPublishedFallback
+                ? "查看已发布版本"
+                : "查看项目知识"} · {readableGeneration.model}
+          </summary>
+          {showingPublishedFallback ? (
+            <p className="mt-3 text-[11px] leading-5 text-amber-700">
+              {showingPreviousVersion
+                ? active
+                  ? "新版本正在服务端生成；完成前仍可阅读上一个已发布版本。"
+                  : "本轮生成失败，已发布的旧 DeepWiki 仍可阅读，不会被失败任务覆盖。"
+                : "最新状态尚未确认；这里显示的是服务端最近一次已发布版本。"}
+            </p>
+          ) : null}
+          <MarkdownPreview content={readableGeneration.content} mode="untrusted" className="mt-4 text-xs" />
         </details>
       ) : null}
     </section>

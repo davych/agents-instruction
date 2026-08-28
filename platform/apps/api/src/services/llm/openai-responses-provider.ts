@@ -66,6 +66,7 @@ export class OpenAiResponsesProvider implements AskLlmProvider {
       max_output_tokens: request.maxOutputTokens,
       store: false,
     };
+    if (request.temperature !== undefined) body.temperature = request.temperature;
     if (request.jsonSchema) {
       body.text = {
         format: {
@@ -97,7 +98,7 @@ export class OpenAiResponsesProvider implements AskLlmProvider {
       url: providerEndpoint(this.options.baseUrl, "responses"),
       body,
       headers: bearerHeaders(this.options.apiKey),
-      timeoutMs: this.options.timeoutMs,
+      timeoutMs: request.timeoutMs ?? this.options.timeoutMs,
       maxResponseBytes: this.options.maxResponseBytes,
       signal,
       fetchImpl: this.options.fetchImpl,
