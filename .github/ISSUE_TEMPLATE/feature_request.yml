@@ -1,0 +1,33 @@
+name: Feature request
+description: 提议一个范围清楚、能验证价值的改进。
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    attributes:
+      label: 用户问题
+      description: 谁在什么情况下遇到了什么问题？
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 最小可用结果
+      description: 完成后用户能做到什么？如何验收？
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 不在范围内
+      description: 这次明确不做什么？
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 方案与取舍
+      description: 可选方案、兼容性、安全或运维影响。
+  - type: checkboxes
+    attributes:
+      label: 工作流边界
+      options:
+        - label: 如果建议改变六阶段顺序、角色归属、架构或安全边界，我会先等待维护者确认。
+          required: true

@@ -84,12 +84,22 @@ const configSchema = z.object({
 type RawConfig = z.infer<typeof configSchema>;
 
 export interface LoadedDefinition extends WorkflowDefinition {
+  /** Source tree that owns product files and generated workflow artifacts. */
+  sourceRoot?: string;
+  /** Read-only platform control pack. Local projects keep this equal to sourceRoot. */
+  controlRoot?: string;
   agentClient: string;
   agentDirectory: string;
   outputRoot: string;
   releaseEvidenceValidationRequired: boolean;
   artifacts: LoadedArtifactDefinition[];
   configPath: string;
+}
+
+export interface DefinitionLocation {
+  sourceRoot: string;
+  controlRoot?: string;
+  configPath?: string;
 }
 
 export interface LoadedArtifactDefinition {
@@ -101,13 +111,17 @@ export interface LoadedArtifactDefinition {
   platformInjected?: boolean;
 }
 
-export async function loadDefinition(projectRoot: string): Promise<LoadedDefinition> {
-  const configPath = path.join(projectRoot, "ai-native.yaml");
+export async function loadDefinition(
+  location: string | DefinitionLocation,
+): Promise<LoadedDefinition> {
+  const { sourceRoot, controlRoot, configPath } = resolveDefinitionLocation(location);
   if (!existsSync(configPath)) {
     throw new AppError("目录中未找到 ai-native.yaml；请先初始化或将 initialize 设为 true", 400, "CONFIG_MISSING");
   }
-  if ((await lstat(configPath)).isSymbolicLink()) {
-    throw new AppError("ai-native.yaml 不能是符号链接", 400, "UNSAFE_CONFIG_PATH");
+  await assertNoSymbolicLinkSegments(controlRoot, configPath);
+  const configStats = await lstat(configPath);
+  if (!configStats.isFile() || configStats.isSymbolicLink()) {
+    throw new AppError("ai-native.yaml 必须是控制包内的普通文件", 400, "UNSAFE_CONFIG_PATH");
   }
   let config: RawConfig;
   try {
@@ -151,16 +165,16 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
       "CONFIG_INVALID",
     );
   }
-  const agentRoot = safeProjectPath(projectRoot, config.paths.agents);
-  const outputRoot = safeProjectPath(projectRoot, config.paths.outputs);
-  await validateConfiguredOutputRoot(projectRoot, outputRoot);
+  const agentRoot = safeProjectPath(controlRoot, config.paths.agents);
+  const outputRoot = safeProjectPath(sourceRoot, config.paths.outputs);
+  await validateConfiguredOutputRoot(sourceRoot, outputRoot);
   await validateNativeAgentFiles(
-    projectRoot,
+    controlRoot,
     config.agent.client,
     agentRoot,
     false,
   );
-  const subdirectories = await readRoleSubdirectories(projectRoot, outputRoot, roleIds);
+  const subdirectories = await readRoleSubdirectories(controlRoot, outputRoot, roleIds);
   registerPlatformEngineeringOutputs(
     config,
     subdirectories.has("software-engineer"),
@@ -193,13 +207,13 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
       artifact.id,
       absolutePath,
       [
-        path.join(projectRoot, "ai-native.yaml"),
-        path.join(projectRoot, ".ai-sdlc"),
-        path.join(projectRoot, ".git"),
+        configPath,
+        path.join(controlRoot, ".ai-sdlc"),
+        path.join(sourceRoot, ".git"),
         agentRoot,
       ],
     );
-    const relativePath = path.relative(projectRoot, absolutePath).split(path.sep).join("/");
+    const relativePath = path.relative(sourceRoot, absolutePath).split(path.sep).join("/");
     return {
       id: artifact.id,
       owner: artifact.owner,
@@ -262,7 +276,7 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
   }
 
   const releaseEvidenceValidationRequired = await hasCompleteReleaseEvidencePack(
-    projectRoot,
+    controlRoot,
     config.capabilities?.release_evidence === "v1",
   );
 
@@ -271,6 +285,8 @@ export async function loadDefinition(projectRoot: string): Promise<LoadedDefinit
     project: config.project,
     roles: config.roles,
     phases: config.workflow.phases as PhaseDefinition[],
+    sourceRoot,
+    controlRoot,
     agentClient: config.agent.client,
     agentDirectory: config.paths.agents,
     outputRoot,
@@ -505,6 +521,25 @@ function registerPlatformReleaseInputs(
   }
 }
 
+function resolveDefinitionLocation(location: string | DefinitionLocation): {
+  sourceRoot: string;
+  controlRoot: string;
+  configPath: string;
+} {
+  const sourceRoot = path.resolve(typeof location === "string" ? location : location.sourceRoot);
+  const controlRoot = path.resolve(
+    typeof location === "string" ? sourceRoot : location.controlRoot ?? sourceRoot,
+  );
+  const requestedConfigPath = typeof location === "string" ? undefined : location.configPath;
+  const configPath = requestedConfigPath
+    ? path.resolve(controlRoot, requestedConfigPath)
+    : path.join(controlRoot, "ai-native.yaml");
+  if (!isWithin(controlRoot, configPath)) {
+    throw new AppError("Definition configPath 必须位于 controlRoot 内", 400, "UNSAFE_CONFIG_PATH");
+  }
+  return { sourceRoot, controlRoot, configPath };
+}
+
 function safeProjectPath(projectRoot: string, relative: string): string {
   if (
     path.isAbsolute(relative)
@@ -656,7 +691,7 @@ async function readRoleSubdirectories(
 
 export async function assertDefinitionAgentFiles(
   projectRoot: string,
-  definition: Pick<LoadedDefinition, "agentClient" | "agentDirectory">,
+  definition: Pick<LoadedDefinition, "agentClient" | "agentDirectory" | "controlRoot">,
 ): Promise<void> {
   const parsedClient = definitionAgentClientSchema.safeParse(definition.agentClient);
   if (!parsedClient.success) {
@@ -670,8 +705,9 @@ export async function assertDefinitionAgentFiles(
       "CONFIG_INVALID",
     );
   }
-  const agentRoot = safeProjectPath(projectRoot, definition.agentDirectory);
-  await validateNativeAgentFiles(projectRoot, parsedClient.data, agentRoot, true);
+  const controlRoot = definition.controlRoot ?? projectRoot;
+  const agentRoot = safeProjectPath(controlRoot, definition.agentDirectory);
+  await validateNativeAgentFiles(controlRoot, parsedClient.data, agentRoot, true);
 }
 
 async function validateNativeAgentFiles(

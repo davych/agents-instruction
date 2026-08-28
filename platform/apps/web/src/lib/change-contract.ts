@@ -1,4 +1,4 @@
-import type { ChangeContract, WorkType } from "@/lib/types";
+import type { ChangeContract, WorkItemProvenance, WorkType } from "@/lib/types";
 
 export const WORK_TYPE_OPTIONS: ReadonlyArray<{
   value: WorkType;
@@ -30,6 +30,7 @@ export const WORK_TYPE_OPTIONS: ReadonlyArray<{
 export interface ChangeContractDraft {
   workType: WorkType;
   sourceRunIds: string[];
+  workItem?: WorkItemProvenance;
   summary: string;
   currentBehavior: string;
   expectedBehavior: string;
@@ -81,6 +82,10 @@ export function parseChangeContractLines(value: string): string[] {
 export function materializeChangeContract(draft: ChangeContractDraft): ChangeContract {
   return {
     workType: draft.workType,
+    ...(draft.workType !== "feature" && draft.sourceRunIds.length > 0
+      ? { sourceRunIds: [...draft.sourceRunIds] }
+      : {}),
+    ...(draft.workItem ? { workItem: draft.workItem } : {}),
     summary: draft.summary.trim(),
     currentBehavior: draft.currentBehavior.trim(),
     expectedBehavior: draft.expectedBehavior.trim(),

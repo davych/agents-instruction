@@ -356,7 +356,11 @@ test("serves installed run-scoped Codex capabilities from the API", async () => 
     assert.deepEqual(response.json(), {
       models: catalog,
       defaultModel: "gpt-5.6-sol",
-      defaultReasoningEffort: "ultra"
+      defaultReasoningEffort: "ultra",
+      realExecution: {
+        state: "ready",
+        message: "当前 legacy-local 项目使用 Host runner。",
+      },
     });
   } finally {
     await app.close();

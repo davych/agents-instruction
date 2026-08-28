@@ -14,6 +14,7 @@
     "dev": "yarn workspace @ai-sdlc/contracts build && yarn workspaces foreach --all --parallel --interlaced run dev",
     "build": "yarn workspaces foreach --all --topological run build",
     "test": "yarn workspace @ai-sdlc/contracts build && yarn workspaces foreach --all --parallel --interlaced run test",
+    "test:docker-smoke": "yarn workspace @ai-sdlc/api test:docker-smoke",
     "typecheck": "yarn workspaces foreach --all --parallel --interlaced run typecheck",
     "db:up": "node scripts/db.mjs up",
     "db:down": "node scripts/db.mjs down",

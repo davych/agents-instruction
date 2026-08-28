@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   PHASE_ROUTE_VERSION,
@@ -27,6 +28,7 @@ import {
   type FigmaIntegrationStatusDto,
   type FigmaPlanCapabilitiesDto,
   type FigmaTarget,
+  type GitRevision,
   type HumanDecisionPhaseId,
   type PhaseId,
   type PhaseBaselineDto,
@@ -45,7 +47,9 @@ import type {
   CurrentArtifactSnapshot,
   PhaseBaselineRecord,
   PgWorkflowStore,
+  RunPersistenceSnapshot,
   RunBundle,
+  RuntimeProject,
   SelectionArtifact,
 } from "../db/store.js";
 import { AppError } from "../domain/errors.js";
@@ -102,6 +106,11 @@ import {
 } from "../domain/workflow.js";
 import { CodexTerminalRunner, type ResolvedFigmaTarget } from "./codex-runner.js";
 import {
+  type CloudProjectService,
+  type PreparedRunWorkspace,
+  computeControlPackVersion,
+} from "./cloud-project-service.js";
+import {
   CodexExecutionCapabilities,
   type ResolvedCodexExecutionConfig,
 } from "./codex-execution-capabilities.js";
@@ -130,6 +139,11 @@ import { validateReleaseEvidence } from "./release-evidence-validator.js";
 import type { FigmaMcpIntegration } from "./figma-mcp-integration.js";
 import { initializeCodexProject } from "./project-initializer.js";
 import { ProjectPathPolicy } from "./project-paths.js";
+import {
+  resolveRunProjectKnowledge,
+  type ProjectKnowledgeResolverLike,
+} from "./project-knowledge.js";
+import { createRunChangeset, type GeneratedRunChangeset } from "./run-changeset.js";
 import type {
   VerificationE2eCoordinator,
   VerificationE2eScriptReviewAuthority,
@@ -139,7 +153,10 @@ import {
   type VerificationGitState,
 } from "./verification-git-state.js";
 import { validateVerificationEvidenceProvenance } from "./verification-evidence-provenance.js";
-import { withVerificationWorkspaceProtected } from "./verification-workspace.js";
+import {
+  VERIFICATION_RUNTIME_EVIDENCE_PATHS,
+  withVerificationWorkspaceProtected,
+} from "./verification-workspace.js";
 
 interface VerificationE2eDefinitionContext {
   definition: LoadedDefinition;
@@ -160,6 +177,8 @@ export class WorkflowService {
   private readonly tasks = new Set<Promise<void>>();
   private readonly artifactRevisionLocks = new Map<string, Promise<void>>();
   private readonly activeWorkspaceMutations = new Set<string>();
+  private readonly quarantinedWorkspaceMutations = new Set<string>();
+  private activePhaseExecutions = 0;
   private readonly e2eReadinessCache = new Map<string, {
     descriptorHash: string;
     readiness: E2eWorkspaceReadinessDto;
@@ -184,14 +203,75 @@ export class WorkflowService {
       | "review"
       | "execute"
     >,
+    private readonly cloudProjects?: CloudProjectService,
+    private readonly projectKnowledge?: ProjectKnowledgeResolverLike,
+    private readonly maxConcurrentPhaseExecutions = 1,
   ) {}
 
   async listProjects() {
-    return this.store.listProjects();
+    return this.cloudProjects
+      ? this.cloudProjects.listProjects()
+      : this.store.listProjects();
+  }
+
+  async pruneCloudWorkspaces(input: {
+    dryRun: boolean;
+    olderThanHours: number;
+    limit: number;
+  }) {
+    return this.requireCloudProjects().pruneUnusedWorkspaces(input);
+  }
+
+  phaseExecutionCapacity() {
+    return {
+      active: this.activePhaseExecutions,
+      maximum: Math.max(1, Math.floor(this.maxConcurrentPhaseExecutions)),
+      quarantinedWorkspaces: this.quarantinedWorkspaceMutations.size,
+    };
+  }
+
+  async assertCloudProjectAccess(projectId: string): Promise<void> {
+    if (!this.cloudProjects) return;
+    const project = await this.store.getProject(projectId);
+    assertRemoteCloudProject(project);
+  }
+
+  async assertCloudRunAccess(runId: string): Promise<void> {
+    if (!this.cloudProjects) return;
+    const bundle = await this.store.getRun(runId);
+    assertRemoteCloudProject(bundle.project);
+  }
+
+  async assertCloudArtifactAccess(artifactId: string): Promise<void> {
+    if (!this.cloudProjects) return;
+    assertRemoteCloudProject({
+      sourceKind: await this.store.projectSourceKindForArtifact(artifactId),
+    });
+  }
+
+  async assertCloudExecutionAccess(executionId: string): Promise<void> {
+    if (!this.cloudProjects) return;
+    assertRemoteCloudProject({
+      sourceKind: await this.store.projectSourceKindForExecution(executionId),
+    });
+  }
+
+  async assertCloudAskThreadAccess(threadId: string): Promise<void> {
+    if (!this.cloudProjects) return;
+    assertRemoteCloudProject({
+      sourceKind: await this.store.projectSourceKindForAskThread(threadId),
+    });
   }
 
   async createProject(input: CreateProjectInput, signal?: AbortSignal) {
     assertProjectCreationActive(signal);
+    if (input.sourceKind === "remote-git") {
+      const created = await this.requireCloudProjects().createRemoteProject(input, signal);
+      return {
+        project: created.project,
+        definition: publicDefinition(created.definition),
+      };
+    }
     const summary = input.summary || "由 AI SDLC 平台管理的项目";
     let rootPath = await this.paths.resolveProjectPath(input.rootPath, input.initialize);
     assertProjectCreationActive(signal);
@@ -214,19 +294,46 @@ export class WorkflowService {
       rootPath,
       configPath: definition.configPath
     });
-    return { project, definition: publicDefinition(definition) };
+    return {
+      project: this.cloudProjects
+        ? await this.cloudProjects.presentProject(project)
+        : project,
+      definition: publicDefinition(definition),
+    };
   }
 
   async getProject(projectId: string) {
     const project = await this.store.getProject(projectId);
     await this.assertProjectPath(project.rootPath);
-    const definition = await loadDefinition(project.rootPath);
-    return { project, definition: publicDefinition(definition) };
+    const definition = await loadRuntimeDefinition(project);
+    return {
+      project: this.cloudProjects
+        ? await this.cloudProjects.presentProject(project)
+        : project,
+      definition: publicDefinition(definition),
+    };
+  }
+
+  listRepositoryCredentials(host?: string) {
+    return this.requireCloudProjects().credentialSummaries(host);
+  }
+
+  async syncProjectRepository(
+    projectId: string,
+    expectedRevision?: GitRevision,
+    signal?: AbortSignal,
+  ) {
+    return this.requireCloudProjects().syncProject(projectId, expectedRevision, signal);
+  }
+
+  async getProjectKnowledge(projectId: string) {
+    return this.requireCloudProjects().getKnowledge(projectId);
   }
 
   async getE2eWorkspace(projectId: string): Promise<E2eWorkspaceDto | null> {
     const project = await this.store.getProject(projectId);
     await this.assertProjectPath(project.rootPath);
+    if (project.sourceKind === "remote-git") return null;
     return this.requireVerificationE2e().optionalWorkspace(project);
   }
 
@@ -236,6 +343,7 @@ export class WorkflowService {
   ): Promise<E2eWorkspaceDto> {
     const project = await this.store.getProject(projectId);
     await this.assertProjectPath(project.rootPath);
+    assertOperatorLocalFeatureAllowed(project, "E2E Workspace");
     const releaseWorkspaces = this.acquireWorkspaceMutations([
       project.rootPath,
       path.resolve(input.rootPath),
@@ -255,6 +363,7 @@ export class WorkflowService {
   }> {
     const project = await this.store.getProject(projectId);
     await this.assertProjectPath(project.rootPath);
+    assertOperatorLocalFeatureAllowed(project, "E2E Workspace");
     const coordinator = this.requireVerificationE2e();
     const workspace = await coordinator.workspace(project);
     const releaseWorkspaces = this.acquireWorkspaceMutations([
@@ -277,10 +386,40 @@ export class WorkflowService {
     return this.store.listRuns(projectId);
   }
 
-  async createRun(projectId: string, input: CreateRunInput) {
-    const project = await this.store.getProject(projectId);
+  async createRun(
+    projectId: string,
+    input: CreateRunInput,
+    preparedAgentWorkspace?: PreparedRunWorkspace,
+    agentSessionRun?: { sessionId: string; triggerMessageId: string },
+  ) {
+    const registeredProject = await this.store.getProject(projectId);
+    if (
+      preparedAgentWorkspace
+      && (
+        preparedAgentWorkspace.workspace.projectId !== projectId
+        || (input.baseRevision && preparedAgentWorkspace.baseRevision !== input.baseRevision)
+      )
+    ) {
+      throw new AppError(
+        "Agent Sandbox 与目标项目或固定 revision 不一致",
+        409,
+        "AGENT_RUN_WORKSPACE_MISMATCH",
+      );
+    }
+    const ownsPreparedWorkspace = !preparedAgentWorkspace;
+    let prepared: PreparedRunWorkspace | null = preparedAgentWorkspace ?? null;
+    let materializedChangeContractPath: string | undefined;
+    let cleanupAllowed = true;
+    try {
+      prepared = prepared ?? (registeredProject.sourceKind === "remote-git"
+        ? await this.requireCloudProjects().prepareRunWorkspace(
+          registeredProject,
+          input.baseRevision,
+        )
+        : null);
+    const project = prepared?.project ?? registeredProject;
     await this.assertProjectPath(project.rootPath);
-    const definition = await loadDefinition(project.rootPath);
+    const definition = await loadRuntimeDefinition(project);
     const runId = randomUUID();
     const resolved = resolveTaskArtifactPaths(definition, { id: runId, title: input.title });
     const designSpec = resolved.artifacts.find((artifact) => artifact.id === "design-spec");
@@ -323,8 +462,6 @@ export class WorkflowService {
         )
         .map((artifact) => [artifact.id, artifact.relativePath]),
     );
-    let materializedChangeContractPath: string | undefined;
-    try {
       let persistedChangeContractArtifact;
       if (changeContractArtifact) {
         const content = renderChangeContract(changeContract);
@@ -344,15 +481,81 @@ export class WorkflowService {
           contentHash: createHash("sha256").update(content).digest("hex"),
         };
       }
-      return await this.store.createRun(projectId, input.title, runObjective, {
-        runId,
-        artifactPaths,
-        changeContract,
-        changeContractArtifact: persistedChangeContractArtifact,
-      });
+      let created;
+      try {
+        created = await this.store.createRun(projectId, input.title, runObjective, {
+          runId,
+          artifactPaths,
+          changeContract,
+          changeContractArtifact: persistedChangeContractArtifact,
+          workspaceId: prepared?.workspace.id,
+          baseRevision: prepared?.baseRevision,
+          definitionVersion: prepared?.definitionVersion,
+          agentSessionRun,
+        });
+      } catch (persistenceError) {
+        if (
+          !(persistenceError instanceof AppError)
+          || persistenceError.code !== "RUN_COMMIT_OUTCOME_UNKNOWN"
+        ) {
+          // The Store rolled back a failure that happened before COMMIT was
+          // attempted, so materialized state is safe to remove.
+          throw persistenceError;
+        }
+        let confirmed: RunPersistenceSnapshot | null;
+        try {
+          confirmed = await this.store.findRunPersistence(runId);
+        } catch {
+          confirmed = null;
+        }
+        if (!confirmed) {
+          // An immediate absent read can race a backend that is still finishing
+          // COMMIT. It is not proof of rollback. Preserve the file/Workspace
+          // and let later reconciliation or safe pruning decide.
+          cleanupAllowed = false;
+          if (prepared && ownsPreparedWorkspace) {
+            this.requireCloudProjects().commitPreparedRun(prepared.workspace);
+          }
+          throw new AppError(
+            "Run 创建结果暂时无法确认；平台已保留 Workspace，稍后可按 Run ID 恢复或由安全清理任务回收",
+            503,
+            "RUN_CREATE_OUTCOME_UNKNOWN",
+            { runId },
+          );
+        }
+
+        cleanupAllowed = false;
+        assertConfirmedRunPersistence(confirmed, {
+          runId,
+          projectId,
+          title: input.title,
+          objective: runObjective,
+          changeContract,
+          artifactPaths,
+          workspaceId: prepared?.workspace.id ?? null,
+          baseRevision: prepared?.baseRevision ?? null,
+          definitionVersion: prepared?.definitionVersion ?? null,
+          agentSessionRun: agentSessionRun ?? null,
+        });
+        if (prepared && ownsPreparedWorkspace) {
+          this.requireCloudProjects().commitPreparedRun(prepared.workspace);
+        }
+        return confirmed.run;
+      }
+      if (prepared && ownsPreparedWorkspace) {
+        this.requireCloudProjects().commitPreparedRun(prepared.workspace);
+      }
+      return created;
     } catch (error) {
-      if (materializedChangeContractPath) {
+      if (cleanupAllowed && materializedChangeContractPath) {
         await rm(materializedChangeContractPath, { force: true }).catch(() => undefined);
+      }
+      if (cleanupAllowed && prepared && ownsPreparedWorkspace) {
+        const failedPrepared = prepared;
+        prepared = null;
+        await this.requireCloudProjects()
+          .discardPreparedRun(failedPrepared.workspace)
+          .catch(() => undefined);
       }
       throw error;
     }
@@ -376,16 +579,23 @@ export class WorkflowService {
   async getRun(runId: string) {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
-    const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+    const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
     attachAvailableArtifacts(bundle, definition);
     const [productBaseline, designBaseline, architectureBaseline] = await Promise.all([
       this.phaseBaselineCandidate(bundle, definition, "discovery"),
       this.phaseBaselineCandidate(bundle, definition, "design"),
       this.architectureBaselineCandidate(bundle, definition),
     ]);
-    const { artifactPaths: _internalArtifactPaths, ...publicBundle } = bundle;
+    const {
+      artifactPaths: _internalArtifactPaths,
+      workspace: _internalWorkspace,
+      ...publicBundle
+    } = bundle;
     return {
       ...publicBundle,
+      project: this.cloudProjects
+        ? await this.cloudProjects.presentProject(bundle.project)
+        : bundle.project,
       definition: publicDefinition(definition),
       productBaseline,
       designBaseline,
@@ -480,8 +690,9 @@ export class WorkflowService {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
     const releaseWorkspace = this.acquireWorkspaceMutation(bundle.project.rootPath);
+    const createdPaths: string[] = [];
     try {
-      const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+      const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
       const phaseDefinition = definition.phases.find((phase) => phase.id === "architecture");
       const currentPhase = bundle.phases.find((phase) => phase.phaseId === "architecture");
       if (!phaseDefinition || !currentPhase) {
@@ -546,11 +757,13 @@ export class WorkflowService {
       }
 
       await this.validateArchitectureBaselineWorkspace(
-        bundle.project.rootPath,
         eligible.record,
+        bundle.project,
       );
+      const architectureSourceRoot = baselineSourceRoot(eligible.record, bundle.project);
       await validateArchitectureRulebookReview({
-        projectRoot: bundle.project.rootPath,
+        projectRoot: architectureSourceRoot,
+        controlRoot: path.dirname(bundle.project.configPath),
         stage: "final",
         artifacts: eligible.record.artifacts,
         documentedOptionIds: architectureOptionIds(
@@ -560,6 +773,35 @@ export class WorkflowService {
         ),
         architectureSelection: eligible.selection,
       });
+
+      for (const artifact of eligible.record.artifacts) {
+        const target = definition.artifacts.find(
+          (candidate) => candidate.id === artifact.artifactKey,
+        );
+        if (!target) {
+          throw new AppError(
+            `当前 Definition 缺少架构产物 ${artifact.artifactKey}`,
+            409,
+            "ARCHITECTURE_BASELINE_INCOMPLETE",
+          );
+        }
+        const sourcePath = path.resolve(architectureSourceRoot, artifact.filePath);
+        await assertRuntimePath(architectureSourceRoot, sourcePath);
+        await assertRuntimePath(bundle.project.rootPath, target.absolutePath);
+        if (
+          path.resolve(architectureSourceRoot) === path.resolve(bundle.project.rootPath)
+          && sourcePath === target.absolutePath
+        ) continue;
+        await mkdir(path.dirname(target.absolutePath), { recursive: true });
+        await cp(sourcePath, target.absolutePath, {
+          recursive: true,
+          errorOnExist: true,
+          force: false,
+          dereference: false,
+          preserveTimestamps: true,
+        });
+        createdPaths.push(target.absolutePath);
+      }
 
       const impact: ArchitectureImpactDto = {
         mode: input.mode,
@@ -579,6 +821,11 @@ export class WorkflowService {
         requiredArtifactKeys: phaseDefinition.outputs,
       });
       return { review };
+    } catch (error) {
+      for (const target of createdPaths) {
+        await rm(target, { recursive: true, force: true }).catch(() => undefined);
+      }
+      throw error;
     } finally {
       releaseWorkspace();
     }
@@ -590,7 +837,7 @@ export class WorkflowService {
     const releaseWorkspace = this.acquireWorkspaceMutation(bundle.project.rootPath);
     const createdPaths: string[] = [];
     try {
-      const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+      const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
       const phase = bundle.phases.find((candidate) => candidate.phaseId === "discovery");
       const phaseDefinition = definition.phases.find(
         (candidate) => candidate.id === "discovery",
@@ -650,7 +897,10 @@ export class WorkflowService {
         const relevant = baseline.artifacts.filter((artifact) =>
           routableProductOutputs.includes(artifact.artifactKey)
         );
-        await this.validateArtifactWorkspaceSnapshots(bundle.project.rootPath, relevant);
+        await this.validateArtifactWorkspaceSnapshots(
+          baselineSourceRoot(baseline, bundle.project),
+          relevant,
+        );
         if (input.mode === "partial") {
           const allowed = new Set(routableProductOutputs);
           const invalid = input.affectedOutputKeys.filter((key) => !allowed.has(key));
@@ -666,14 +916,21 @@ export class WorkflowService {
       const sourceArtifacts = baseline?.artifacts.filter((artifact) =>
         routableProductOutputs.includes(artifact.artifactKey)
       ) ?? [];
+      const productSourceRoot = baseline
+        ? baselineSourceRoot(baseline, bundle.project)
+        : bundle.project.rootPath;
       for (const artifact of sourceArtifacts) {
         const target = definition.artifacts.find(
           (candidate) => candidate.id === artifact.artifactKey,
         );
-        if (!target || target.relativePath === artifact.filePath) continue;
-        const sourcePath = path.resolve(bundle.project.rootPath, artifact.filePath);
-        await assertRuntimePath(bundle.project.rootPath, sourcePath);
+        if (!target) continue;
+        const sourcePath = path.resolve(productSourceRoot, artifact.filePath);
+        await assertRuntimePath(productSourceRoot, sourcePath);
         await assertRuntimePath(bundle.project.rootPath, target.absolutePath);
+        if (
+          path.resolve(productSourceRoot) === path.resolve(bundle.project.rootPath)
+          && sourcePath === target.absolutePath
+        ) continue;
         await mkdir(path.dirname(target.absolutePath), { recursive: true });
         await cp(sourcePath, target.absolutePath, {
           recursive: true,
@@ -723,7 +980,7 @@ export class WorkflowService {
     const releaseWorkspace = this.acquireWorkspaceMutation(bundle.project.rootPath);
     const createdPaths: string[] = [];
     try {
-      const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+      const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
       const phase = bundle.phases.find((candidate) => candidate.phaseId === "design");
       const phaseDefinition = definition.phases.find(
         (candidate) => candidate.id === "design",
@@ -776,7 +1033,8 @@ export class WorkflowService {
         const sourceArtifacts = baseline.artifacts.filter((artifact) =>
           routableDesignOutputs.includes(artifact.artifactKey)
         );
-        await this.validateArtifactWorkspaceSnapshots(bundle.project.rootPath, sourceArtifacts);
+        const designSourceRoot = baselineSourceRoot(baseline, bundle.project);
+        await this.validateArtifactWorkspaceSnapshots(designSourceRoot, sourceArtifacts);
         if (input.mode === "partial") {
           const allowed = new Set(routableDesignOutputs);
           const invalid = input.affectedOutputKeys.filter((key) => !allowed.has(key));
@@ -790,10 +1048,14 @@ export class WorkflowService {
         }
         for (const artifact of sourceArtifacts) {
           const target = definition.artifacts.find((candidate) => candidate.id === artifact.artifactKey);
-          if (!target || target.relativePath === artifact.filePath) continue;
-          const sourcePath = path.resolve(bundle.project.rootPath, artifact.filePath);
-          await assertRuntimePath(bundle.project.rootPath, sourcePath);
+          if (!target) continue;
+          const sourcePath = path.resolve(designSourceRoot, artifact.filePath);
+          await assertRuntimePath(designSourceRoot, sourcePath);
           await assertRuntimePath(bundle.project.rootPath, target.absolutePath);
+          if (
+            path.resolve(designSourceRoot) === path.resolve(bundle.project.rootPath)
+            && sourcePath === target.absolutePath
+          ) continue;
           await mkdir(path.dirname(target.absolutePath), { recursive: true });
           await cp(sourcePath, target.absolutePath, {
             recursive: true,
@@ -873,7 +1135,7 @@ export class WorkflowService {
           "PHASE_RESOLUTION_NOT_AVAILABLE",
         );
       }
-      const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+      const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
       const selected = await this.store.selectionArtifacts(runId, input.selectedArtifactIds);
       const requiredInputs = effectiveRequiredInputKeys("architecture", definition.phases.find(
         (candidate) => candidate.id === "architecture",
@@ -917,12 +1179,14 @@ export class WorkflowService {
   async getVerificationE2eFlow(runId: string): Promise<VerificationE2eFlowDto> {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
+    assertOperatorLocalFeatureAllowed(bundle.project, "Linked E2E");
     return this.verificationE2eFlow(bundle);
   }
 
   async preflightVerificationE2e(runId: string): Promise<VerificationE2eFlowDto> {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
+    assertOperatorLocalFeatureAllowed(bundle.project, "Linked E2E");
     const coordinator = this.requireVerificationE2e();
     const verificationPhase = bundle.phases.find(({ phaseId }) => phaseId === "verification");
     if (
@@ -953,6 +1217,7 @@ export class WorkflowService {
   ): Promise<ExecutionDto> {
     const initial = await this.store.getRun(runId);
     await this.assertProjectPath(initial.project.rootPath);
+    assertOperatorLocalFeatureAllowed(initial.project, "Linked E2E");
     const coordinator = this.requireVerificationE2e();
     const workspace = await coordinator.workspace(initial.project);
     const releaseWorkspaces = this.acquireWorkspaceMutations([
@@ -1005,6 +1270,7 @@ export class WorkflowService {
   ): Promise<VerificationE2eFlowDto> {
     const initial = await this.store.getRun(runId);
     await this.assertProjectPath(initial.project.rootPath);
+    assertOperatorLocalFeatureAllowed(initial.project, "Linked E2E");
     const coordinator = this.requireVerificationE2e();
     const workspace = await coordinator.workspace(initial.project);
     const releaseWorkspaces = this.acquireWorkspaceMutations([
@@ -1052,6 +1318,7 @@ export class WorkflowService {
   ): Promise<ExecutionDto> {
     const initial = await this.store.getRun(runId);
     await this.assertProjectPath(initial.project.rootPath);
+    assertOperatorLocalFeatureAllowed(initial.project, "Linked E2E");
     const coordinator = this.requireVerificationE2e();
     const workspace = await coordinator.workspace(initial.project);
     const releaseWorkspaces = this.acquireWorkspaceMutations([
@@ -1124,9 +1391,15 @@ export class WorkflowService {
     }
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
+    this.runner.assertProjectExecutionAvailable(bundle.project);
+    if (bundle.project.sourceKind === "remote-git" && input.figmaTarget) {
+      assertOperatorLocalFeatureAllowed(bundle.project, "Desktop Figma MCP");
+    }
     const releaseWorkspace = this.acquireWorkspaceMutation(bundle.project.rootPath);
+    let releaseExecutionSlot: () => void = () => undefined;
     try {
-    const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+    releaseExecutionSlot = this.acquirePhaseExecutionSlot();
+    const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
     if (this.runner.mode() === "real") {
       await assertDefinitionAgentFiles(bundle.project.rootPath, definition);
     }
@@ -1189,6 +1462,7 @@ export class WorkflowService {
     }
     let figmaTarget: ResolvedFigmaTarget | undefined;
     if (selectedOutputKeys.includes("figma-handoff")) {
+      assertOperatorLocalFeatureAllowed(bundle.project, "Desktop Figma MCP");
       const requestedFigmaTarget = requireFigmaTarget(input.figmaTarget);
       if (this.runner.mode() !== "real") {
         throw new AppError(
@@ -1306,6 +1580,10 @@ export class WorkflowService {
         .slice(0, 5)
         .map((review) => review.comment),
     ];
+    const projectKnowledge = await resolveRunProjectKnowledge({
+      project: bundle.project,
+      run: bundle.run,
+    }, this.projectKnowledge);
     const execution = await this.store.createExecution(
       runId,
       phaseId,
@@ -1317,7 +1595,7 @@ export class WorkflowService {
       this.runner.commandLabel(executionConfig ?? undefined)
     );
 
-    const task = this.performExecution({
+    const executionTask = this.performExecution({
       executionId: execution.id,
       project: bundle.project,
       run: bundle.run,
@@ -1332,8 +1610,27 @@ export class WorkflowService {
       phaseResolution: currentPhase.resolution,
       model: executionConfig?.model ?? null,
       reasoningEffort: executionConfig?.reasoningEffort ?? null,
-      figmaTarget
-    }).finally(releaseWorkspace);
+      figmaTarget,
+      projectKnowledge,
+    });
+    const task = executionTask.then(
+      () => {
+        releaseExecutionSlot();
+        releaseWorkspace();
+      },
+      (error: unknown) => {
+        releaseExecutionSlot();
+        if (error instanceof AppError && error.code === "DOCKER_WORKER_CLEANUP_FAILED") {
+          // Keep this workspace locked for the lifetime of the API process. The
+          // next startup preflight removes same-deployment Workers before DB
+          // recovery makes the workspace available again.
+          this.quarantinedWorkspaceMutations.add(bundle.project.rootPath);
+        } else {
+          releaseWorkspace();
+        }
+        throw error;
+      },
+    );
     this.tasks.add(task);
     void task.then(
       () => this.tasks.delete(task),
@@ -1341,6 +1638,7 @@ export class WorkflowService {
     );
     return execution;
     } catch (error) {
+      releaseExecutionSlot();
       releaseWorkspace();
       throw error;
     }
@@ -1354,7 +1652,7 @@ export class WorkflowService {
     const current = await this.store.getRun(runId);
     const definition = taskDefinition(
       current,
-      await loadDefinition(current.project.rootPath),
+      await loadRuntimeDefinition(current.project),
     );
     const phaseDefinition = definition.phases.find((phase) => phase.id === phaseId);
     if (!phaseDefinition) throw new AppError("阶段不在工作流定义中", 404, "PHASE_NOT_FOUND");
@@ -1486,6 +1784,7 @@ export class WorkflowService {
           validateArchitectureSelectionComment(input.comment, options.content ?? "");
           await this.validateArchitectureRulebookGate(
             current.project.rootPath,
+            path.dirname(current.project.configPath),
             runId,
             "checkpoint",
           );
@@ -1509,6 +1808,7 @@ export class WorkflowService {
         if (approvalKeys.every((key) => currentKeys.has(key))) {
           await this.validateArchitectureRulebookGate(
             current.project.rootPath,
+            path.dirname(current.project.configPath),
             runId,
             "final",
             architectureSelection,
@@ -1605,7 +1905,7 @@ export class WorkflowService {
   private async verificationE2eDefinitionContext(
     bundle: RunBundle,
   ): Promise<VerificationE2eDefinitionContext> {
-    const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+    const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
     const phaseDefinition = definition.phases.find(({ id }) => id === "verification");
     const phase = bundle.phases.find(({ phaseId }) => phaseId === "verification");
     if (!phaseDefinition || !phase) {
@@ -2238,12 +2538,14 @@ export class WorkflowService {
   async getFigmaIntegration(runId: string, options: { force?: boolean } = {}) {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
+    assertOperatorLocalFeatureAllowed(bundle.project, "Desktop Figma MCP");
     return this.figmaIntegration?.status(bundle.project.rootPath, options);
   }
 
   async getFigmaPlans(runId: string, options: { force?: boolean } = {}) {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
+    assertOperatorLocalFeatureAllowed(bundle.project, "Desktop Figma MCP");
     return this.resolveFigmaPlans(bundle.project.rootPath, options);
   }
 
@@ -2253,7 +2555,10 @@ export class WorkflowService {
     if (!this.codexCapabilities) {
       throw new AppError("Codex 执行能力服务未配置", 503, "CODEX_CAPABILITIES_UNAVAILABLE");
     }
-    return this.codexCapabilities.status(bundle.project.rootPath);
+    return {
+      ...await this.codexCapabilities.status(bundle.project.rootPath),
+      realExecution: this.runner.projectExecutionAvailability(bundle.project),
+    };
   }
 
   async listTickets(runId: string) {
@@ -2278,6 +2583,39 @@ export class WorkflowService {
 
   async getExecutionEvents(executionId: string) {
     return this.store.eventsForExecution(executionId);
+  }
+
+  async generateRunChangeset(runId: string): Promise<GeneratedRunChangeset> {
+    const bundle = await this.store.getRun(runId);
+    await this.assertProjectPath(bundle.project.rootPath);
+    if (bundle.project.sourceKind !== "remote-git" || !bundle.run.baseRevision) {
+      throw new AppError(
+        "只有固定远程 Git revision 的 Cloud Run 可以生成 Patch",
+        409,
+        "CHANGESET_REMOTE_RUN_REQUIRED",
+      );
+    }
+    const releaseWorkspace = this.acquireWorkspaceMutation(bundle.project.rootPath);
+    try {
+      const generated = await createRunChangeset({
+        runId,
+        workspaceRoot: bundle.project.rootPath,
+        baseRevision: bundle.run.baseRevision,
+      controlRoot: path.dirname(bundle.project.configPath),
+      excludedPaths: [
+        ...VERIFICATION_RUNTIME_EVIDENCE_PATHS,
+        ".agents",
+        ".codex",
+        ".claude",
+        "AGENTS.md",
+        "CLAUDE.md",
+      ],
+      });
+      await this.store.saveRunChangeset(generated);
+      return generated;
+    } finally {
+      releaseWorkspace();
+    }
   }
 
   private requireVerificationE2e(): NonNullable<WorkflowService["verificationE2e"]> {
@@ -2315,7 +2653,21 @@ export class WorkflowService {
   }
 
   async waitForIdle(): Promise<void> {
-    await Promise.allSettled([...this.tasks]);
+    await Promise.allSettled([
+      ...this.tasks,
+      ...(this.cloudProjects ? [this.cloudProjects.waitForIdle()] : []),
+    ]);
+  }
+
+  private requireCloudProjects(): CloudProjectService {
+    if (!this.cloudProjects) {
+      throw new AppError(
+        "Cloud Remote Git 服务尚未配置",
+        503,
+        "CLOUD_PROJECTS_UNAVAILABLE",
+      );
+    }
+    return this.cloudProjects;
   }
 
   private async withArtifactRevisionLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
@@ -2336,6 +2688,13 @@ export class WorkflowService {
   }
 
   private acquireWorkspaceMutation(projectRoot: string): () => void {
+    if (this.quarantinedWorkspaceMutations.has(projectRoot)) {
+      throw new AppError(
+        "该 Run Workspace 因 Worker 停止状态不明已被隔离；请重启服务完成回收后再继续",
+        503,
+        "PROJECT_WORKSPACE_QUARANTINED",
+      );
+    }
     if (this.activeWorkspaceMutations.has(projectRoot)) {
       throw new AppError(
         "该项目工作区正在执行或保存另一项产物变更，请稍后重试",
@@ -2349,6 +2708,25 @@ export class WorkflowService {
       if (released) return;
       released = true;
       this.activeWorkspaceMutations.delete(projectRoot);
+    };
+  }
+
+  private acquirePhaseExecutionSlot(): () => void {
+    if (this.runner.mode() !== "real") return () => undefined;
+    const maximum = Math.max(1, Math.floor(this.maxConcurrentPhaseExecutions));
+    if (this.activePhaseExecutions >= maximum) {
+      throw new AppError(
+        `真实阶段执行已达到并发上限 ${maximum}，请等待当前任务完成后重试`,
+        429,
+        "PHASE_EXECUTION_CAPACITY_REACHED",
+      );
+    }
+    this.activePhaseExecutions += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.activePhaseExecutions -= 1;
     };
   }
 
@@ -2479,7 +2857,10 @@ export class WorkflowService {
       const keys = new Set(artifacts.map((artifact) => artifact.artifactKey));
       if (!requiredKeys.every((key) => keys.has(key))) continue;
       try {
-        await this.validateArtifactWorkspaceSnapshots(bundle.project.rootPath, artifacts);
+        await this.validateArtifactWorkspaceSnapshots(
+          baselineSourceRoot(candidate, bundle.project),
+          artifacts,
+        );
       } catch {
         // A structurally valid historical baseline whose files no longer match
         // its approved snapshots is not reusable. Continue to an older eligible
@@ -2654,10 +3035,13 @@ export class WorkflowService {
   }
 
   private async validateArchitectureBaselineWorkspace(
-    projectRoot: string,
     baseline: ArchitectureBaselineRecord,
+    currentProject: RuntimeProject,
   ): Promise<void> {
-    await this.validateArtifactWorkspaceSnapshots(projectRoot, baseline.artifacts);
+    await this.validateArtifactWorkspaceSnapshots(
+      baselineSourceRoot(baseline, currentProject),
+      baseline.artifacts,
+    );
   }
 
   private async validateCurrentArchitectureWorkspace(
@@ -2748,6 +3132,7 @@ export class WorkflowService {
 
   private async validateArchitectureRulebookGate(
     projectRoot: string,
+    controlRoot: string,
     runId: string,
     stage: "checkpoint" | "final",
     architectureSelection?: ArchitectureSelectionEvidence,
@@ -2756,10 +3141,11 @@ export class WorkflowService {
     if (stage === "final") {
       await this.validateArtifactWorkspaceSnapshots(projectRoot, artifacts);
     }
-    if (!await architectureRulebookValidationRequired(projectRoot)) return;
+    if (!await architectureRulebookValidationRequired(controlRoot)) return;
     const options = artifacts.find((artifact) => artifact.artifactKey === "architecture-options");
     await validateArchitectureRulebookReview({
       projectRoot,
+      controlRoot,
       stage,
       artifacts,
       documentedOptionIds: architectureOptionIds(options?.content ?? ""),
@@ -2802,7 +3188,7 @@ export class WorkflowService {
         },
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = publicExecutionFailure(error);
       try {
         await event("runner.failed", { message });
       } finally {
@@ -2813,6 +3199,9 @@ export class WorkflowService {
             : null,
           message
         );
+      }
+      if (error instanceof AppError && error.code === "DOCKER_WORKER_CLEANUP_FAILED") {
+        throw error;
       }
     }
   }
@@ -3048,6 +3437,13 @@ function isTrustedLinkedE2eCompletedPayload(
   }
 }
 
+function publicExecutionFailure(error: unknown): string {
+  const code = error instanceof AppError && /^[A-Z][A-Z0-9_]{2,80}$/u.test(error.code)
+    ? error.code
+    : "RUNNER_INTERNAL_ERROR";
+  return `阶段执行失败（${code}）。请按当前阶段的下一步提示检查配置或重试；服务端路径和原始诊断不会写入 Run。`;
+}
+
 function e2eReadinessBlockers(readiness: E2eWorkspaceReadinessDto): string[] {
   const items: Array<[string, E2eReadinessItemDto]> = [
     ["workspace", readiness.workspace],
@@ -3086,6 +3482,103 @@ function ticketRecords(artifactPath: string, content: string) {
     ...ticket,
     sourcePath: [basePath, ticket.sourcePath].filter(Boolean).join("/")
   }));
+}
+
+function assertRemoteCloudProject(project: { sourceKind?: "legacy-local" | "remote-git" }): void {
+  if (project.sourceKind !== "remote-git") {
+    throw new AppError("Cloud 中找不到这个远程项目", 404, "CLOUD_PROJECT_NOT_FOUND");
+  }
+}
+
+async function loadRuntimeDefinition(project: {
+  rootPath: string;
+  configPath: string;
+  sourceKind?: "legacy-local" | "remote-git";
+  definitionVersion?: string | null;
+}): Promise<LoadedDefinition> {
+  const controlRoot = path.dirname(project.configPath);
+  if (project.sourceKind === "remote-git") {
+    if (!project.definitionVersion) {
+      throw new AppError(
+        "Run 缺少固定的 Control Pack 版本",
+        500,
+        "CONTROL_PACK_VERSION_MISSING",
+      );
+    }
+    const actualVersion = await computeControlPackVersion(controlRoot);
+    if (actualVersion !== project.definitionVersion) {
+      throw new AppError(
+        "Control Pack 内容与 Run 固定版本不一致，拒绝继续执行",
+        409,
+        "CONTROL_PACK_VERSION_MISMATCH",
+      );
+    }
+  }
+  return loadDefinition({
+    sourceRoot: project.rootPath,
+    controlRoot,
+    configPath: project.configPath,
+  });
+}
+
+/**
+ * Production Store rows always carry the source Run workspace. The fallback is
+ * only for legacy-local stores and older test doubles; a Cloud Run must never
+ * silently read a baseline from the current Run workspace.
+ */
+function baselineSourceRoot(
+  baseline: { sourceRootPath?: string },
+  currentProject: Pick<RuntimeProject, "rootPath" | "sourceKind">,
+): string {
+  if (baseline.sourceRootPath) return baseline.sourceRootPath;
+  if (currentProject.sourceKind === "remote-git") {
+    throw new AppError(
+      "远程基线缺少来源 Run Workspace，拒绝跨任务读取",
+      500,
+      "BASELINE_SOURCE_WORKSPACE_MISSING",
+    );
+  }
+  return currentProject.rootPath;
+}
+
+function assertConfirmedRunPersistence(
+  confirmed: RunPersistenceSnapshot,
+  expected: {
+    runId: string;
+    projectId: string;
+    title: string;
+    objective: string;
+    changeContract: ChangeContractDto;
+    artifactPaths: Record<string, string>;
+    workspaceId: string | null;
+    baseRevision: GitRevision | null;
+    definitionVersion: string | null;
+    agentSessionRun: { sessionId: string; triggerMessageId: string } | null;
+  },
+): void {
+  const same = confirmed.run.id === expected.runId
+    && confirmed.run.projectId === expected.projectId
+    && confirmed.run.title === expected.title
+    && confirmed.run.objective === expected.objective
+    && confirmed.workspaceId === expected.workspaceId
+    && (confirmed.run.baseRevision ?? null) === expected.baseRevision
+    && (confirmed.run.definitionVersion ?? null) === expected.definitionVersion
+    && (
+      expected.agentSessionRun === null
+        ? confirmed.agentSessionRun === null
+        : confirmed.agentSessionRun?.sessionId === expected.agentSessionRun.sessionId
+          && confirmed.agentSessionRun.triggerMessageId === expected.agentSessionRun.triggerMessageId
+          && confirmed.agentSessionRun.workflowRunId === expected.runId
+    )
+    && isDeepStrictEqual(confirmed.run.changeContract ?? null, expected.changeContract)
+    && isDeepStrictEqual(confirmed.artifactPaths, expected.artifactPaths);
+  if (same) return;
+  throw new AppError(
+    "Run ID 已存在但持久化内容与本次请求不一致；平台已保留现场并停止清理",
+    409,
+    "RUN_CREATE_IDEMPOTENCY_CONFLICT",
+    { runId: expected.runId },
+  );
 }
 
 function publicDefinition(definition: LoadedDefinition): WorkflowDefinition {
@@ -3278,4 +3771,16 @@ function sameStringSet(left: string[], right: string[]): boolean {
   const rightSet = new Set(right);
   return leftSet.size === rightSet.size
     && [...leftSet].every((value) => rightSet.has(value));
+}
+
+function assertOperatorLocalFeatureAllowed(
+  project: Pick<RuntimeProject, "sourceKind">,
+  feature: string,
+): void {
+  if (project.sourceKind !== "remote-git") return;
+  throw new AppError(
+    `${feature} 依赖部署机器的本地授权或第二工作区，Cloud Run 不提供该能力`,
+    409,
+    "CLOUD_LOCAL_INTEGRATION_UNAVAILABLE",
+  );
 }

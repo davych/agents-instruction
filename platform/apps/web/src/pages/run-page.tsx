@@ -12,12 +12,14 @@ import {
   ClipboardList,
   Clock3,
   Code2,
+  Download,
   Eye,
   ExternalLink,
   FileCheck2,
   FileText,
   FlaskConical,
   GitBranch,
+  GitCommitHorizontal,
   LoaderCircle,
   LockKeyhole,
   MessageSquare,
@@ -27,6 +29,7 @@ import {
   RefreshCw,
   Rocket,
   RotateCcw,
+  ShieldCheck,
   TerminalSquare,
 } from "lucide-react";
 
@@ -172,6 +175,24 @@ export function RunPage({
     refetchInterval: (query) =>
       query.state.data?.phases?.some((phase) => phase.status === "running") ? 1_500 : false,
   });
+  const changesetQuery = useQuery({
+    queryKey: ["run", runId, "changeset"],
+    queryFn: ({ signal }) => api.getRunChangeset(runId, { signal }),
+    enabled: runQuery.data?.project.sourceKind === "remote-git"
+      && !runQuery.data.phases.some((phase) => phase.status === "running"),
+    retry: false,
+  });
+  const patchDownloadMutation = useMutation({
+    mutationFn: () => api.downloadRunPatch(runId),
+    onSuccess: (blob) => {
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${runId}.patch`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    },
+  });
   const humanDecisionsQuery = useQuery({
     queryKey: ["run", runId, "human-decisions"],
     queryFn: () => api.getHumanDecisions(runId),
@@ -189,7 +210,7 @@ export function RunPage({
   const e2eFlowQuery = useQuery({
     queryKey: e2eFlowQueryKey,
     queryFn: () => api.getVerificationE2eFlow(runId),
-    enabled: Boolean(runQuery.data),
+    enabled: runQuery.data?.project.sourceKind === "legacy-local",
     retry: 1,
     refetchInterval: (query) => (
       query.state.data?.state === "authoring" || query.state.data?.state === "executing"
@@ -205,7 +226,7 @@ export function RunPage({
   const e2eWorkspaceQuery = useQuery({
     queryKey: e2eWorkspaceQueryKey,
     queryFn: () => api.getE2eWorkspace(runQuery.data!.run.projectId),
-    enabled: Boolean(runQuery.data?.run.projectId),
+    enabled: runQuery.data?.project.sourceKind === "legacy-local",
     retry: 1,
   });
   const e2eFlowLoadError = e2eFlowErrorMessage(e2eFlowQuery.error);
@@ -232,13 +253,19 @@ export function RunPage({
     },
   });
   const linkedWorkspace = e2eFlowQuery.data?.workspace ?? e2eWorkspaceQuery.data ?? null;
-  const linkedGate = verificationE2eStandardGate({
-    flowLoaded: e2eFlowQuery.isSuccess,
-    flowState: e2eFlowQuery.data?.state,
-    flowHasWorkspace: Boolean(e2eFlowQuery.data?.workspace),
-    workspaceLoaded: e2eWorkspaceQuery.isSuccess,
-    workspaceConfigured: Boolean(e2eWorkspaceQuery.data),
-  });
+  const linkedGate = runQuery.data?.project.sourceKind === "remote-git"
+    ? {
+      explicitlyUnconfigured: true,
+      stateUncertain: false,
+      standardTesterLocked: false,
+    }
+    : verificationE2eStandardGate({
+      flowLoaded: e2eFlowQuery.isSuccess,
+      flowState: e2eFlowQuery.data?.state,
+      flowHasWorkspace: Boolean(e2eFlowQuery.data?.workspace),
+      workspaceLoaded: e2eWorkspaceQuery.isSuccess,
+      workspaceConfigured: Boolean(e2eWorkspaceQuery.data),
+    });
   const linkedStateUncertain = linkedGate.stateUncertain;
   const standardVerificationLocked = linkedGate.standardTesterLocked;
 
@@ -326,6 +353,17 @@ export function RunPage({
                 <GitBranch className="h-3 w-3" aria-hidden />
                 {run.status === "completed" ? "工作流审核完成" : "交付任务"}
               </Badge>
+              {run.baseRevision ? (
+                <Badge variant="outline">
+                  <GitCommitHorizontal className="h-3 w-3" aria-hidden />
+                  base {run.baseRevision.slice(0, 12)}
+                </Badge>
+              ) : null}
+              {project.sourceKind === "remote-git" && run.workspaceState ? (
+                <Badge variant={run.workspaceState === "failed" ? "danger" : run.workspaceState === "busy" ? "info" : "muted"}>
+                  云端工作区 · {workspaceStateLabel(run.workspaceState)}
+                </Badge>
+              ) : null}
               <span className="text-xs text-slate-400">创建于 {formatDate(run.createdAt)}</span>
             </div>
             <h1 tabIndex={-1} className="text-balance text-2xl font-bold tracking-[-0.025em] text-slate-950 focus:outline-none sm:text-3xl">
@@ -355,6 +393,41 @@ export function RunPage({
           </div>
         </div>
       </section>
+
+      {project.sourceKind === "remote-git" ? (
+        <Card className="border-sky-100 bg-sky-50/45 shadow-none">
+          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                <GitBranch className="h-4 w-4 text-sky-700" aria-hidden />
+                云端代码变更
+              </div>
+              <p className="mt-1 text-xs leading-5 text-slate-600">
+                {changesetQuery.data
+                  ? `${changesetQuery.data.files.length} 个文件 · ${changesetQuery.data.patchBytes.toLocaleString()} bytes · ${changesetQuery.data.dirty ? "有未提交变更" : "工作区干净"}`
+                  : changesetQuery.isError
+                    ? "暂时无法读取变更摘要；这不会改变已有交付记录。"
+                    : "平台正在检查此 Run 相对 base revision 的变更。"}
+              </p>
+              {patchDownloadMutation.isError ? (
+                <p role="alert" className="mt-1 text-xs text-rose-700">
+                  {patchDownloadMutation.error instanceof Error ? patchDownloadMutation.error.message : "Patch 下载失败。"}
+                </p>
+              ) : null}
+            </div>
+            <Button
+              variant="outline"
+              className="shrink-0 bg-white"
+              loading={patchDownloadMutation.isPending}
+              disabled={!changesetQuery.data?.downloadAvailable}
+              onClick={() => patchDownloadMutation.mutate()}
+            >
+              <Download className="h-4 w-4" aria-hidden />
+              下载 Patch
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {run.changeContract ? (
         <ChangeContractSummary
@@ -479,7 +552,9 @@ export function RunPage({
                   e2eFlowQuery.data?.state === "awaiting_verification_review"
                   && !e2eFlowLoadError
                 }
-                verificationE2ePanel={selectedPhase.phaseId === "verification" ? (
+                verificationE2ePanel={selectedPhase.phaseId === "verification" && project.sourceKind === "remote-git" ? (
+                  <CloudVerificationBoundary />
+                ) : selectedPhase.phaseId === "verification" ? (
                   <VerificationE2ePanel
                     projectId={project.id}
                     runId={runId}
@@ -505,7 +580,9 @@ export function RunPage({
                         e2eWorkspaceQuery.refetch(),
                       ]);
                     }}
-                    onConfigureWorkspace={() => setE2eWorkspaceOpen(true)}
+                    onConfigureWorkspace={() => {
+                      setE2eWorkspaceOpen(true);
+                    }}
                     onPrepareWorkspace={() => prepareE2eMutation.mutate()}
                     onPreflight={() => preflightE2eMutation.mutate()}
                     onAuthor={() => setExecuteTarget({
@@ -538,6 +615,7 @@ export function RunPage({
               productBaseline={productBaseline}
               designBaseline={designBaseline}
               architectureBaseline={architectureBaseline}
+              figmaEnabled={project.sourceKind === "legacy-local"}
               initialOutputKeys={executeTarget?.initialOutputKeys}
               verificationAction={executeTarget?.verificationAction}
               definition={
@@ -586,31 +664,46 @@ export function RunPage({
               }}
             />
           ) : null}
-          <E2eWorkspaceDialog
-            projectId={project.id}
-            suggestedRootPath={`${project.rootPath}-e2e`}
-            open={e2eWorkspaceOpen}
-            onOpenChange={setE2eWorkspaceOpen}
-            onConfigured={async (workspace) => {
-              queryClient.setQueryData(e2eWorkspaceQueryKey, workspace);
-              await queryClient.invalidateQueries({ queryKey: e2eFlowQueryKey });
-            }}
-          />
-          <E2eScriptReviewDialog
-            runId={runId}
-            authoring={e2eFlowLoadError ? null : e2eFlowQuery.data?.authoring ?? null}
-            loadError={e2eFlowLoadError}
-            open={e2eScriptReviewOpen}
-            onOpenChange={setE2eScriptReviewOpen}
-            onReviewed={async () => {
-              await queryClient.invalidateQueries({ queryKey: e2eFlowQueryKey });
-              await queryClient.invalidateQueries({ queryKey: ["run", runId] });
-            }}
-          />
+          {project.sourceKind === "legacy-local" ? (
+            <E2eWorkspaceDialog
+              projectId={project.id}
+              suggestedRootPath=""
+              open={e2eWorkspaceOpen}
+              onOpenChange={setE2eWorkspaceOpen}
+              onConfigured={async (workspace) => {
+                queryClient.setQueryData(e2eWorkspaceQueryKey, workspace);
+                await queryClient.invalidateQueries({ queryKey: e2eFlowQueryKey });
+              }}
+            />
+          ) : null}
+          {project.sourceKind === "legacy-local" ? (
+            <E2eScriptReviewDialog
+              runId={runId}
+              authoring={e2eFlowLoadError ? null : e2eFlowQuery.data?.authoring ?? null}
+              loadError={e2eFlowLoadError}
+              open={e2eScriptReviewOpen}
+              onOpenChange={setE2eScriptReviewOpen}
+              onReviewed={async () => {
+                await queryClient.invalidateQueries({ queryKey: e2eFlowQueryKey });
+                await queryClient.invalidateQueries({ queryKey: ["run", runId] });
+              }}
+            />
+          ) : null}
         </>
       )}
     </div>
   );
+}
+
+function workspaceStateLabel(state: NonNullable<WorkflowRun["workspaceState"]>): string {
+  const labels: Record<NonNullable<WorkflowRun["workspaceState"]>, string> = {
+    provisioning: "准备中",
+    ready: "已就绪",
+    busy: "运行中",
+    failed: "失败",
+    destroyed: "已回收",
+  };
+  return labels[state];
 }
 
 function e2eFlowErrorMessage(...errors: unknown[]): string | undefined {
@@ -641,7 +734,7 @@ function ChangeContractSummary({
       <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 marker:hidden sm:px-6">
         <span className="min-w-0">
           <span className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold text-slate-950">Change Contract</span>
+            <span className="text-sm font-semibold text-slate-950">任务合同（Change Contract）</span>
             <Badge variant="info">{WORK_TYPE_LABELS[contract.workType]}</Badge>
             <Badge variant="success">后续角色共同输入</Badge>
           </span>
@@ -650,6 +743,7 @@ function ChangeContractSummary({
         <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 transition group-open:rotate-90" aria-hidden />
       </summary>
       <div className="grid gap-4 border-t border-slate-100 bg-slate-50/45 px-5 py-5 sm:px-6 lg:grid-cols-2">
+        {contract.workItem ? <ContractWorkItem source={contract.workItem} /> : null}
         {contract.sourceRunIds?.length ? (
           <ContractSourceRuns
             ids={contract.sourceRunIds}
@@ -667,6 +761,78 @@ function ChangeContractSummary({
         <ContractList title="证据引用" items={contract.evidenceRefs} empty="未提供额外证据引用" />
       </div>
     </details>
+  );
+}
+
+function CloudVerificationBoundary() {
+  return (
+    <Card className="overflow-hidden border-sky-200" aria-label="云端 Verification 说明">
+      <CardHeader className="border-b border-sky-100 bg-sky-50/60">
+        <CardTitle className="flex items-center gap-2">
+          <ShieldCheck className="h-5 w-5 text-sky-700" aria-hidden />
+          云端 Verification
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2 p-5 text-xs leading-5 text-slate-700">
+        <p>
+          Tester 会在当前 Run 的隔离 Worker 中检查代码、测试和交付证据；不需要绑定本地项目或第二个目录。
+        </p>
+        <p>
+          本 MVP 尚未提供独立、可复用的云端真实浏览器 Linked E2E。若验收必须包含浏览器证据，请在受控 CI
+          或后续专用浏览器 Worker 中运行，并在证据缺失时保持人工 Gate 不通过。
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ContractWorkItem({ source }: { source: NonNullable<ChangeContract["workItem"]> }) {
+  return (
+    <div className="rounded-xl border border-sky-200 bg-sky-50/60 px-4 py-3 lg:col-span-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-xs font-semibold text-sky-900">工作项来源</div>
+          <p className="mt-1 text-xs text-slate-700">
+            {source.adapterLabel} · {source.externalId}
+          </p>
+        </div>
+        <Badge variant="info">已由人工确认后冻结</Badge>
+      </div>
+      <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+        <ContractSourceFact label="原始引用" value={source.reference} />
+        <ContractSourceFact label="读取时间" value={formatDate(source.fetchedAt)} />
+        <ContractSourceFact label="Adapter" value={source.adapterId} />
+        <ContractSourceFact label="证据指纹" value={source.fingerprint} mono />
+      </dl>
+      {source.url ? (
+        <a
+          className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-sky-800 hover:text-sky-950"
+          href={source.url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          打开原工作项
+          <ExternalLink className="h-3 w-3" aria-hidden />
+        </a>
+      ) : null}
+    </div>
+  );
+}
+
+function ContractSourceFact({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div>
+      <dt className="font-semibold text-slate-500">{label}</dt>
+      <dd className={cn("mt-0.5 break-all text-slate-800", mono && "font-mono")}>{value}</dd>
+    </div>
   );
 }
 
@@ -1244,7 +1410,7 @@ function PhasePanel({
             <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
             {phase.phaseId === "implementation"
               ? "Codex 正在写代码、补测试、运行检查并生成工程证据。页面会自动刷新状态和终端事件。"
-              : "Codex 正在项目目录中执行。页面会自动刷新状态和终端事件。"}
+              : "Agent 正在隔离工作区中执行。页面会自动刷新状态和运行事件。"}
           </div>
         ) : null}
         {(phase.status === "changes_requested" || phase.status === "rejected")
@@ -1458,7 +1624,7 @@ function EventTimeline({ phase }: { phase: PhaseRun }) {
             <TerminalSquare className="h-4 w-4 text-teal-300" aria-hidden />
             执行时间线
           </CardTitle>
-          <p className="mt-1 text-[11px] text-slate-400">Codex Terminal · 本地事件</p>
+          <p className="mt-1 text-[11px] text-slate-400">Agent event stream · 服务端事件</p>
         </div>
         {phase.status === "running" ? (
           <Badge className="border-sky-400/20 bg-sky-400/10 text-sky-200">

@@ -920,7 +920,7 @@ export function ReviewDialog({
                 ) : isMermaidArtifact ? (
                   <MermaidPreview content={content} />
                 ) : (
-                  <MarkdownPreview content={content} />
+                  <MarkdownPreview content={content} mode="untrusted" />
                 )}
               </Suspense>
             ) : (

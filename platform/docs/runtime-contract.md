@@ -1,8 +1,26 @@
 # Platform runtime contract
 
-This document defines the behavior the local AI SDLC Platform adds around the canonical six-phase workflow. For installation and daily commands, start with the [Platform README](../README.md). For phase ownership and impact routing, see [End-to-End Workflow](../../guidelines/workflow/README.md). For artifact resolution, see [Configuration](../../guidelines/configuration/README.md).
+This document defines the behavior the self-hosted Cloud Platform adds around the canonical six-phase workflow. The primary product path is browser → remote HTTPS Git → managed snapshot → independent Run workspace; users never bind a local directory or install a client integration. Legacy local projects remain available only through compatibility APIs.
 
-The platform coordinates local execution and records evidence. It does not transfer product, architecture, risk, merge, deployment, or release authority from humans to Agents.
+The platform coordinates server-side execution and records evidence. It does not transfer product, architecture, risk, merge, deployment, or release authority from humans to Agents.
+
+## Work item intake is a human-confirmed boundary
+
+A Run may start from a manual description or an operator-configured Work Item MCP Adapter. The browser can select only an Adapter ID and submit an issue reference. Executable path, arguments, MCP tool, fixed arguments, field mapping and Secret environment mapping are server-owned configuration.
+
+The Adapter performs a bounded stdio MCP handshake and tool call, then normalizes structured output into one editable draft. The result is not workflow authority and does not start a phase. A human must review and complete the current behavior, expected behavior, scope, acceptance criteria and regression scope. Run creation freezes that confirmed Change Contract together with the external Adapter ID, external reference, fetch time and evidence fingerprint; a later Jira or Linear edit cannot silently change an existing Run.
+
+The generic Adapter supports Jira, Linear and another issue system only when an operator installs and configures a compatible MCP server or bridge. This MVP does not claim built-in vendor OAuth or zero-configuration connectivity.
+
+## Project Ask is outside phase execution
+
+Project Ask is a read-only project assistant. It does not create a seventh phase, own an artifact, change role authority, or provide execution evidence. An Ask answer may explain repository content and offer a draft, but it cannot modify the repository or advance a Run.
+
+The browser must explicitly confirm an editable draft before calling the existing Run-creation API. The resulting Run starts at the existing first phase and keeps the canonical six-phase order and role ownership. Creating a Run from Ask does not automatically execute that Run or approve any phase.
+
+Every Ask Thread is persisted by the server and bound to one Project, Provider, public Ask revision, and raw Git source revision. A follow-up supplies only the new question and expected revision. The server reloads bounded history and the matching Project Snapshot; it never trusts browser-supplied history or silently moves an old Thread to a newly synced commit. Verified citations bind the displayed revision, complete source-file SHA-256, and exact line range.
+
+When a user turns an old Thread into a delivery task, the editable Change Contract and new Run stay on that Thread's retained source revision. The platform must not silently substitute the Project's newest revision. If the retained snapshot is genuinely unavailable, handoff fails visibly instead of creating a mismatched Run.
 
 ## Shared workflow, different execution guarantees
 
@@ -14,7 +32,7 @@ Direct IDE clients and the Web platform consume the same:
 - owner-aware path rules;
 - role procedures and output templates.
 
-The native client selected during initialization controls the files installed for GitHub Copilot, Claude Code, or Codex discovery. Real Web jobs always use the local Codex runner.
+The native client selected during legacy initialization controls the files installed for GitHub Copilot, Claude Code, or Codex discovery. Remote real jobs always use the configured Docker Codex Worker. Legacy local projects retain the host runner for compatibility.
 
 Only the Web platform can claim events it actually persisted, including:
 
@@ -23,23 +41,33 @@ Only the Web platform can claim events it actually persisted, including:
 - selected-output execution contracts;
 - task-and-Run path pins;
 - Architecture selection checkpoints;
-- Linked E2E Workspace bindings;
-- staging-author manifests and exact-hash reviews;
+- legacy-local Linked E2E Workspace bindings;
+- legacy-local staging-author manifests and exact-hash reviews;
 - trusted command events and semantic-gate results.
 
 A direct IDE session may follow the same artifact schema but has no Web execution contract. It uses the bounded human-supplied execution brief and registered basename paths defined by the shared workflow, and must not invent or claim Web guarantees.
 
-## Project initialization and registration
+## Remote project import and Control Pack
 
-An existing-project registration requires an initialized project with `ai-native.yaml`. Registration stores platform metadata and never reruns the initializer.
+A Cloud project accepts a generic HTTPS Git URL, optional ref, and optional administrator-defined Credential Profile. The Git Broker validates exact origin, DNS addresses, ref, credential-origin binding and repository limits, then resolves one exact commit. Import and sync publish a new Project Snapshot only after DeepWiki Lite for the same revision is ready; a failed sync leaves the previous active snapshot usable.
 
-For a new project, the API invokes the repository initializer with the selected native client and registers the project only after initialization succeeds. The filesystem success is the commit point. A later client disconnect does not cancel durable registration work; if the response is uncertain, reload the project list before retrying.
+DeepWiki Lite is a deterministic, revision-bound file map: repository/file-type scale, common entry points, documentation, test/build clues and selected important paths. It is not a full browsable semantic Wiki, vector database or complete program-understanding claim. Ask uses it as a routing clue, then builds a bounded source pack with line-level citations for the actual question.
 
-The initializer remains create-only, preflights every destination, rejects conflicts, symlink parents, and path escape, and cleans up transaction-owned files after a normal failure or cancellation. Crash recovery verifies ownership before removing remnants and fails closed when bytes or identities cannot be proven. It is not an in-place upgrader or a general merge tool.
+Remote repositories do not need platform files. The API creates a versioned Control Pack under the Managed Root. Definition loading reads roles, procedures and templates from that Control Pack while resolving output paths under the Run Workspace. Platform controls therefore do not appear in the user repository or Changeset.
+
+Each remote Run copies the selected Project Snapshot into a separate workspace, stores `baseRevision` and `definitionVersion`, and reuses that workspace for all six phases. Later syncs do not move an existing Run. Cross-Run baseline reuse reads the source Run workspace and copies approved bytes into the target Run instead of assuming every Run shares one directory.
+
+The pinned `definitionVersion` is part of the Run's evidence. Updating the platform's bundled Control Pack does not rewrite an existing Project or Run. To use a new Control Pack version, the operator re-imports/registers the repository and starts a new Run after reviewing the change. The MVP has no silent or in-place Control Pack upgrade.
+
+Users do not maintain one long Prompt file. At execution time the platform layers the selected role and authority limits, phase procedure, output templates, Change Contract, DeepWiki clues and approved upstream artifacts. This makes Prompt ownership and provenance clear; it does **not** promise that the final request is short. Complex artifact context has a character budget of about 180,000 and may be truncated or rejected at its bounds.
+
+Legacy local registration and initialization remain available through compatibility APIs. Their create-only and path-safety rules are unchanged, but they are not the Cloud Web entry path.
 
 ## Real and fake execution
 
-Real jobs require the configured `AI_SDLC_CODEX_BIN`. The default timeout is 30 minutes and can be changed with `AI_SDLC_CODEX_TIMEOUT_MS`.
+Remote real jobs require an administrator-approved `AI_SDLC_WORKER_IMAGE` **and** an exact match between the imported repository URL and one entry in `AI_SDLC_REAL_EXECUTION_TRUSTED_REPOSITORIES`. Import permission does not grant execution permission; an empty execution list denies all real phases. Missing or invalid Docker/trust configuration fails closed and never falls back to host execution. The Worker has a read-only root filesystem, non-root uid/gid, dropped capabilities, no-new-privileges, PID/CPU/memory limits, bounded tmpfs, a writable repository mount, read-only Git metadata and Control Pack, and no Docker socket or Git/DB/platform credential. Legacy local real jobs still use `AI_SDLC_CODEX_BIN` on the host.
+
+`AI_SDLC_MAX_CONCURRENT_PHASES` is a process-local safety cap and defaults to `1`. An excess real-phase request receives 429; the MVP does not enqueue it. Durable queueing, pause/cancel, restart continuation and coordination across multiple API instances are not supported, so only one API instance may operate a Managed Root.
 
 Before each real phase run, the execution dialog reads the account- and project-scoped Codex model catalog. The user chooses a supported model and reasoning effort for that execution. The resolved values are passed to `codex exec`, stored with the execution, and shown in its timeline.
 
@@ -90,6 +118,10 @@ A human answer is stored in review history and reopens the owning phase. The ite
 
 ## Design outputs and Figma
 
+Desktop Figma MCP is a legacy-local capability. Cloud Run endpoints reject it because the API deployment cannot borrow an operator desktop seat or local connector. A future server-side Figma integration needs its own service credential, file-authorization and audit design.
+
+The remaining Figma rules in this section describe that legacy-local path; they are not Cloud feature claims.
+
 The first Design execution includes the required `design-baseline` and `design-spec`. A user may additionally select a self-contained `design-prototype` HTML file and `figma-handoff`. Later runs may select only outputs that need regeneration.
 
 Prototype preview uses a unique-origin sandbox. Scripts, external resources, forms, popups, embedded frames, objects, and top-level navigation are disabled; the original source remains reviewable.
@@ -119,6 +151,10 @@ The gate rejects unfinished tasks, missing or failed command evidence, unresolve
 Passing Implementation unlocks Tester. It does not publish or merge a pull request.
 
 ## Verification and Linked E2E
+
+Cloud Verification runs the normal Tester phase inside the Run Worker and may execute only the tests, scripts and browser harness already present in the imported repository. It records that repository's test evidence; it does not create or bind another local test repository. If acceptance requires durable browser evidence and the repository does not already provide a runnable suite in the Worker, Tester must mark the requirement Blocked rather than claim success.
+
+The complete Linked E2E flow below is a **legacy-local-only** capability. Cloud Run endpoints reject it because it depends on a second operator-local directory and browser installation. A future managed browser-worker design is required before Cloud can claim these guarantees.
 
 Tester first maps acceptance criteria, regressions, deferred Design checks, NFRs, and risks to the strongest appropriate evidence. A criterion proven more directly by unit, integration, or contract testing need not become E2E.
 
@@ -159,6 +195,12 @@ The Web Release gate requires a real execution and re-resolves current approved 
 Fake or legacy runner executions, stale inputs, placeholders, missing evidence, and claims that preparation executed an external action are rejected. Passing means only `Ready for human go/no-go`.
 
 DevOps does not configure CI or required checks, use secrets, change branch policy, commit, push, publish or merge a PR, deploy, roll back, publish a release, accept risk, or decide go/no-go. Those actions require a separately authorized human or external system.
+
+## Workspace retention and pruning
+
+Project sync never changes an old Ask Thread or Run, so any snapshot referenced by one of them remains retained. A successful Run workspace is also retained as the source of artifacts, Changeset and Patch. The MVP does not automatically archive or delete successful Runs.
+
+The operator-only prune endpoint removes only sufficiently old, inactive Workspace records that have no current Project, Ask Thread or Run reference. `olderThanHours` and `limit` bound each pass. Operators must call it with Bearer authentication, inspect a `dryRun:true` result first, then opt into `dryRun:false`. Run one API instance and avoid imports, Run creation, phase execution or parallel maintenance during the pass. This is crash-remnant cleanup, not distributed garbage collection or a replacement for hard filesystem quotas.
 
 ## Related documentation
 

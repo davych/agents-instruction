@@ -1,8 +1,7 @@
 import type { ReactNode } from "react";
-import { Boxes, ChevronRight, Github, Radio, Sparkles } from "lucide-react";
+import { Boxes, ChevronRight, Cloud, Sparkles } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 interface Crumb {
@@ -74,19 +73,9 @@ export function AppShell({
 
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="hidden gap-2 py-1.5 sm:inline-flex">
-              <Radio className="h-3 w-3 text-emerald-500" aria-hidden />
-              Local runtime
+              <Cloud className="h-3 w-3 text-emerald-500" aria-hidden />
+              Cloud control plane
             </Badge>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="hidden text-slate-400 sm:inline-flex"
-              aria-label="项目仓库"
-              title="项目仓库"
-              onClick={() => window.open("https://github.com", "_blank", "noopener,noreferrer")}
-            >
-              <Github className="h-[18px] w-[18px]" aria-hidden />
-            </Button>
           </div>
         </div>
       </header>

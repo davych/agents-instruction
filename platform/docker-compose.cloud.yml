@@ -1,0 +1,90 @@
+name: ai-sdlc-cloud
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ai_sdlc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_sdlc}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  api:
+    build:
+      context: ..
+      dockerfile: platform/docker/api.Dockerfile
+    restart: unless-stopped
+    user: "10001:10001"
+    group_add:
+      - "${AI_SDLC_DOCKER_GID:?set the Docker socket group id}"
+    env_file:
+      - path: ${AI_SDLC_CLOUD_ENV_FILE:-.env.cloud}
+        required: true
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ai_sdlc}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_sdlc}
+      HOST: 0.0.0.0
+      PORT: 4100
+      AI_SDLC_ACCESS_TOKEN: ${AI_SDLC_ACCESS_TOKEN:?generate a random access token}
+      AI_SDLC_ALLOWED_ORIGINS: ${AI_SDLC_ALLOWED_ORIGINS:?set the exact Web origin}
+      AI_SDLC_MANAGED_WORKSPACE_ROOT: ${AI_SDLC_HOST_WORKSPACE_ROOT:?set an absolute host workspace root}
+      AI_SDLC_WORKER_IMAGE: ${AI_SDLC_WORKER_IMAGE:?set the approved Worker image}
+    # The trusted API may reach an operator-run LM Studio/Ollama service on the
+    # Docker host. Provider config still rejects private plain HTTP unless its
+    # explicit per-provider opt-in is enabled.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Docker bind sources are interpreted by the host daemon. The trusted API
+      # therefore sees the dedicated workspace root at the exact same absolute path.
+      - type: bind
+        source: ${AI_SDLC_HOST_WORKSPACE_ROOT:?set an absolute host workspace root}
+        target: ${AI_SDLC_HOST_WORKSPACE_ROOT:?set an absolute host workspace root}
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+      - type: bind
+        source: ${AI_SDLC_MCP_BIN_ROOT:-./mcp-bin}
+        target: /opt/ai-sdlc/mcp-bin
+        read_only: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "4100"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  web:
+    build:
+      context: ..
+      dockerfile: platform/docker/web.Dockerfile
+    restart: unless-stopped
+    ports:
+      # Loopback by default. Put a TLS reverse proxy in front for remote access.
+      - "${AI_SDLC_WEB_BIND_HOST:-127.0.0.1}:${AI_SDLC_WEB_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  worker-image:
+    image: ${AI_SDLC_WORKER_IMAGE:?set the approved Worker image}
+    build:
+      context: ..
+      dockerfile: platform/docker/worker.Dockerfile
+    profiles: ["worker-image"]
+    command: ["codex", "--version"]
+
+volumes:
+  postgres-data:

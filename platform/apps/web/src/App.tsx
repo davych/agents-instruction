@@ -1,18 +1,29 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
+import { AccessTokenGate } from "@/components/access-token-gate";
 import { AppShell } from "@/components/app-shell";
+import { ErrorState, PageSkeleton } from "@/components/states";
+import { api, ApiError, getAccessToken, setAccessToken } from "@/lib/api";
 import { routeTitle } from "@/lib/navigation";
 import { allowAppNavigation } from "@/lib/navigation-guard";
+import { AgentWorkspacePage } from "@/pages/agent-workspace-page";
 import { ProjectPage } from "@/pages/project-page";
 import { ProjectsPage } from "@/pages/projects-page";
 import { RunPage } from "@/pages/run-page";
 
 interface RouteState {
   projectId?: string;
+  sessionId?: string;
   runId?: string;
   view?: "workflow" | "tickets";
+  projectView?: "workspace" | "overview" | "ask";
   ticketId?: string;
 }
+
+const AskPage = lazy(() =>
+  import("@/pages/ask-page").then((module) => ({ default: module.AskPage })),
+);
 
 const historyIndexKey = "aiSdlcHistoryIndex";
 
@@ -40,18 +51,43 @@ function readRoute(): RouteState {
   const params = new URLSearchParams(window.location.search);
   return {
     projectId: params.get("project") || undefined,
+    sessionId: params.get("session") || undefined,
     runId: params.get("run") || undefined,
     view: params.get("view") === "tickets" ? "tickets" : "workflow",
+    projectView: params.get("projectView") === "ask"
+      ? "ask"
+      : params.get("projectView") === "overview" ? "overview" : "workspace",
     ticketId: params.get("ticket") || undefined,
   };
 }
 
 export default function App() {
   const [route, setRoute] = useState<RouteState>(readRoute);
+  const initialAccessTokenRef = useRef(getAccessToken());
+  const [authenticationApproved, setAuthenticationApproved] = useState(false);
   const navigationKindRef = useRef<"initial" | "push" | "pop">("initial");
   const restoringBlockedPopRef = useRef(false);
   const historyIndexRef = useRef(historyIndex(window.history.state) ?? 0);
   const renderedUrlRef = useRef(currentHistoryUrl());
+  const healthQuery = useQuery({
+    queryKey: ["health"],
+    queryFn: api.getHealth,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const storedAuthenticationQuery = useQuery({
+    queryKey: ["authentication", "stored-token"],
+    queryFn: () => api.checkAuth(),
+    enabled: healthQuery.data?.authentication?.required === true && Boolean(initialAccessTokenRef.current),
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (storedAuthenticationQuery.isSuccess) setAuthenticationApproved(true);
+    if (storedAuthenticationQuery.error instanceof ApiError && storedAuthenticationQuery.error.status === 401) {
+      setAccessToken("");
+    }
+  }, [storedAuthenticationQuery.error, storedAuthenticationQuery.isSuccess]);
 
   useEffect(() => {
     const initialIndex = historyIndex(window.history.state);
@@ -100,7 +136,11 @@ export default function App() {
     if (!allowAppNavigation()) return;
     const params = new URLSearchParams();
     if (next.projectId) params.set("project", next.projectId);
+    if (next.sessionId) params.set("session", next.sessionId);
     if (next.runId) params.set("run", next.runId);
+    if (next.projectId && !next.runId && next.projectView && next.projectView !== "workspace") {
+      params.set("projectView", next.projectView);
+    }
     if (next.runId && next.view === "tickets") params.set("view", "tickets");
     if (next.runId && next.view === "tickets" && next.ticketId) params.set("ticket", next.ticketId);
     const query = params.toString();
@@ -141,15 +181,46 @@ export default function App() {
       observer.disconnect();
       window.clearTimeout(timeoutId);
     };
-  }, [route.projectId, route.runId, route.ticketId, route.view]);
+  }, [route.projectId, route.projectView, route.runId, route.sessionId, route.ticketId, route.view]);
+
+  if (healthQuery.isLoading || (
+    healthQuery.data?.authentication?.required &&
+    initialAccessTokenRef.current &&
+    storedAuthenticationQuery.isLoading
+  )) {
+    return <main className="mx-auto max-w-5xl px-6 py-12"><PageSkeleton /></main>;
+  }
+  if (healthQuery.isError) {
+    return (
+      <main className="mx-auto max-w-3xl px-6 py-12">
+        <ErrorState error={healthQuery.error} retry={() => void healthQuery.refetch()} />
+      </main>
+    );
+  }
+  const authenticationRequired = healthQuery.data?.authentication?.required === true;
+  if (authenticationRequired && !authenticationApproved && !storedAuthenticationQuery.isSuccess) {
+    return (
+      <AccessTokenGate
+        storedTokenRejected={Boolean(initialAccessTokenRef.current && storedAuthenticationQuery.isError)}
+        onConnected={() => setAuthenticationApproved(true)}
+      />
+    );
+  }
 
   const crumbs = route.runId
     ? [
-        { label: "项目", onClick: () => navigate({ projectId: route.projectId }) },
+        { label: "Agent 工作台", onClick: () => navigate({ projectId: route.projectId, sessionId: route.sessionId }) },
         { label: route.view === "tickets" ? "Ticket 看板" : "工作流看板" },
       ]
-    : route.projectId
-      ? [{ label: "项目详情" }]
+    : route.projectId && route.projectView === "ask"
+      ? [
+          { label: "项目", onClick: () => navigate({ projectId: route.projectId }) },
+          { label: "问项目" },
+        ]
+      : route.projectId && route.projectView === "overview"
+        ? [{ label: "项目详情" }]
+        : route.projectId
+          ? [{ label: "Agent 工作台" }]
       : [];
 
   return (
@@ -157,7 +228,7 @@ export default function App() {
       {route.runId ? (
         <RunPage
           runId={route.runId}
-          onBack={(projectId) => navigate({ projectId: projectId || route.projectId })}
+          onBack={(projectId) => navigate({ projectId: projectId || route.projectId, sessionId: route.sessionId })}
           view={route.view ?? "workflow"}
           ticketId={route.ticketId}
           onViewChange={(view) => navigate({ projectId: route.projectId, runId: route.runId, view })}
@@ -168,14 +239,40 @@ export default function App() {
             navigate({ projectId: route.projectId, runId: route.runId, view: "tickets" })
           }
         />
-      ) : route.projectId ? (
+      ) : route.projectId && route.projectView === "ask" ? (
+        <Suspense fallback={<PageSkeleton />}>
+          <AskPage
+            key={route.projectId}
+            projectId={route.projectId}
+            onBack={() => navigate({ projectId: route.projectId })}
+            onOpenRun={(runId) => navigate({ projectId: route.projectId, runId })}
+          />
+        </Suspense>
+      ) : route.projectId && route.projectView === "overview" ? (
         <ProjectPage
           projectId={route.projectId}
           onBack={() => navigate({})}
+          onOpenAsk={() => navigate({ projectId: route.projectId, projectView: "ask" })}
           onOpenRun={(runId) => navigate({ projectId: route.projectId, runId })}
         />
+      ) : route.projectId ? (
+        <AgentWorkspacePage
+          projectId={route.projectId}
+          sessionId={route.sessionId}
+          onSessionChange={(sessionId) => navigate({
+            projectId: route.projectId,
+            sessionId,
+            projectView: "workspace",
+          })}
+          onBack={() => navigate({})}
+          onOpenRun={(runId) => navigate({ projectId: route.projectId, sessionId: route.sessionId, runId })}
+        />
       ) : (
-        <ProjectsPage onSelectProject={(projectId) => navigate({ projectId })} />
+        <ProjectsPage onOpenWorkspace={(projectId, sessionId) => navigate({
+          projectId,
+          sessionId,
+          projectView: "workspace",
+        })} />
       )}
     </AppShell>
   );

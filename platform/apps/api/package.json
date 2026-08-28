@@ -9,7 +9,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test checks/**/*.check.ts"
+    "test": "node --import tsx --test checks/**/*.check.ts",
+    "test:docker-smoke": "AI_SDLC_RUN_DOCKER_SMOKE=1 node --import tsx --test checks/cloud-docker-smoke.check.ts"
   },
   "dependencies": {
     "@ai-sdlc/contracts": "workspace:*",

@@ -70,7 +70,15 @@ test("push navigation resets context while popstate keeps browser restoration", 
 
 test("route titles identify projects, workflow, and ticket contexts", () => {
   assert.equal(routeTitle({}), "项目 · AI SDLC");
-  assert.equal(routeTitle({ projectId: "project-1" }), "项目详情 · AI SDLC");
+  assert.equal(routeTitle({ projectId: "project-1" }), "Agent 工作台 · AI SDLC");
+  assert.equal(
+    routeTitle({ projectId: "project-1", projectView: "overview" }),
+    "项目详情 · AI SDLC",
+  );
+  assert.equal(
+    routeTitle({ projectId: "project-1", projectView: "ask" }),
+    "问项目 · AI SDLC",
+  );
   assert.equal(
     routeTitle({ projectId: "project-1", runId: "run-1", view: "workflow" }),
     "工作流看板 · AI SDLC",
@@ -81,19 +89,18 @@ test("route titles identify projects, workflow, and ticket contexts", () => {
   );
 });
 
-test("project initialization exposes all supported agent clients with Codex default", async () => {
+test("cloud project intake accepts a remote Git repository without exposing local paths or client adapters", async () => {
   const source = await readFile(projectsPagePath, "utf8");
 
-  assert.match(source, /agentClient: "codex"/u);
-  assert.match(source, /label: "Codex"/u);
-  assert.match(source, /label: "Claude Code"/u);
-  assert.match(source, /label: "GitHub Copilot"/u);
-  assert.match(source, /type="checkbox"[\s\S]*initialize: event\.target\.checked/u);
-  assert.match(source, /type="radio"/u);
-  assert.doesNotMatch(source, /项目代码不会上传/u);
-  assert.match(source, /真实 Codex 执行.*模型服务/u);
+  assert.match(source, /sourceKind: "remote-git"/u);
+  assert.match(source, /Git HTTPS 仓库地址/u);
+  assert.match(source, /requestedRef/u);
+  assert.match(source, /credentialProfileId/u);
+  assert.match(source, /api\.listRepositoryCredentials/u);
+  assert.doesNotMatch(source, /agentClient|initialize:|本地代码目录|\/Users\/you/u);
+  assert.match(source, /浏览器不会接收 Git 密钥/u);
   assert.match(source, /createControllerRef\.current\?\.abort/u);
-  assert.match(source, /项目创建界面已卸载/u);
-  assert.match(source, /api\.createProject\(input, \{ signal: controller\.signal \}\)/u);
-  assert.match(source, /刷新项目列表确认状态后再重试/u);
+  assert.match(source, /仓库导入界面已卸载/u);
+  assert.match(source, /api\.bindRemoteRepository\(input, \{ signal: controller\.signal \}\)/u);
+  assert.match(source, /绑定后会直接打开工作台/u);
 });

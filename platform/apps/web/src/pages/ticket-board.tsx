@@ -372,7 +372,7 @@ function TicketDetailDialog({
       ) : ticket ? (
         <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_300px]">
           <div className="scrollbar-thin min-h-[360px] overflow-y-auto border-b border-slate-200 bg-white p-5 sm:p-7 lg:max-h-[72vh] lg:border-b-0 lg:border-r">
-            <MarkdownPreview content={ticket.content} />
+            <MarkdownPreview content={ticket.content} mode="untrusted" />
           </div>
           <aside className="scrollbar-thin overflow-y-auto bg-slate-50/70 p-5 lg:max-h-[72vh]">
             <div className="rounded-xl border border-slate-200 bg-white p-4">

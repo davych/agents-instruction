@@ -25,7 +25,7 @@ export function hasStringFields(
 
 function invalidApiResponse(label: string, expected: string): ApiError {
   return new ApiError(
-    `本地服务返回的${label}结构无效，可能是 Web 与 API 版本不一致。请刷新页面或更新服务后重试。`,
+    `服务端返回的${label}结构无效，可能是 Web 与 API 版本不一致。请刷新页面或更新服务后重试。`,
     502,
     "INVALID_API_RESPONSE",
     { expected },
