@@ -3,6 +3,7 @@ import type {
   AskProviderProtocol,
   AskProviderStatusDto,
 } from "@ai-sdlc/contracts";
+import { isIP } from "node:net";
 
 import { safeEndpointLabel } from "./http.js";
 import type { AskConfiguredProviderOptions } from "./types.js";
@@ -58,6 +59,9 @@ export function parseAskProviderBaseUrl(
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new Error(`${variableName} 只允许 HTTPS，或本机 loopback HTTP`);
   }
+  if (isHighRiskProviderHostname(parsed.hostname)) {
+    throw new Error(`${variableName} 不能指向 cloud metadata、未指定、link-local 或 multicast 地址`);
+  }
   if (
     parsed.protocol === "http:"
     && !isLoopbackHostname(parsed.hostname)
@@ -69,6 +73,74 @@ export function parseAskProviderBaseUrl(
   }
   parsed.pathname = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/u, "");
   return parsed;
+}
+
+/**
+ * Blocks high-risk literal destinations before a saved Provider can become an
+ * API-side network client. This is intentionally a literal/known-name guard,
+ * not a claim of DNS pinning or a replacement for deployment egress policy.
+ */
+function isHighRiskProviderHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/gu, "").replace(/\.$/u, "");
+  if (isLoopbackHostname(normalized)) return false;
+  if (KNOWN_METADATA_HOSTNAMES.has(normalized)) return true;
+  if (normalized === "fd00:ec2::254") return true;
+
+  const family = isIP(normalized);
+  if (family === 4) return isHighRiskIpv4(normalized);
+  if (family !== 6) return false;
+  const words = parseIpv6Words(normalized);
+  if (!words) return true;
+  if (words.every((word) => word === 0)) return true;
+  if ((words[0]! & 0xffc0) === 0xfe80) return true;
+  if ((words[0]! & 0xff00) === 0xff00) return true;
+
+  // Reject mapped and compatible encodings when the embedded IPv4 address is
+  // itself forbidden. URL normalization turns dotted tails into these words.
+  if (words.slice(0, 5).every((word) => word === 0)
+    && (words[5] === 0 || words[5] === 0xffff)) {
+    const embedded = `${words[6]! >>> 8}.${words[6]! & 0xff}.${words[7]! >>> 8}.${words[7]! & 0xff}`;
+    return isHighRiskIpv4(embedded);
+  }
+  return false;
+}
+
+const KNOWN_METADATA_HOSTNAMES = new Set([
+  "metadata",
+  "instance-data",
+  "metadata.google.internal",
+  "metadata.google",
+  "metadata.goog",
+  "metadata.azure.internal",
+  "metadata.aws.internal",
+  "metadata.oraclecloud.com",
+  "metadata.tencentyun.com",
+]);
+
+function isHighRiskIpv4(value: string): boolean {
+  const octets = value.split(".").map(Number);
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet))) return true;
+  const [first, second, third, fourth] = octets as [number, number, number, number];
+  return first === 0
+    || (first === 169 && second === 254)
+    || first >= 224
+    // Alibaba Cloud's metadata service uses a public-looking special address.
+    || (first === 100 && second === 100 && third === 100 && fourth === 200);
+}
+
+function parseIpv6Words(value: string): number[] | null {
+  const parts = value.split("::");
+  if (parts.length > 2) return null;
+  const left = parts[0] ? parts[0].split(":") : [];
+  const right = parts.length === 2 && parts[1] ? parts[1].split(":") : [];
+  const missing = 8 - left.length - right.length;
+  if ((parts.length === 1 && missing !== 0) || (parts.length === 2 && missing < 1)) return null;
+  const words = [
+    ...left,
+    ...Array.from({ length: missing }, () => "0"),
+    ...right,
+  ].map((word) => Number.parseInt(word, 16));
+  return words.length === 8 && words.every((word) => Number.isInteger(word)) ? words : null;
 }
 
 export function isLoopbackHostname(hostname: string): boolean {

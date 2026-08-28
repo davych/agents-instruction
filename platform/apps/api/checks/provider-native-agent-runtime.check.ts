@@ -30,6 +30,10 @@ class FakeProviderPort {
     private readonly toolCalling = true,
   ) {}
 
+  runWithProvider<T>(_providerId: AskProviderId, operation: () => T): T {
+    return operation();
+  }
+
   status(providerId: AskProviderId): AskProviderStatusDto {
     return {
       id: providerId,

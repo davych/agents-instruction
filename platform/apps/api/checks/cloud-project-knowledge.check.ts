@@ -379,6 +379,7 @@ test("CLOUD-AC-09: an old Ask Thread keeps its old snapshot and old DeepWiki rev
   } as unknown as RepositoryRetriever;
   let prompt = "";
   const providers = {
+    runWithProvider: <T>(_providerId: string, operation: () => T): T => operation(),
     status: () => providerStatus(),
     complete: async (_id: string, request: { messages: Array<{ content: string }> }) => {
       prompt = request.messages[0]?.content ?? "";

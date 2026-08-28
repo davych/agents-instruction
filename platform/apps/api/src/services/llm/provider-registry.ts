@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import type {
   AskProviderCheckDto,
   AskProviderId,
@@ -27,13 +29,14 @@ const PROVIDER_ORDER: readonly AskProviderId[] = [
 ];
 
 export class AskProviderRegistry {
-  private readonly providers: ReadonlyMap<AskProviderId, AskLlmProvider>;
+  private providers: ReadonlyMap<AskProviderId, ProviderSnapshot>;
+  private readonly pinned = new AsyncLocalStorage<ReadonlyMap<AskProviderId, ProviderSnapshot>>();
 
   constructor(providers: readonly AskLlmProvider[]) {
-    const entries = new Map<AskProviderId, AskLlmProvider>();
+    const entries = new Map<AskProviderId, ProviderSnapshot>();
     for (const provider of providers) {
       if (entries.has(provider.id)) throw new Error(`Ask Provider 重复注册：${provider.id}`);
-      entries.set(provider.id, provider);
+      entries.set(provider.id, { provider, recordVersion: 1 });
     }
     for (const id of PROVIDER_ORDER) {
       if (!entries.has(id)) throw new Error(`Ask Provider 未注册：${id}`);
@@ -62,16 +65,69 @@ export class AskProviderRegistry {
   }
 
   get(providerId: AskProviderId): AskLlmProvider {
-    const provider = this.providers.get(providerId);
-    if (!provider) throw new Error(`未知 Ask Provider：${providerId}`);
-    return provider;
+    return this.snapshot(providerId).provider;
   }
+
+  recordVersion(providerId: AskProviderId): number {
+    return this.snapshot(providerId).recordVersion;
+  }
+
+  /**
+   * Atomically publishes one immutable Provider implementation for future
+   * requests. Async work already running inside runWithProvider keeps the
+   * exact endpoint/key snapshot it started with.
+   */
+  replace(
+    providerId: AskProviderId,
+    provider: AskLlmProvider,
+    recordVersion: number,
+  ): void {
+    if (provider.id !== providerId) {
+      throw new Error("Ask Provider replacement identity mismatch");
+    }
+    if (!Number.isSafeInteger(recordVersion) || recordVersion < 1) {
+      throw new Error("Ask Provider record version 无效");
+    }
+    const current = this.providers.get(providerId);
+    if (current && recordVersion < current.recordVersion) {
+      throw new Error("Ask Provider 拒绝发布旧 record version");
+    }
+    const next = new Map(this.providers);
+    next.set(providerId, { provider, recordVersion });
+    this.providers = next;
+  }
+
+  runWithProvider<T>(
+    providerId: AskProviderId,
+    operation: () => T,
+  ): T {
+    const inherited = this.pinned.getStore();
+    if (inherited?.has(providerId)) return operation();
+    const next = new Map(inherited ?? []);
+    next.set(providerId, this.currentSnapshot(providerId));
+    return this.pinned.run(next, operation);
+  }
+
+  private snapshot(providerId: AskProviderId): ProviderSnapshot {
+    return this.pinned.getStore()?.get(providerId) ?? this.currentSnapshot(providerId);
+  }
+
+  private currentSnapshot(providerId: AskProviderId): ProviderSnapshot {
+    const snapshot = this.providers.get(providerId);
+    if (!snapshot) throw new Error(`未知 Ask Provider：${providerId}`);
+    return snapshot;
+  }
+}
+
+interface ProviderSnapshot {
+  provider: AskLlmProvider;
+  recordVersion: number;
 }
 
 export function createAskProviderRegistry(
   configurations: readonly AskProviderRegistration[],
 ): AskProviderRegistry {
-  return new AskProviderRegistry(configurations.map(createProvider));
+  return new AskProviderRegistry(configurations.map(createAskProvider));
 }
 
 export function createAskProviderRegistryFromEnv(
@@ -80,7 +136,7 @@ export function createAskProviderRegistryFromEnv(
   return createAskProviderRegistry(loadAskProviderConfigurations(environment));
 }
 
-function createProvider(registration: AskProviderRegistration): AskLlmProvider {
+export function createAskProvider(registration: AskProviderRegistration): AskLlmProvider {
   if (!registration.options) return new UnconfiguredProvider(registration);
   switch (registration.options.protocol) {
     case "openai-responses":

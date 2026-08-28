@@ -359,6 +359,7 @@ test("READONLY-REPO-CTX-07: the Agent chat branch passes read-only context throu
     },
   } as unknown as AskService;
   const providers = {
+    runWithProvider: <T>(_providerId: string, operation: () => T): T => operation(),
     status: () => ({
       id: "openai",
       label: "OpenAI",

@@ -8,6 +8,8 @@ import {
   agentMessageSchema,
   agentSessionSchema,
   agentToolCallSchema,
+  askProviderConfigurationCheckSchema,
+  askProviderConfigurationSchema,
   bindRemoteRepositorySchema,
   type CodexReasoningEffort,
   createAgentSessionSchema,
@@ -16,6 +18,7 @@ import {
   gitRevisionSchema,
   askProjectSchema,
   askProviderIdSchema,
+  checkAskProviderConfigurationSchema,
   createAskThreadSchema,
   assessArchitectureDispositionSchema,
   assessDesignImpactSchema,
@@ -40,6 +43,8 @@ import {
   sandboxBlueprintSummarySchema,
   sendAgentMessageSchema,
   sendAskThreadMessageSchema,
+  setAskProviderEnabledSchema,
+  updateAskProviderConfigurationSchema,
   updateProjectAgentSettingsSchema,
   updateTicketStatusSchema,
   verificationE2eFlowActionSchema,
@@ -106,6 +111,7 @@ import {
   AskProviderRegistry,
   createAskProviderRegistryFromEnv,
 } from "./services/llm/provider-registry.js";
+import { ProviderConfigurationService } from "./services/llm/provider-configuration-service.js";
 import { ProjectKnowledgeResolver } from "./services/project-knowledge.js";
 import { ProjectPathPolicy } from "./services/project-paths.js";
 import { RepositoryPolicy } from "./services/repository-policy.js";
@@ -193,6 +199,7 @@ export interface AppOptions {
   cliPath?: string;
   verificationE2eCoordinator?: VerificationE2eCoordinator;
   askProviders?: AskProviderRegistry;
+  providerConfigurations?: ProviderConfigurationService;
   workItemAdapters?: WorkItemMcpRegistry;
   repositoryBindings?: RepositoryBindingServiceLike;
   agentSessions?: AgentSessionServiceLike;
@@ -232,7 +239,7 @@ const ticketParamsSchema = z.object({ id: z.string().uuid(), ticketId: z.string(
 const figmaIntegrationQuerySchema = z.object({
   force: z.enum(["true", "false"]).optional()
 });
-const askProviderParamsSchema = z.object({ providerId: askProviderIdSchema });
+const askProviderParamsSchema = z.object({ providerId: askProviderIdSchema }).strict();
 const repositoryCredentialQuerySchema = z.object({
   host: z.string().trim().min(1).max(300).optional(),
 }).strict();
@@ -370,7 +377,10 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     projectKnowledge,
     options.maxConcurrentPhases,
   );
-  const providers = options.askProviders ?? createAskProviderRegistryFromEnv({});
+  const providerConfigurations = options.providerConfigurations;
+  const providers = providerConfigurations?.providers
+    ?? options.askProviders
+    ?? createAskProviderRegistryFromEnv({});
   const ask = new AskService(
     store,
     paths,
@@ -522,6 +532,53 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     const { providerId } = askProviderParamsSchema.parse(request.params);
     z.object({}).strict().parse(request.body ?? {});
     return { check: await ask.checkProvider(providerId, request.signal) };
+  });
+  app.get("/api/ask/provider-configurations", async () => {
+    const configurations = requireChatFirstPort(
+      providerConfigurations,
+      "Provider 配置服务",
+    ).list();
+    return parsePublicPortResult(
+      z.object({ providers: z.array(askProviderConfigurationSchema).length(4) }).strict(),
+      { providers: configurations },
+    );
+  });
+  app.put("/api/ask/provider-configurations/:providerId", async (request) => {
+    const { providerId } = askProviderParamsSchema.parse(request.params);
+    const provider = await requireChatFirstPort(
+      providerConfigurations,
+      "Provider 配置服务",
+    ).update(providerId, updateAskProviderConfigurationSchema.parse(request.body));
+    return parsePublicPortResult(
+      z.object({ provider: askProviderConfigurationSchema }).strict(),
+      { provider },
+    );
+  });
+  app.post("/api/ask/provider-configurations/:providerId/check", async (request) => {
+    const { providerId } = askProviderParamsSchema.parse(request.params);
+    const check = await requireChatFirstPort(
+      providerConfigurations,
+      "Provider 配置服务",
+    ).check(
+      providerId,
+      checkAskProviderConfigurationSchema.parse(request.body),
+      request.signal,
+    );
+    return parsePublicPortResult(
+      z.object({ check: askProviderConfigurationCheckSchema }).strict(),
+      { check },
+    );
+  });
+  app.patch("/api/ask/provider-configurations/:providerId/enabled", async (request) => {
+    const { providerId } = askProviderParamsSchema.parse(request.params);
+    const provider = await requireChatFirstPort(
+      providerConfigurations,
+      "Provider 配置服务",
+    ).setEnabled(providerId, setAskProviderEnabledSchema.parse(request.body));
+    return parsePublicPortResult(
+      z.object({ provider: askProviderConfigurationSchema }).strict(),
+      { provider },
+    );
   });
   // Desktop authorization belongs to the legacy-local operator surface. A
   // Cloud deployment must not advertise a host/Desktop integration globally.

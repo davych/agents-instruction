@@ -151,96 +151,35 @@ OpenAI、LM Studio、Ollama 和 Custom 共用一套服务端 Provider Registry�
 
 生产六阶段的文件修改与命令执行目前仍由受限 Docker Worker 内的 Codex Runtime 完成。普通对话 Provider 只有在明确声明并真实支持原生 tool calling 时，才可以启动工作回合；平台不会解析一段普通模型文本来伪造工具调用，也不会把“能聊天”说成“能安全改代码”。
 
-Provider configuration lives only in the API process environment. A browser request can select a configured Provider, but it cannot provide or override an endpoint, API key, protocol, system prompt, or repository path. Restart the API after changing these values.
+Provider 不再要求改服务器 `.env`。持有本实例访问令牌的用户从任意页面页头点击 **模型设置**：OpenAI 只填写 model 和 API Key，固定使用官方地址；LM Studio、Ollama、Custom 再填写各自 endpoint。点击 **保存、测试并启用** 后即可在对话中选择，不需要重启 API；检查失败时草稿会保留，但不会误启用或回退到别的 Provider。
 
-### OpenAI
+这四个槽位是整个单人实例共享的能力，项目只保存默认选择。Provider Profile 和 Secret 由 API 写入 Managed Workspace Root 内的加密 Vault；浏览器保存后只能看到是否已有凭据和 endpoint 的 Host 摘要，不能取回 API Key 或完整 endpoint。Secret 输入框永远为空：留空表示保留，勾选清除才会删除。Vault 主密钥与密文分文件保存，二者都要和 PostgreSQL、Managed Root 一起纳入受限备份；丢失其中任意一个都不会自动降级成明文或空配置。
 
-```dotenv
-AI_SDLC_ASK_OPENAI_MODEL=gpt-5.6-terra
-AI_SDLC_ASK_OPENAI_API_KEY=replace-me
-# AI_SDLC_ASK_OPENAI_BASE_URL=https://api.openai.com/v1
-```
+### 四种 Provider 怎么填
 
-OpenAI uses the Responses protocol. Source excerpts selected for the question leave the local machine and are sent to the configured endpoint.
+| Provider | 协议 | 常见 endpoint | 说明 |
+|---|---|---|---|
+| OpenAI | [OpenAI Responses](https://developers.openai.com/api/reference/cli/resources/responses/methods/create) | 固定 `https://api.openai.com/v1` | 不能改成代理或兼容服务，避免把别的服务误记为 OpenAI；这类地址请用 Custom。选中的仓库片段会发给 OpenAI；默认模型 [`gpt-5.6-terra`](https://developers.openai.com/api/docs/models/gpt-5.6-terra) 的官方能力表包含 Responses、Function calling 与 Structured outputs。 |
+| LM Studio | OpenAI Responses-compatible | `http://host.docker.internal:1234/v1` | 先在 LM Studio 加载模型；只有 API 确实运行在同一受信任 Host 时才开启不安全 HTTP。 |
+| Ollama | Ollama Chat | `http://host.docker.internal:11434` | 模型须提前存在；平台不会自动 pull，也不会替换模型。 |
+| Custom | OpenAI Responses、OpenAI Chat 或 Ollama Chat | 你的兼容服务地址 | 只兼容所选协议，不声称兼容任意私有请求格式。 |
 
-### LM Studio
+页面里的可编辑 endpoint 是 **API 服务器去访问的地址**。Compose 中的 `127.0.0.1` 指 API 容器本身；访问 Docker Host 上的 LM Studio 或 Ollama 通常应填 `host.docker.internal`。OpenAI 槽固定官方 HTTPS origin；代理和兼容服务必须使用 Custom。其他远端服务也必须使用 HTTPS，只应为你控制的本机服务开启 HTTP。URL 中的账号密码、query、fragment 和高风险保留地址会被拒绝。
 
-Start the LM Studio server, load a model, and copy its exact model identifier:
-
-```dotenv
-AI_SDLC_ASK_LM_STUDIO_MODEL=openai/gpt-oss-20b
-AI_SDLC_ASK_LM_STUDIO_BASE_URL=http://127.0.0.1:1234/v1
-# Compose 部署改用 http://host.docker.internal:1234/v1，并显式开启：
-# AI_SDLC_ASK_LM_STUDIO_ALLOW_INSECURE_HTTP=1
-# Set only when LM Studio API authentication is enabled.
-# AI_SDLC_ASK_LM_STUDIO_API_KEY=replace-me
-# Set to 1 only after verifying the loaded model returns native tool calls.
-# AI_SDLC_ASK_LM_STUDIO_TOOL_CALLING=0
-```
-
-LM Studio uses its OpenAI-compatible Responses endpoint. The default address is loopback-only; plain HTTP is rejected for non-loopback hosts.
-
-在 Compose 里，`127.0.0.1` 是 API 容器自己，不是 Docker Host。Compose 已把 `host.docker.internal` 映射到 Host gateway；只有你明确控制该 Host 服务时，才同时使用这个主机名和 Provider 自己的 `*_ALLOW_INSECURE_HTTP=1`。这个开关只放宽该 Provider 的传输检查，不会改变 Git 仓库网络策略。
-
-### Ollama
-
-Start Ollama and make sure the configured model is already present:
-
-```dotenv
-AI_SDLC_ASK_OLLAMA_MODEL=qwen3-coder:latest
-AI_SDLC_ASK_OLLAMA_BASE_URL=http://127.0.0.1:11434
-# Compose 部署改用 http://host.docker.internal:11434，并显式开启：
-# AI_SDLC_ASK_OLLAMA_ALLOW_INSECURE_HTTP=1
-# Set only when the configured Ollama-compatible service requires Bearer auth.
-# AI_SDLC_ASK_OLLAMA_API_KEY=replace-me
-# Set to 1 only for a model that supports Ollama tool calling.
-# AI_SDLC_ASK_OLLAMA_TOOL_CALLING=0
-```
-
-Ollama uses its native `/api/chat` protocol. The platform never pulls a missing model and never substitutes another model silently.
-
-### Custom compatible endpoint
-
-Custom Provider support is deliberately explicit. Choose one protocol implemented by the endpoint:
-
-```dotenv
-AI_SDLC_ASK_CUSTOM_LABEL=团队模型服务
-AI_SDLC_ASK_CUSTOM_PROTOCOL=openai-chat
-AI_SDLC_ASK_CUSTOM_MODEL=team-code-model
-AI_SDLC_ASK_CUSTOM_BASE_URL=https://llm.example.com/v1
-AI_SDLC_ASK_CUSTOM_API_KEY=replace-me
-# Set to 1 only if an openai-chat endpoint supports response_format: json_schema.
-AI_SDLC_ASK_CUSTOM_STRUCTURED_OUTPUT=0
-# Set to 1 only if this exact endpoint and model return native function calls.
-AI_SDLC_ASK_CUSTOM_TOOL_CALLING=0
-```
-
-`AI_SDLC_ASK_CUSTOM_PROTOCOL` accepts `openai-responses`, `openai-chat`, or `ollama-chat`. For the widest Chat-compatible support, `openai-chat` defaults to prompt-only JSON plus server validation; opt into native JSON Schema only when the endpoint documents it. This does not claim compatibility with arbitrary private request or response formats.
-
-OpenAI Responses tool calling is enabled when OpenAI itself is configured. LM Studio, Ollama, and Custom require their `*_TOOL_CALLING=1` switch because support and output quality depend on the exact server version and selected model. The switch means “offer strict function definitions and parse native calls”; it cannot make an unsupported model learn tool use. A compatible endpoint may still reject `tools` at request time, and malformed or multiple calls are rejected before any MCP operation runs. Ollama supports automatic tool selection but does not document OpenAI's forced `tool_choice`, so the platform does not send that field to Ollama.
-
-Shared bounds are configurable with `AI_SDLC_ASK_TIMEOUT_MS` and `AI_SDLC_ASK_MAX_RESPONSE_BYTES`. Any Provider can override them with `<PROVIDER_PREFIX>_TIMEOUT_MS` and `<PROVIDER_PREFIX>_MAX_RESPONSE_BYTES`, such as `AI_SDLC_ASK_OLLAMA_TIMEOUT_MS`. Open the Agent 工作台设置 to see the sanitized Provider state and run a connection check. The check distinguishes missing configuration, authentication failure, unreachable endpoints, missing models, and incompatible responses without returning credentials or raw upstream bodies.
+“支持结构化输出”和“支持工具调用”是对当前 endpoint + model 的能力声明，不是让模型凭空获得能力。保存时平台先做连接检查，只发送一个不含仓库或聊天内容的小型兼容性请求；声明工具调用时还要通过只解析、不执行的原生 tool-call 探针。只有当前配置版本检查通过后才能启用。OpenAI Responses 通常支持原生工具；LM Studio、Ollama 和 Custom 是否支持取决于具体版本和模型。格式错误、多重调用或普通文本伪装的调用都会在 MCP 执行前被拒绝。
 
 Use the check result as the next-action guide:
 
 | State | What it means | What to do |
 |---|---|---|
 | `ready` | The endpoint answered the required small JSON check and reported the actual model. | Ask a repository question. |
-| `not_configured` | One or more required server variables are missing. | Read the Provider message, set the named variables in `.env`, and restart the API. |
-| `authentication_failed` | The endpoint rejected its server-side credential. | Replace the relevant `*_API_KEY`; do not put the key in the browser. |
+| `not_configured` | 必填项未保存，或配置已被清除。 | 在同一张 Provider 卡片补齐并重新保存。 |
+| `authentication_failed` | endpoint 拒绝了保存的凭据。 | 在卡片中输入新 API Key 并重新检查；旧 Key 不会回显。 |
 | `unreachable` | The endpoint timed out, refused the connection, returned a server error, or rate-limited the check. | Confirm the service is running, its port is reachable from the API process, and its request limit has recovered. |
-| `model_unavailable` | The configured model is absent or not loaded. | Copy the endpoint's exact model ID into `*_MODEL` and load or provision it outside the Platform. Ask never pulls a model. |
+| `model_unavailable` | 配置的模型不存在或尚未加载。 | 把 endpoint 的精确模型 ID 填到页面，并在模型服务侧加载或创建。平台不会自动 pull。 |
 | `protocol_error` | The URL or selected protocol does not match the response shape Ask requires. | Check the base path (`/v1` where applicable), custom protocol, structured-output flag, and endpoint documentation. |
 
-Minimal repeatable verification after the API restarts:
-
-```bash
-curl -fsS -H "Authorization: Bearer $AI_SDLC_ACCESS_TOKEN" http://127.0.0.1:4100/api/ask/providers
-curl -fsS -X POST -H "Authorization: Bearer $AI_SDLC_ACCESS_TOKEN" -H 'Content-Type: application/json' \
-  -d '{}' http://127.0.0.1:4100/api/ask/providers/openai/check
-```
-
-Replace `openai` in the second command with `lmstudio`, `ollama`, or `custom`. The response must say `ready` before the Provider handles a project turn. The check performs one small model request but sends no repository excerpt. The equivalent Web action is **Agent 工作台 → 项目设置 → Provider → 重新检查**.
+检查结果必须是 `ready` 才能启用。日常操作都在 **模型设置** 完成；API 仍提供经过部署令牌保护的 `GET /api/ask/provider-configurations`、`PUT /api/ask/provider-configurations/:providerId`、`POST /api/ask/provider-configurations/:providerId/check` 和 `PATCH /api/ask/provider-configurations/:providerId/enabled`，分别用于读取脱敏配置、保存、检查和启停。所有公开响应都只返回脱敏状态。
 
 Cloud Agent Session 保存在 PostgreSQL，并固定主 Project 与 raw Git source revision。浏览器只提交新消息、客户端幂等 ID、预期 sequence 和可选的下一轮 Provider，不提交权威 history；服务端从数据库恢复受限上下文。项目同步后，旧 Session 继续使用旧 revision，不会静默切换源码。
 

@@ -5,6 +5,7 @@ import {
   createAgentSessionSchema,
   readOnlyRepositoryContextsSchema,
   sendAgentMessageSchema,
+  type AgentMessageDto,
   type AgentSessionDto,
   type AskHistoryMessage,
   type AskProviderId,
@@ -170,6 +171,18 @@ export class AgentSessionService {
       return this.recoverPersistedRunBookkeeping(sessionId, begun.message.id);
     }
     const userMessage = begun.message;
+    return this.providers.runWithProvider(
+      userMessage.providerId,
+      () => this.performPinnedTurn(sessionId, input, userMessage, signal),
+    );
+  }
+
+  private async performPinnedTurn(
+    sessionId: string,
+    input: SendAgentMessageInput,
+    userMessage: AgentMessageDto,
+    signal?: AbortSignal,
+  ): Promise<AgentSessionDetail> {
     try {
       const session = await this.store.getAgentSession(sessionId);
       const primary = session.repositories.find(({ accessMode }) => accessMode === "write");

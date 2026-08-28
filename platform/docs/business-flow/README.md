@@ -22,7 +22,8 @@ mindmap
       自动进入长期会话
     准备能力
       确认服务端仓库别名
-      选择对话 Provider
+      在页面配置并测试 Provider
+      选择本轮对话 Provider
       选择 Sandbox 蓝图
       激活只读 Work Item MCP
       按需生成 DeepWiki
@@ -75,7 +76,10 @@ flowchart TD
   Ready -->|否| FixBind["修正地址、授权或分支后重试"]
   FixBind --> Bind
   Ready -->|是| Session["自动进入 Agent Session"]
-  Session --> Settings["按需设置 Provider、Sandbox、MCP 和 DeepWiki"]
+  Session --> Provider{"是否已有启用的 Provider"}
+  Provider -->|否| ProviderSettings["在模型设置中保存、测试并启用"]
+  ProviderSettings --> Settings["按需设置默认 Provider、Sandbox、MCP 和 DeepWiki"]
+  Provider -->|是| Settings
   Settings --> Message["发送白话任务、外部工作项引用或明确的仓库别名"]
   Message --> Contract["整理为不可变 Change Contract"]
 
@@ -117,12 +121,13 @@ flowchart TD
 
 首次使用可以按下面的顺序理解：
 
-1. 运维者先完成平台部署、访问令牌、Git 凭据 Profile、对话 Provider、Worker 和可选 MCP Adapter 配置。
+1. 运维者先完成平台部署、访问令牌、Git 凭据 Profile、Worker 和可选 MCP Adapter 配置；对话 Provider 不再要求写入服务器 `.env`。
 2. 用户在浏览器中输入部署级访问令牌。它是当前单租户部署的访问门禁，不是个人账号或组织身份。
 3. 用户点击“绑定仓库”，填写远端 Git HTTPS 地址。公共仓库不需要授权；私有仓库只能选择服务端已经配置好的 Credential Profile。
 4. 用户可选填分支、Tag 或 Commit；不填时使用远端默认分支。
 5. 平台校验并拉取仓库，把源码固定到一个精确 Git revision，生成不消耗模型额度的 Repository Manifest，然后直接打开一个长期 Agent Session。
-6. 仓库就绪后，用户可先调整能力设置，也可以直接发消息。只有明确需要工作时，平台才懒启动该 Session 的 Sandbox。
+6. 仓库就绪后，如尚无可用模型，用户从页头或输入框旁进入“模型设置”。OpenAI 固定官方地址，只填 model 和 API Key；其他槽位再填 endpoint。点击一次“保存、测试并启用”，成功后无需重启 API。
+7. 用户可继续调整仓库能力，也可以直接发消息。只有明确需要工作时，平台才懒启动该 Session 的 Sandbox。
 
 远端仓库不需要预先安装 `CLAUDE.md`、`AGENTS.md`、`.codex` 或 `ai-native.yaml`。六角色、流程和产物模板由平台在仓库外的固定 Control Pack 提供。
 
@@ -152,6 +157,8 @@ flowchart TD
 | DeepWiki | 为当前源码 revision 生成人可读的项目知识 | 必须手工触发，会消耗所选 Provider 额度；同步后旧版本会标记为 stale |
 
 Provider 能聊天不等于能启动工作。要让 Agent 调用只读 MCP、创建 Run 或在批准后自动继续，所选 Provider 必须真实支持原生 tool calling。只支持文本的 Provider 仍可用于普通问答或 DeepWiki。
+
+Provider Profile 是实例级能力，不要求每个仓库重复保存密钥。全局“模型设置”固定显示 OpenAI、LM Studio、Ollama 和 Custom 四张卡；可以编辑、检查、启用或停用。Secret 输入框不会回填，公开页面只显示“是否已保存”和脱敏后的 Host。配置存在 API 专属加密 Vault，不进入仓库、对话、DeepWiki、Sandbox 或阶段 Worker。
 
 ## 4. 消息和任务从哪里来
 
@@ -234,7 +241,7 @@ Provider 能聊天不等于能启动工作。要让 Agent 调用只读 MCP、创
 |---|---|---|
 | 仓库绑定或同步失败 | 不发布未完成的源码快照，也不能基于未知版本开始工作 | 检查 HTTPS 地址、允许的 Origin、Credential Profile、ref 和网络后重试 |
 | 同步后旧 Session 仍显示旧代码 | 这是版本固定的预期行为，不是缓存错误 | 继续旧 Run 就保留旧 revision；要用新代码则新建 Session |
-| Provider 未配置、不可达或模型不可用 | 明确区分配置、认证、网络、模型和协议问题 | 在设置中“重新检查”，修复服务端配置或切换到已就绪 Provider |
+| Provider 未配置、不可达或模型不可用 | 明确区分配置、认证、网络、模型和协议问题 | 在页面“模型设置”中修改并重新检查，或切换到已启用 Provider；无需改 `.env` 或重启 API |
 | Provider 只能文本对话 | 可以问答或生成 DeepWiki，但不会伪造工具调用来启动工作 | 切换到真实支持 tool calling 的 Provider，再发起或继续工作 |
 | MCP 读取失败 | 不猜测 Jira / Linear 内容，不启动一个依据不明的任务 | 修复管理员 Adapter / 授权，或把任务内容手工写进聊天框 |
 | Sandbox 或阶段执行失败 | 记录失败事件，不自动越过当前阶段 | 运维者修复 Worker 镜像、执行信任、容量或环境后重试；恢复仍使用 Session 固定 revision |
@@ -252,7 +259,7 @@ Provider 能聊天不等于能启动工作。要让 Agent 调用只读 MCP、创
 
 - 不提供多租户用户、组织、RBAC、计费和强租户隔离；
 - 不自动 commit、push、创建 PR、merge、配置分支保护、deploy、release 或执行生产 rollback；
-- 不把 Git Token、对话 Provider 密钥、平台令牌、数据库凭据或 Docker socket 交给 Worker；浏览器也不会收到 Git 或 Provider Secret；
+- 不把 Git Token、对话 Provider 密钥、平台令牌、数据库凭据或 Docker socket 交给 Worker；浏览器只在保存时提交新 Provider Secret，之后永远不会从 API 取回它；
 - 不开放通用外部写操作或带副作用 MCP，当前 Work Item MCP 只读；
 - 不让额外 `@repo` 变成第二个可写仓库，也不把附加仓整仓正文塞进 Prompt；
 - 不因 `involve` 指令改动六阶段顺序、跳过上游角色或绕过人工门禁；

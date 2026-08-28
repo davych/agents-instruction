@@ -165,6 +165,10 @@ class IgnoringAbortProviderPort {
   settled = false;
   private timer: NodeJS.Timeout | undefined;
 
+  runWithProvider<T>(_providerId: AskProviderId, operation: () => T): T {
+    return operation();
+  }
+
   status(providerId: AskProviderId): AskProviderStatusDto {
     return {
       id: providerId,

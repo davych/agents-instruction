@@ -1616,6 +1616,144 @@ export const askProviderCheckSchema = z.object({
 }).strict();
 export type AskProviderCheckDto = z.infer<typeof askProviderCheckSchema>;
 
+const providerConfigurationVersionSchema = z.number().int().positive();
+
+export const askProviderConfigurationCheckSchema = askProviderCheckSchema.extend({
+  version: providerConfigurationVersionSchema,
+  configVersion: providerConfigurationVersionSchema,
+}).strict();
+export type AskProviderConfigurationCheckDto = z.infer<
+  typeof askProviderConfigurationCheckSchema
+>;
+
+/**
+ * The browser may inspect Provider configuration state, but never receives the
+ * credential or the complete endpoint. `endpointLabel` is deliberately only a
+ * host-level label produced by the trusted API.
+ */
+export const askProviderConfigurationSchema = z.object({
+  providerId: askProviderIdSchema,
+  label: z.string().trim().min(1).max(120)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  enabled: z.boolean(),
+  configured: z.boolean(),
+  model: z.string().trim().min(1).max(256)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u)
+    .nullable(),
+  protocol: askProviderProtocolSchema,
+  dataBoundary: z.enum(["remote", "local", "operator-configured"]),
+  endpointLabel: z.string().trim().min(1).max(512),
+  hasEndpoint: z.boolean(),
+  hasCredential: z.boolean(),
+  structuredOutput: z.boolean(),
+  toolCalling: z.boolean(),
+  allowInsecureHttp: z.boolean(),
+  version: providerConfigurationVersionSchema,
+  configVersion: providerConfigurationVersionSchema,
+  lastCheck: askProviderConfigurationCheckSchema.nullable(),
+  createdAt: z.string().datetime().nullable(),
+  updatedAt: z.string().datetime().nullable(),
+}).strict().superRefine((configuration, context) => {
+  if (configuration.version < configuration.configVersion) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["version"],
+      message: "Provider 记录版本不能早于配置版本",
+    });
+  }
+  if (
+    configuration.lastCheck
+    && configuration.lastCheck.providerId !== configuration.providerId
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["lastCheck", "providerId"],
+      message: "Provider 检查结果与配置不一致",
+    });
+  }
+  if (
+    configuration.lastCheck
+    && configuration.lastCheck.configVersion !== configuration.configVersion
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["lastCheck", "configVersion"],
+      message: "Provider 检查结果不是当前配置版本",
+    });
+  }
+  if (
+    configuration.lastCheck
+    && configuration.lastCheck.version > configuration.version
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["lastCheck", "version"],
+      message: "Provider 检查结果不能来自未来记录版本",
+    });
+  }
+  if (
+    configuration.enabled
+    && (!configuration.configured || configuration.lastCheck?.state !== "ready")
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["enabled"],
+      message: "Provider 只有在当前配置检查通过后才能启用",
+    });
+  }
+});
+export type AskProviderConfigurationDto = z.infer<typeof askProviderConfigurationSchema>;
+
+const providerEndpointValueSchema = z.string().trim().min(1).max(4_096)
+  .regex(/^[^\u0000-\u001f\u007f]+$/u, "Provider endpoint 包含无效字符");
+const providerCredentialValueSchema = z.string().min(1).max(16_384)
+  .regex(/^[^\u0000-\u001f\u007f]+$/u, "Provider credential 格式无效");
+
+export const providerEndpointActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("keep") }).strict(),
+  z.object({ action: z.literal("replace"), value: providerEndpointValueSchema }).strict(),
+  z.object({ action: z.literal("clear") }).strict(),
+]);
+export type ProviderEndpointAction = z.infer<typeof providerEndpointActionSchema>;
+
+export const providerCredentialActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("keep") }).strict(),
+  z.object({ action: z.literal("replace"), value: providerCredentialValueSchema }).strict(),
+  z.object({ action: z.literal("clear") }).strict(),
+]);
+export type ProviderCredentialAction = z.infer<typeof providerCredentialActionSchema>;
+
+export const updateAskProviderConfigurationSchema = z.object({
+  expectedVersion: providerConfigurationVersionSchema,
+  label: z.string().trim().min(1).max(120)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  protocol: askProviderProtocolSchema,
+  model: z.string().trim().min(1).max(256)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u)
+    .nullable(),
+  endpoint: providerEndpointActionSchema,
+  credential: providerCredentialActionSchema,
+  structuredOutput: z.boolean(),
+  toolCalling: z.boolean(),
+  allowInsecureHttp: z.boolean(),
+}).strict();
+export type UpdateAskProviderConfigurationInput = z.infer<
+  typeof updateAskProviderConfigurationSchema
+>;
+
+export const checkAskProviderConfigurationSchema = z.object({
+  expectedVersion: providerConfigurationVersionSchema,
+}).strict();
+export type CheckAskProviderConfigurationInput = z.infer<
+  typeof checkAskProviderConfigurationSchema
+>;
+
+export const setAskProviderEnabledSchema = z.object({
+  expectedVersion: providerConfigurationVersionSchema,
+  enabled: z.boolean(),
+}).strict();
+export type SetAskProviderEnabledInput = z.infer<typeof setAskProviderEnabledSchema>;
+
 export const askCitationSchema = z.object({
   sourceId: z.string().max(80).regex(/^S[1-9][0-9]*$/u),
   path: z.string().trim().min(1).max(4_096)

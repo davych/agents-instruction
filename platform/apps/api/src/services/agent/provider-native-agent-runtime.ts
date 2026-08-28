@@ -73,7 +73,20 @@ export interface ProviderNativeAgentObserver {
   toolFinished?(step: ProviderNativeAgentToolStep): void | Promise<void>;
 }
 
-type ProviderRuntimePort = Pick<AskProviderRegistry, "status" | "complete">;
+type ProviderRuntimePort = Pick<
+  AskProviderRegistry,
+  "status" | "complete" | "runWithProvider"
+>;
+
+export interface ProviderNativeAgentInput {
+  providerId: AskProviderId;
+  instruction: string;
+  messages: readonly AskLlmMessage[];
+  toolHost: ProviderAgentToolHost;
+  limits?: Partial<ProviderNativeAgentLimits>;
+  observer?: ProviderNativeAgentObserver;
+  signal?: AbortSignal;
+}
 
 /**
  * Provider-selected, bounded Agent loop for a server-owned Session Sandbox.
@@ -87,17 +100,17 @@ type ProviderRuntimePort = Pick<AskProviderRegistry, "status" | "complete">;
 export class ProviderNativeAgentRuntime {
   constructor(private readonly providers: ProviderRuntimePort) {}
 
-  async run(input: {
-    providerId: AskProviderId;
-    instruction: string;
-    messages: readonly AskLlmMessage[];
-    toolHost: ProviderAgentToolHost;
-    limits?: Partial<ProviderNativeAgentLimits>;
-    observer?: ProviderNativeAgentObserver;
-    signal?: AbortSignal;
-  }): Promise<ProviderNativeAgentResult> {
-    const startedAt = Date.now();
+  async run(input: ProviderNativeAgentInput): Promise<ProviderNativeAgentResult> {
     const providerId = askProviderIdSchema.parse(input.providerId);
+    const operation = () => this.runPinned(input, providerId);
+    return this.providers.runWithProvider(providerId, operation);
+  }
+
+  private async runPinned(
+    input: ProviderNativeAgentInput,
+    providerId: AskProviderId,
+  ): Promise<ProviderNativeAgentResult> {
+    const startedAt = Date.now();
     const limits = validatedLimits(input.limits);
     validatePromptInput(input.instruction, input.messages);
     const status = this.providers.status(providerId);

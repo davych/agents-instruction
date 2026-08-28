@@ -80,7 +80,7 @@ PM/BA → Designer → Architect → Engineer → Tester → DevOps
 
 ### 1. 对话 Provider
 
-负责聊天回答、任务判断、Change Contract 整理、MCP 工具选择和手工 DeepWiki。每条消息保存实际 Provider 与模型。OpenAI 原生支持 tool calling；LM Studio、Ollama 和 Custom 只有在管理员明确打开能力开关且模型真的支持时，才允许进入工作回合。聊天 Provider 凭据只留在服务端，不进入消息、仓库或 Sandbox，也不会传给阶段 Worker。
+负责聊天回答、任务判断、Change Contract 整理、MCP 工具选择和手工 DeepWiki。每条消息保存实际 Provider 与模型。四个 Provider 都从全局“模型设置”保存、检查并启用；声明工具调用的配置还要通过无副作用原生 tool-call 探针，才能进入工作回合。聊天 Provider 凭据保存到 API 加密 Vault，不进入消息、仓库或 Sandbox，也不会传给阶段 Worker。
 
 ### 2. 阶段 Worker
 
@@ -111,7 +111,7 @@ Provider-native 的文件/检查工具循环已经作为受限运行时边界实
 ## 安全边界
 
 - Git 只允许 HTTPS，拒绝 userinfo、query、fragment、危险 ref、私网和未允许 origin。
-- Credential、聊天 Provider Key 和 MCP Secret 只存在服务端 Profile / 环境引用里，不进入消息、Prompt、数据库业务内容或 Sandbox。阶段 Codex Worker 只拿独立、低权限的运行密钥，不拿项目聊天 Provider 凭据、Git Token、数据库凭据或平台 Token。
+- Git Credential 与 MCP Secret 只存在服务端 Profile / 环境引用；聊天 Provider Key 由页面一次性提交到 API 专属加密 Vault。它们都不进入公开 DTO、消息、Prompt、数据库业务内容或 Sandbox。阶段 Codex Worker 只拿独立、低权限的运行密钥，不拿项目聊天 Provider 凭据、Git Token、数据库凭据或平台 Token。
 - Blueprint 只能选择管理员批准的名称和版本；最终镜像由 API 启动时验证并固定，浏览器不能指定镜像、命令、Host mount 或 Docker 参数。
 - Worker 使用非 root、只读 rootfs、cap-drop、no-new-privileges、CPU / 内存 / PID / 超时限制和精确挂载；不拿 Docker socket、Git Token、数据库凭据或平台 Token。
 - 仓库、Issue、MCP 返回和 Artifact Markdown 都是不可信内容，不能提升角色、工具、Sandbox 或发布权限。
@@ -132,7 +132,7 @@ Provider-native 的文件/检查工具循环已经作为受限运行时边界实
 ### B. Project 能力配置
 
 - [x] Project Agent Settings 保存默认 Provider、固定 Blueprint 与启用 MCP。
-- [x] OpenAI、LM Studio、Ollama、自定义 Provider 注册、连接检查和真实能力声明。
+- [x] 全局“模型设置”管理 OpenAI、LM Studio、Ollama、自定义 Provider；页面保存、连接检查、能力探针与启停均无需改 `.env` 或重启 API。
 - [x] 管理员批准的 Blueprint 目录和启动时镜像校验。
 - [x] MCP Catalog、项目激活和只读 Work Item Adapter。
 - [x] 手工 LLM DeepWiki，固定 revision / Provider / model / citations / usage。
@@ -223,13 +223,14 @@ AI_SDLC_WORKER_IMAGE=ai-sdlc-worker:local yarn test:docker-smoke
 2026-08-28 在当前工作区完成最后一轮验证：
 
 - `platform/yarn typecheck`：通过。
-- `platform/yarn test`：命令通过；Contracts 51/51，Web 134/134（含业务流程与技术设计文档验收 6/6），API 925 项中 924 通过、0 失败、1 项按设计跳过。普通全量套件不把没有显式镜像的 Docker 检查冒充成成功。
+- `platform/yarn test`：命令通过；Contracts 52/52，Web 143/143（含 Provider 页面配置、业务流程与技术设计文档验收），API 973 项中 972 通过、0 失败、1 项按设计跳过。普通全量套件不把没有显式镜像的 Docker 检查冒充成成功。
+- Provider 控制面独立安全回归：48/48 通过，覆盖页面背后的保存 / 测试 / 启用门禁、记录级版本冲突、脱敏 DTO、加密 Vault、危险字面量地址、OpenAI 官方地址约束和运行中 Provider 快照；Web Provider 状态回归 9/9、Contracts Provider 回归 7/7 通过。
 - `platform/yarn build`：通过。Vite 仅报告现有动态导入和大 chunk 提示，没有构建失败。
 - `AI_SDLC_WORKER_IMAGE=ai-sdlc-worker:local yarn test:docker-smoke`：真实 Tier-D 1/1 通过，验证 Worker 能读 Control、写 Run Workspace，不能改只读 `.git` / Control，也拿不到 Docker socket。
 - 根目录 `npm test`：32/32 通过。
 - 根目录 `npm pack --dry-run --cache /private/tmp/ai-sdlc-npm-cache`：通过，79 个发布文件，tarball 约 138.2 kB。使用临时 cache 是为了绕开当前用户 npm cache 的历史 owner 问题，不是绕过包检查。
 - `git diff --check`：通过。
 - 浏览器主路径：远端仓库绑定后直接进入 Agent Session；消息创建同一个 Run 并启动 PM/BA；3 份当前产物全部展开后批准按钮才解锁；批准后沿用原 Run，Designer 真正启动并交出 2 份待审阅产物。
-- 独立七视角与对抗审查发现并修复了 Run/Session 跨事务恢复、MCP 虚构工单引用和 Blueprint 网络能力误报；故障切点与边界定向回归 31/31 通过，最终没有未解决的 P0/P1/P2。
+- 独立七视角与对抗审查发现并修复了 Run/Session 跨事务恢复、MCP 虚构工单引用、Blueprint 网络能力误报，以及 Provider 记录级 CAS、OpenAI 官方地址边界和禁用 Provider 的页面提示问题；OpenAI 原始 API 的地址清除恢复问题也已在复核中关闭。故障切点与边界定向回归 31/31 通过，最终没有未解决的 P0/P1/P2/P3。
 
 浏览器和 Provider 端到端使用的是本地受控测试 Provider / Fake Codex，用来证明状态、交互、门禁与角色串联；它不冒充真实外部 Provider 联网或真实业务代码交付。真实 Worker 隔离边界由上面的独立 Docker Tier-D 证明。

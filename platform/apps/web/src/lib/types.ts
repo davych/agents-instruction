@@ -87,6 +87,56 @@ export interface AskProviderCheck {
   checkedAt: string;
 }
 
+export type AskProviderSecretUpdate =
+  | { action: "keep" }
+  | { action: "replace"; value: string }
+  | { action: "clear" };
+
+export type AskProviderEndpointUpdate =
+  | { action: "keep" }
+  | { action: "replace"; value: string }
+  | { action: "clear" };
+
+/** Write-only configuration input. Secret values must never appear in a response DTO. */
+export interface SaveAskProviderConfigurationInput {
+  expectedVersion: number;
+  label: string;
+  protocol: AskProviderProtocol;
+  model: string | null;
+  endpoint: AskProviderEndpointUpdate;
+  credential: AskProviderSecretUpdate;
+  structuredOutput: boolean;
+  toolCalling: boolean;
+  allowInsecureHttp: boolean;
+}
+
+export interface AskProviderConfigurationCheck extends AskProviderCheck {
+  version: number;
+  configVersion: number;
+}
+
+/** Control-plane DTO. It deliberately contains neither credential nor full endpoint. */
+export interface AskProviderConfiguration {
+  providerId: AskProviderId;
+  label: string;
+  enabled: boolean;
+  configured: boolean;
+  model: string | null;
+  protocol: AskProviderProtocol;
+  dataBoundary: AskProviderStatus["dataBoundary"];
+  endpointLabel: string;
+  hasEndpoint: boolean;
+  hasCredential: boolean;
+  structuredOutput: boolean;
+  toolCalling: boolean;
+  allowInsecureHttp: boolean;
+  version: number;
+  configVersion: number;
+  lastCheck: AskProviderConfigurationCheck | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
 export interface AskCitation {
   sourceId: string;
   path: string;

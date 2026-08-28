@@ -8,7 +8,7 @@
 
 当前实现用以下不变量约束“对话驱动的软件交付”：
 
-1. 浏览器只提交仓库 URL、普通消息、幂等 ID、预期消息序号和可选 Provider；仓库路径、凭据、镜像、命令、挂载和权威对话历史均由服务端决定。
+1. 浏览器在普通运行时只提交仓库 URL、消息、幂等 ID、预期序号和可选 Provider；唯一例外是持有部署令牌的管理员可在独立模型设置接口一次性提交 Provider endpoint 和新 Secret。API 不会回传 Secret，仓库路径、Worker 镜像、命令、挂载和权威对话历史仍由服务端决定。
 2. 每个 Agent Session 最多一个可写主仓库，并固定一个完整 Git revision。附加 `@repo` 只提供固定 revision 的有界 Manifest 摘要，不提供源码正文或写权限。
 3. 对话 Provider 负责问答、意图规划、只读 MCP 选择和手工 DeepWiki；远程项目的六阶段真实执行由受限 Docker Codex Worker 完成。能聊天不等于能执行代码。
 4. Run 固定 `baseRevision`、Control Pack `definitionVersion`、Change Contract 和 Workspace。项目同步不会静默改变已有 Session、Ask Thread 或 Run。
@@ -41,6 +41,7 @@ flowchart LR
         postgres[("PostgreSQL")]
         managedRoot["Managed Workspace Root"]
         controlPack["Per-project Control Pack"]
+        providerVault["Encrypted Provider Vault"]
     end
 
     subgraph workerZone["Phase execution"]
@@ -65,6 +66,8 @@ flowchart LR
     repositoryLayer -->|"Snapshots and indexes"| managedRoot
     workflowLayer -->|"Run workspace and artifacts"| managedRoot
     fastify -->|"Server-managed files"| controlPack
+    fastify -->|"Atomic encrypted profile updates"| providerVault
+    providerVault -->|"Decrypted only inside API"| providerLayer
     providerLayer -.->|"Bounded prompts"| chatEndpoint
     repositoryLayer -.->|"Validated HTTPS Git"| gitHost
     mcpLayer -.->|"Fixed read-only tool call"| workTracker
@@ -79,10 +82,11 @@ flowchart LR
 
 | 组件 | 当前职责 | 明确不负责 |
 |---|---|---|
-| React Web | 仓库绑定、持久会话、Provider 选择、角色进度、Artifact 展开审阅和高级 Run 审计 | 决定仓库路径、Worker 镜像、MCP 命令、权威历史或阶段权限 |
+| React Web | 仓库绑定、持久会话、Provider 配置与选择、角色进度、Artifact 展开审阅和高级 Run 审计 | 读取已保存 Secret，决定仓库路径、Worker 镜像、MCP 命令、权威历史或阶段权限 |
 | Nginx Web container | 提供静态 Web，并把 `/api/` 反向代理到 API | TLS 证书自动管理；远程部署需另置 TLS 终止层 |
 | Fastify API | Bearer 校验、精确 CORS、DTO 校验、服务编排、公开错误脱敏和 Cloud 资源访问检查 | 多用户身份、RBAC、租户隔离 |
 | PostgreSQL | 保存 Project、Session、消息/事件、工具审计、Workspace、Run、Execution、Artifact revision、Review、DeepWiki 和 Changeset 元数据 | 保存 Git、Provider 或 MCP Secret |
+| Encrypted Provider Vault | 保存四个实例级 Provider 槽位、启停状态、检查结果，以及 AEAD 加密后的 endpoint / API Key；支持单实例 CAS 与原子文件替换 | 多租户 Secret、多个 Custom、跨 API 副本一致性或企业 KMS |
 | Cloud Project Service / Git Broker | 校验 URL/ref/DNS，使用短时 AskPass 凭据拉取，固定 revision，物化 Project Snapshot、Session Sandbox 和 Run Workspace | 把 Git 凭据传给浏览器、Prompt 或 Worker |
 | Knowledge Services | 生成并复验确定性 DeepWiki Lite；为 Ask、Planner 和阶段执行提供 revision-bound 线索 | 将索引当作完整语义 Wiki，或证明未索引内容不存在 |
 | Provider Registry / Planner | 统一 OpenAI Responses、OpenAI Chat、Ollama Chat 协议；完成问答、工作意图识别、Change Contract 规划和原生 tool call 解析 | Shell、任意文件写入、把普通模型文本解析成可执行工具调用 |
@@ -204,13 +208,15 @@ sequenceDiagram
 | Provider-native Agent Runtime | `ProviderNativeAgentRuntime` + rooted tool host | 服务端根目录和工具定义 | 有界读/写/检查工具，原生 tool call，调用数/时间/输出限制 | 已有独立正确性与对抗测试，但尚未接入生产六阶段 |
 | Phase Runtime | Docker 内固定版本 Codex CLI | 当前阶段 Prompt、Change Contract、DeepWiki 线索、已批准上游 Artifact、主仓 Workspace | 主仓 Workspace 可写；Control Pack 和 `.git` 只读；固定资源/环境/挂载 | 源码/测试修改、当前角色 Artifact、JSONL 执行事件 |
 
-Provider Registry 的 endpoint、protocol、model 和 API key 只来自 API 环境；浏览器只能选择已配置的 Provider ID。兼容 Provider 必须由管理员显式声明 tool calling，平台仍会验证实际 wire-format tool call 和参数 schema。
+Provider Registry 的 endpoint、protocol、model 和 API key 来自 API 专属加密 Vault。持有部署级 Bearer Token 的管理员在 Web 四张固定卡中保存配置；Secret 输入框不回填，公开 DTO 只返回是否已保存、脱敏 Host、模型、版本、启停和最近检查。配置写入采用 optimistic version，更新会让旧检查失效并先停用；只有当前版本的 JSON 检查和可选原生 tool-call 探针都通过后才能启用。保存后 Registry 在线替换，不需要重启 API，也不会 fallback 到另一个 Provider。
+
+每个 Ask、DeepWiki 或 Agent Turn 在开始时取得不可变 Provider 实例快照。在途请求可以按已固定的 endpoint / Secret 完成；同名配置编辑或停用只影响后续新请求，避免同一轮把历史发送到两个信任边界。
 
 远程 Phase Runtime 使用启动时验证过的 Worker image ID。Docker spec 固定非 root UID:GID、只读 rootfs、`cap-drop ALL`、`no-new-privileges`、CPU/内存/PID/超时限制、bounded tmpfs 和精确 bind mounts。真实远程仓库还必须出现在 `AI_SDLC_REAL_EXECUTION_TRUSTED_REPOSITORIES` 的完整 URL allowlist 中；空列表拒绝所有真实远程阶段。
 
-Worker 环境采用 allowlist，只可能转发 Codex/OpenAI runtime key、显式代理和少量 locale/terminal 变量。聊天 Provider 的 `AI_SDLC_ASK_*` 凭据、Git Credential、MCP Secret、`DATABASE_URL`、Access Token 和 Docker client 配置不会进入 Worker。默认 Worker 网络是普通 Docker `bridge`，因此这不是 egress 隔离；需要更强网络控制时必须由部署层另行设计。
+Worker 环境采用 allowlist，只可能转发 Codex/OpenAI runtime key、显式代理和少量 locale/terminal 变量。聊天 Provider Vault 的凭据、Git Credential、MCP Secret、`DATABASE_URL`、Access Token 和 Docker client 配置不会进入 Worker。默认 Worker 网络是普通 Docker `bridge`，因此这不是 egress 隔离；需要更强网络控制时必须由部署层另行设计。
 
-相关实现： [Provider Registry](../../apps/api/src/services/llm/provider-registry.ts)、[Provider-native runtime](../../apps/api/src/services/agent/provider-native-agent-runtime.ts)、[Codex runner](../../apps/api/src/services/codex-runner.ts)、[Worker Dockerfile](../../docker/worker.Dockerfile) 和 [Cloud startup preflight](../../apps/api/src/services/cloud-startup-preflight.ts)。
+相关实现： [Provider 配置服务](../../apps/api/src/services/llm/provider-configuration-service.ts)、[加密 Vault](../../apps/api/src/services/llm/provider-configuration-vault.ts)、[Provider Registry](../../apps/api/src/services/llm/provider-registry.ts)、[Provider-native runtime](../../apps/api/src/services/agent/provider-native-agent-runtime.ts)、[Codex runner](../../apps/api/src/services/codex-runner.ts)、[Worker Dockerfile](../../docker/worker.Dockerfile) 和 [Cloud startup preflight](../../apps/api/src/services/cloud-startup-preflight.ts)。
 
 ## 7. MCP 与 DeepWiki
 
@@ -278,6 +284,8 @@ flowchart TB
         database[("PostgreSQL container")]
         secretEnv["Server environment Secrets"]
         managedFiles["Dedicated Managed Workspace Root"]
+        providerKey["Provider Vault key file"]
+        providerCipher["Provider encrypted profile file"]
         mcpBinary["Pinned operator MCP binary"]
         dockerSocket["Docker socket"]
         dockerHost["Docker daemon"]
@@ -299,10 +307,12 @@ flowchart TB
 
     tokenHolder -->|"Authorization header"| accessEdge
     accessEdge --> webContainer
-    webContainer --> apiContainer
-    secretEnv -->|"DB, Git, Provider, MCP, access credentials"| apiContainer
+    webContainer -->|"Provider Secret only on authenticated save"| apiContainer
+    secretEnv -->|"DB, Git, MCP, access and Worker credentials"| apiContainer
     apiContainer --> database
     apiContainer --> managedFiles
+    providerKey -->|"0600 read by API only"| apiContainer
+    providerCipher -->|"AEAD decrypt inside API"| apiContainer
     apiContainer -->|"Validated Git fetch"| gitService
     apiContainer -->|"Bounded model context"| chatService
     apiContainer -->|"Fixed stdio config"| mcpBinary
@@ -326,6 +336,7 @@ flowchart TB
 - **仓库、Issue、Artifact 和模型返回都是不可信数据。** 它们不能修改 Control Pack、镜像、工具权限、Secret 边界或人工 gate。
 - **MCP Adapter 是运维信任扩展。** 虽然 command/argv/env/protocol 受限，Adapter 仍以 API 容器内的 OS 身份运行，必须审核源码、版本与校验值。
 - **远程访问必须加 TLS。** Bearer Token 持有者权限相同；Compose 默认仅把 Web 绑定到 `127.0.0.1`，远程部署应在前面终止 TLS 并配置精确 HTTPS Origin。
+- **Provider Vault 是单机静态加密，不是企业 KMS。** 主密钥与密文分文件、权限收紧并做原子替换；两者必须成对备份。它防止只拿到密文的偶然泄露，但挡不住同时取得两文件的 Host root、被攻破的 API 进程或恶意模型 endpoint。
 
 ## 10. 失败恢复与幂等性
 
@@ -333,6 +344,8 @@ flowchart TB
 |---|---|---|
 | 重复/乱序消息 | `clientMessageId + fingerprint` replay；序号不同返回 conflict | 客户端刷新 Session 后重试；不会重复启动已完成 turn |
 | Provider/MCP/Planner 失败 | 记录安全失败事件，用户消息标记 failed，Session 回到 idle | 修正 Provider/Adapter 后发送新消息；不会自动重放外部调用 |
+| Provider Vault 缺文件、认证失败、损坏或遗留中断临时文件 | API 启动 fail closed，不生成空配置覆盖旧状态 | 运维者检查并成对恢复 key/ciphertext；不能靠页面绕过或静默重建 |
+| Provider 页面配置冲突或检查失败 | 旧 version 返回 409；草稿保存后保持停用；后续请求不 fallback | 刷新配置，在原卡片修正并重新“保存、测试并启用” |
 | Git import/sync 中断 | 未采用 Workspace 标记失败并清理，Project 保存安全错误 | 服务启动会重新调度仍处于未完成状态的 repository operation |
 | Worker 超时或非零退出 | TERM 后 KILL，尝试强制删除精确容器；Execution/Phase 标记 failed | 修正配置/代码后在同一 Run 重试当前阶段 |
 | Worker 容器无法确认清理 | Workspace 在当前 API 进程内 quarantine，不再并发使用 | 下次启动 preflight 先删除同 deployment 的遗留 Worker，再开放服务 |
@@ -361,6 +374,7 @@ Host Docker daemon 解析 bind mount 的 source，因此 API 容器必须以相�
 
 - 单租户、自托管、部署级 Bearer Token；没有用户、组织、RBAC、计费、审计主体隔离或 Token 轮换 UI。
 - 只支持单 API 实例。Session lock、真实阶段并发上限和后台任务都在进程内；没有 durable queue、暂停/取消协议或安全横向扩展。
+- Provider Vault 只有四个实例级槽位和一个 Custom；没有 per-user Secret、企业 KMS、跨副本一致性、多个 Custom，也没有完整 DNS rebinding 防护。恶意网络环境仍需部署级 egress policy。
 - Docker 不是 microVM。当前没有网络 egress policy、每 Run 硬磁盘配额、短期模型凭据代理、自动 Secret 扫描或 hostile code 隔离声明。
 - 一个 Session/Run 只能写一个主仓；没有多仓写入、跨仓事务、附加仓任意源码检索或跨仓语义聚合。
 - MCP 只开放管理员安装的只读 Work Item Adapter；没有浏览器任意安装、通用外部写/删除或可恢复 Human Gate 执行框架。
@@ -379,7 +393,7 @@ Host Docker daemon 解析 bind mount 的 source，因此 API 容器必须以相�
 | 数据模型与事务 | [schema.ts](../../apps/api/src/db/schema.ts), [store.ts](../../apps/api/src/db/store.ts) |
 | Git、Workspace、Control Pack | [cloud-project-service.ts](../../apps/api/src/services/cloud-project-service.ts), [git-broker.ts](../../apps/api/src/services/git-broker.ts), [definition-loader.ts](../../apps/api/src/services/definition-loader.ts) |
 | Chat-first orchestration | [agent-session-service.ts](../../apps/api/src/services/agent/agent-session-service.ts), [conversation-planner.ts](../../apps/api/src/services/agent/conversation-planner.ts), [agent-sdlc-coordinator.ts](../../apps/api/src/services/agent/agent-sdlc-coordinator.ts) |
-| Provider 与 Ask | [provider-registry.ts](../../apps/api/src/services/llm/provider-registry.ts), [ask-service.ts](../../apps/api/src/services/ask/ask-service.ts) |
+| Provider 配置与 Ask | [provider-configuration-service.ts](../../apps/api/src/services/llm/provider-configuration-service.ts), [provider-configuration-vault.ts](../../apps/api/src/services/llm/provider-configuration-vault.ts), [provider-registry.ts](../../apps/api/src/services/llm/provider-registry.ts), [ask-service.ts](../../apps/api/src/services/ask/ask-service.ts) |
 | MCP | [mcp-tool-router.ts](../../apps/api/src/services/agent/mcp-tool-router.ts), [work-item-mcp-registry.ts](../../apps/api/src/services/work-item/work-item-mcp-registry.ts) |
 | Knowledge | [deepwiki-lite.ts](../../apps/api/src/services/deepwiki-lite.ts), [project-knowledge.ts](../../apps/api/src/services/project-knowledge.ts), [deepwiki-generation-service.ts](../../apps/api/src/services/agent/deepwiki-generation-service.ts) |
 | Workflow、Worker、Patch | [workflow-service.ts](../../apps/api/src/services/workflow-service.ts), [codex-runner.ts](../../apps/api/src/services/codex-runner.ts), [run-changeset.ts](../../apps/api/src/services/run-changeset.ts) |

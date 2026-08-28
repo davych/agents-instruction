@@ -13,7 +13,7 @@
 ## 现在已经实现的 Ask
 
 - Cloud Project 来自远程 HTTPS Git，不绑定用户本地目录。
-- OpenAI、LM Studio、Ollama 和管理员配置的自定义兼容 Provider 都由服务端登记；浏览器不能覆盖 URL、协议或 Secret。
+- OpenAI、LM Studio、Ollama 和 Custom 都由服务端登记。实例管理员可在经过认证的“模型设置”页面保存、测试和启停它们；普通 Ask、DeepWiki 或 Agent 请求只能选择已启用的 Provider ID，不能临时覆盖 URL、协议或 Secret。
 - Thread 与 Message 保存在 PostgreSQL，固定 Project、Provider、公开 revision 和 raw Git source revision；浏览器不提交权威 history。
 - DeepWiki Lite 为 exact revision 提供确定性的文件、入口、文档、测试/构建和路径线索；它不是完整可浏览语义 Wiki。Ask 再按问题建立受限源码证据包并校验引用。
 - 项目同步后，旧 Thread 继续读取旧 Snapshot。旧 Thread 整理成交付任务时，新 Run 也固定该旧 revision，不会静默切到最新源码。

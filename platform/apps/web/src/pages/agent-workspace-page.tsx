@@ -54,6 +54,7 @@ import type {
   SandboxBlueprintSummary,
 } from "@/lib/types";
 import { cn, formatDate } from "@/lib/utils";
+import { providerEnabled, providerSelectionState } from "@/lib/provider-settings";
 
 const SDLC_ROLES = [
   { phaseId: "discovery", role: "PM / BA", label: "需求确认", artifacts: "Change Contract、PRD、Stories", icon: FileText },
@@ -77,12 +78,14 @@ export function AgentWorkspacePage({
   onSessionChange,
   onBack,
   onOpenRun,
+  onOpenProviderSettings,
 }: {
   projectId: string;
   sessionId?: string;
   onSessionChange: (sessionId: string) => void;
   onBack: () => void;
   onOpenRun: (runId: string) => void;
+  onOpenProviderSettings: () => void;
 }) {
   const queryClient = useQueryClient();
   const [content, setContent] = useState("");
@@ -122,9 +125,10 @@ export function AgentWorkspacePage({
 
   const project = projectQuery.data?.project;
   const session = sessionQuery.data;
-  const configuredProviders = (providersQuery.data ?? []).filter(({ configured }) => configured);
+  const configuredProviders = (providersQuery.data ?? []).filter(providerEnabled);
   const selectedProviderId = providerId ?? session?.currentProviderId ?? configuredProviders[0]?.id;
-  const selectedProvider = (providersQuery.data ?? []).find(({ id }) => id === selectedProviderId);
+  const providerSelection = providerSelectionState(selectedProviderId, providersQuery.data ?? []);
+  const selectedProvider = providerSelection.selectedProvider;
   const repo = session?.repositories.find(({ projectId: id }) => id === projectId)
     ?? session?.repositories.find(({ accessMode }) => accessMode === "write");
 
@@ -382,7 +386,7 @@ export function AgentWorkspacePage({
                   key={`${awaitingReviewPhase.id ?? awaitingReviewPhase.phaseId}:${artifactHeadsSignature(awaitingReviewPhase.artifacts)}`}
                   runId={runId}
                   phase={awaitingReviewPhase}
-                  canContinue={Boolean(selectedProvider?.configured && selectedProvider.capabilities.toolCalling)}
+                  canContinue={Boolean(selectedProvider && providerEnabled(selectedProvider) && selectedProvider.capabilities.toolCalling)}
                   conversationBusy={session?.turnState !== "idle" || sendMutation.isPending}
                   onBusyChange={setInlineReviewBusy}
                   onContinue={() => continueApprovedRun(awaitingReviewPhase.phaseId)}
@@ -401,6 +405,17 @@ export function AgentWorkspacePage({
               {sendError ? (
                 <div role="alert" className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
                   {sendError}
+                </div>
+              ) : null}
+              {providerSelection.requiresSelection ? (
+                <div role="alert" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  <span>
+                    当前 Provider（{selectedProvider?.label ?? (selectedProviderId ? PROVIDER_NAMES[selectedProviderId] : "未知")}）已停用或不可用。
+                    {configuredProviders.length ? "请选择一个已启用的 Provider 后再发送。" : "请先配置并启用一个 Provider。"}
+                  </span>
+                  <Button type="button" size="sm" variant="outline" onClick={onOpenProviderSettings}>
+                    <Settings2 className="h-4 w-4" aria-hidden /> 模型设置
+                  </Button>
                 </div>
               ) : null}
               <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-lg shadow-slate-900/5 focus-within:border-teal-400 focus-within:ring-4 focus-within:ring-teal-500/10">
@@ -423,26 +438,48 @@ export function AgentWorkspacePage({
                 <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-2 pt-2">
                   <div className="flex min-w-0 items-center gap-2">
                     <span className="hidden text-xs text-slate-400 sm:inline">本轮模型</span>
-                    <select
-                      aria-label="切换 Provider"
-                      className="h-8 max-w-52 rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-700 outline-none focus:border-teal-500"
-                      value={selectedProviderId ?? ""}
-                      onChange={(event) => setProviderId(event.target.value as AskProviderId)}
-                    >
-                      {configuredProviders.map((provider) => (
-                        <option key={provider.id} value={provider.id}>
-                          {provider.label} · {provider.model}
-                        </option>
-                      ))}
-                    </select>
-                    <ProviderCapability provider={selectedProvider} />
+                    {configuredProviders.length ? (
+                      <>
+                        <select
+                          aria-label="切换 Provider"
+                          className="h-8 max-w-52 rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-700 outline-none focus:border-teal-500"
+                          value={selectedProviderId ?? ""}
+                          onChange={(event) => setProviderId(event.target.value as AskProviderId)}
+                        >
+                          {providerSelection.requiresSelection && selectedProviderId ? (
+                            <option value={selectedProviderId} disabled>
+                              当前 Provider · 已停用 / 不可用
+                            </option>
+                          ) : null}
+                          {configuredProviders.map((provider) => (
+                            <option key={provider.id} value={provider.id}>
+                              {provider.label} · {provider.model}
+                            </option>
+                          ))}
+                        </select>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          aria-label="管理模型 Provider"
+                          onClick={onOpenProviderSettings}
+                        >
+                          <Settings2 className="h-4 w-4" aria-hidden />
+                        </Button>
+                        {providerSelection.selectedAvailable ? <ProviderCapability provider={selectedProvider} /> : null}
+                      </>
+                    ) : (
+                      <Button type="button" size="sm" variant="outline" onClick={onOpenProviderSettings}>
+                        <Settings2 className="h-4 w-4" aria-hidden /> 配置 Provider
+                      </Button>
+                    )}
                   </div>
                   <Button
                     type="submit"
                     size="sm"
                     variant="primary"
                     loading={sendMutation.isPending}
-                    disabled={!content.trim() || !session || !selectedProvider?.configured || !repositoryReady || inlineReviewBusy}
+                    disabled={!content.trim() || !session || !selectedProvider || !providerEnabled(selectedProvider) || !repositoryReady || inlineReviewBusy}
                   >
                     <Send className="h-4 w-4" aria-hidden /> 发送
                   </Button>
@@ -469,6 +506,7 @@ export function AgentWorkspacePage({
           project={project}
           session={session}
           selectedProviderId={selectedProviderId}
+          onOpenProviderSettings={onOpenProviderSettings}
         />
       ) : null}
     </div>
@@ -938,12 +976,14 @@ function RepositorySettingsDialog({
   project,
   session,
   selectedProviderId,
+  onOpenProviderSettings,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   project: Project;
   session?: AgentSession;
   selectedProviderId?: AskProviderId;
+  onOpenProviderSettings: () => void;
 }) {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string>();
@@ -997,9 +1037,14 @@ function RepositorySettingsDialog({
     mutationFn: () => {
       const revision = project.repository?.activeSnapshot?.revision;
       if (!revision) throw new Error("仓库版本尚未固定。");
+      const targetProviderId = selectedProviderId ?? settingsQuery.data?.defaultProviderId;
+      const targetProvider = providersQuery.data?.find(({ id }) => id === targetProviderId);
+      if (!targetProvider || !providerEnabled(targetProvider)) {
+        throw new Error("所选 Provider 已停用或不可用，请先在模型设置中启用，或选择另一个 Provider。");
+      }
       return api.generateDeepWiki(project.id, {
         expectedRevision: revision,
-        providerId: selectedProviderId ?? settingsQuery.data?.defaultProviderId,
+        providerId: targetProvider.id,
         clientRequestId: crypto.randomUUID(),
       });
     },
@@ -1011,6 +1056,9 @@ function RepositorySettingsDialog({
   });
 
   const settings = settingsQuery.data;
+  const deepWikiProviderId = selectedProviderId ?? settings?.defaultProviderId;
+  const deepWikiProvider = providersQuery.data?.find(({ id }) => id === deepWikiProviderId);
+  const deepWikiProviderAvailable = Boolean(deepWikiProvider && providerEnabled(deepWikiProvider));
   useEffect(() => {
     if (settings) setRepoAliasDraft(settings.repoAlias);
   }, [settings]);
@@ -1024,7 +1072,7 @@ function RepositorySettingsDialog({
       open={open}
       onOpenChange={onOpenChange}
       title={`@${settings?.repoAlias ?? "repo"} 能力设置`}
-      description="Provider、Sandbox 蓝图和只读 Work Item MCP 在仓库绑定后配置；浏览器不接收 Secret 或任意执行参数。"
+      description="仓库这里只选择默认 Provider、Sandbox 蓝图和只读 Work Item MCP；模型地址与密钥请在全局“模型设置”中配置，已保存值不会回显。"
       className="max-w-2xl"
     >
       <div className="overflow-y-auto p-6">
@@ -1047,20 +1095,36 @@ function RepositorySettingsDialog({
                     }}
                   />
                 </label>
-                <label className="text-xs font-medium text-slate-600">
-                  默认 Provider
-                  <select
-                    className="mt-1.5 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-teal-500"
-                    value={settings.defaultProviderId}
-                    onChange={(event) => save({ defaultProviderId: event.target.value as AskProviderId })}
-                  >
-                    {(providersQuery.data ?? []).map((provider) => (
-                      <option key={provider.id} value={provider.id} disabled={!provider.configured}>
-                        {provider.label} {provider.configured ? `· ${provider.model}` : "· 未配置"}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div>
+                  <label className="text-xs font-medium text-slate-600" htmlFor="repository-default-provider">
+                    默认 Provider
+                  </label>
+                  <div className="mt-1.5 flex gap-2">
+                    <select
+                      id="repository-default-provider"
+                      className="h-10 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-teal-500"
+                      value={settings.defaultProviderId}
+                      onChange={(event) => save({ defaultProviderId: event.target.value as AskProviderId })}
+                    >
+                      {(providersQuery.data ?? []).map((provider) => (
+                        <option key={provider.id} value={provider.id} disabled={!providerEnabled(provider)}>
+                          {provider.label} {providerEnabled(provider) ? `· ${provider.model}` : "· 未启用"}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        onOpenChange(false);
+                        onOpenProviderSettings();
+                      }}
+                    >
+                      模型设置
+                    </Button>
+                  </div>
+                </div>
               </div>
               <p className="mt-2 text-[11px] leading-5 text-slate-500">
                 对话时仍可切换 Provider，只影响下一条消息，不会清空 Agent Session。
@@ -1123,8 +1187,14 @@ function RepositorySettingsDialog({
               generation={deepWikiQuery.data}
               revision={project.repository?.activeSnapshot?.revision}
               providerId={selectedProviderId ?? settings.defaultProviderId}
+              providerAvailable={deepWikiProviderAvailable}
+              providerStatusLoading={providersQuery.isLoading || providersQuery.isFetching}
               pending={deepWikiMutation.isPending}
               onGenerate={() => deepWikiMutation.mutate()}
+              onOpenProviderSettings={() => {
+                onOpenChange(false);
+                onOpenProviderSettings();
+              }}
             />
 
             {error ? <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div> : null}
@@ -1181,14 +1251,20 @@ function DeepWikiPanel({
   generation,
   revision,
   providerId,
+  providerAvailable,
+  providerStatusLoading,
   pending,
   onGenerate,
+  onOpenProviderSettings,
 }: {
   generation?: DeepWikiGeneration | null;
   revision?: string;
   providerId: AskProviderId;
+  providerAvailable: boolean;
+  providerStatusLoading: boolean;
   pending: boolean;
   onGenerate: () => void;
+  onOpenProviderSettings: () => void;
 }) {
   const stale = generation?.status === "stale" || Boolean(generation && revision && generation.revision !== revision);
   return (
@@ -1203,10 +1279,22 @@ function DeepWikiPanel({
           <p className="mt-1 text-xs leading-5 text-slate-500">
             当前只在这个设置弹窗通过 Project API 手动生成。使用 {PROVIDER_NAMES[providerId]}，固定版本 {revision?.slice(0, 10) ?? "尚未就绪"}；绑定仓库时不会自动花费模型额度，会话命令和 @repo 菜单暂未提供。
           </p>
+          {!providerStatusLoading && !providerAvailable ? (
+            <p className="mt-2 text-xs font-medium leading-5 text-amber-700">
+              所选 Provider 已停用或不可用。先启用它，或选择另一个已启用的 Provider，才能生成 DeepWiki。
+            </p>
+          ) : null}
         </div>
-        <Button size="sm" variant="outline" loading={pending} disabled={!revision} onClick={onGenerate}>
-          <Sparkles className="h-4 w-4" /> 生成 DeepWiki
-        </Button>
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <Button size="sm" variant="outline" loading={pending} disabled={!revision || providerStatusLoading || !providerAvailable} onClick={onGenerate}>
+            <Sparkles className="h-4 w-4" /> 生成 DeepWiki
+          </Button>
+          {!providerStatusLoading && !providerAvailable ? (
+            <Button type="button" size="sm" variant="ghost" onClick={onOpenProviderSettings}>
+              <Settings2 className="h-4 w-4" aria-hidden /> 模型设置
+            </Button>
+          ) : null}
+        </div>
       </div>
       {generation?.content ? (
         <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">

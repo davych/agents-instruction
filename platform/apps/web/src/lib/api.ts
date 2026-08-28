@@ -9,6 +9,9 @@ import type {
   AskCitation,
   AskProjectInput,
   AskProviderCheck,
+  AskProviderConfiguration,
+  AskProviderConfigurationCheck,
+  SaveAskProviderConfigurationInput,
   AskProviderId,
   AskProviderStatus,
   AskThread,
@@ -326,6 +329,53 @@ const isAskProviderCheck = (value: unknown): value is AskProviderCheck =>
     "protocol_error",
   ].includes(value.state as string) &&
   (value.model === null || typeof value.model === "string");
+
+const isPositiveVersion = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
+const isAskProviderConfigurationCheck = (value: unknown): value is AskProviderConfigurationCheck =>
+  isRecord(value) &&
+  hasOnlyKeys(value, PROVIDER_CONFIGURATION_CHECK_KEYS) &&
+  isAskProviderCheck(value) &&
+  isPositiveVersion(value.version) &&
+  isPositiveVersion(value.configVersion);
+
+const isAskProviderConfiguration = (value: unknown): value is AskProviderConfiguration =>
+  hasStringFields(value, ["providerId", "label", "protocol", "dataBoundary", "endpointLabel"]) &&
+  hasOnlyKeys(value, PROVIDER_CONFIGURATION_KEYS) &&
+  !("credential" in value) &&
+  !("endpoint" in value) &&
+  isAskProviderId(value.providerId) &&
+  typeof value.enabled === "boolean" &&
+  typeof value.configured === "boolean" &&
+  (value.model === null || typeof value.model === "string") &&
+  ["openai-responses", "openai-chat", "ollama-chat"].includes(value.protocol as string) &&
+  ["remote", "local", "operator-configured"].includes(value.dataBoundary as string) &&
+  typeof value.hasEndpoint === "boolean" &&
+  typeof value.hasCredential === "boolean" &&
+  typeof value.structuredOutput === "boolean" &&
+  typeof value.toolCalling === "boolean" &&
+  typeof value.allowInsecureHttp === "boolean" &&
+  isPositiveVersion(value.version) &&
+  isPositiveVersion(value.configVersion) &&
+  (value.lastCheck === null || isAskProviderConfigurationCheck(value.lastCheck)) &&
+  isNullableString(value.createdAt) &&
+  isNullableString(value.updatedAt);
+
+const PROVIDER_CONFIGURATION_CHECK_KEYS = new Set([
+  "providerId", "state", "model", "message", "checkedAt", "version", "configVersion",
+]);
+
+const PROVIDER_CONFIGURATION_KEYS = new Set([
+  "providerId", "label", "enabled", "configured", "model", "protocol",
+  "dataBoundary", "endpointLabel", "hasEndpoint", "hasCredential",
+  "structuredOutput", "toolCalling", "allowInsecureHttp", "version",
+  "configVersion", "lastCheck", "createdAt", "updatedAt",
+]);
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
 
 const isAskAnswer = (value: unknown): value is AskAnswer =>
   hasStringFields(value, ["answer", "revision", "answeredAt"]) &&
@@ -726,6 +776,95 @@ export const api = {
       );
     }
     return check;
+  },
+
+  async listAskProviderConfigurations(
+    options: { signal?: AbortSignal } = {},
+  ): Promise<AskProviderConfiguration[]> {
+    const response = await request<unknown>("/api/ask/provider-configurations", {
+      signal: options.signal,
+    });
+    return parseCollectionResponse(
+      response,
+      "providers",
+      "Provider 配置列表响应",
+      isAskProviderConfiguration,
+    );
+  },
+
+  async saveAskProviderConfiguration(
+    providerId: AskProviderId,
+    input: SaveAskProviderConfigurationInput,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<AskProviderConfiguration> {
+    const response = await request<unknown>(
+      `/api/ask/provider-configurations/${encodeURIComponent(providerId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(input),
+        signal: options.signal,
+      },
+    );
+    const provider = parseEntityResponse(
+      response,
+      "provider",
+      "Provider 配置响应",
+      isAskProviderConfiguration,
+    );
+    if (provider.providerId !== providerId) {
+      throw new ApiError("Provider 配置响应与请求不一致。", 502, "INVALID_API_RESPONSE");
+    }
+    return provider;
+  },
+
+  async checkAskProviderConfiguration(
+    providerId: AskProviderId,
+    input: { expectedVersion: number },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<AskProviderConfigurationCheck> {
+    const response = await request<unknown>(
+      `/api/ask/provider-configurations/${encodeURIComponent(providerId)}/check`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+      },
+    );
+    const check = parseEntityResponse(
+      response,
+      "check",
+      "Provider 配置检查响应",
+      isAskProviderConfigurationCheck,
+    );
+    if (check.providerId !== providerId) {
+      throw new ApiError("Provider 配置检查响应与请求不一致。", 502, "INVALID_API_RESPONSE");
+    }
+    return check;
+  },
+
+  async setAskProviderEnabled(
+    providerId: AskProviderId,
+    input: { expectedVersion: number; enabled: boolean },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<AskProviderConfiguration> {
+    const response = await request<unknown>(
+      `/api/ask/provider-configurations/${encodeURIComponent(providerId)}/enabled`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+        signal: options.signal,
+      },
+    );
+    const provider = parseEntityResponse(
+      response,
+      "provider",
+      "Provider 状态响应",
+      isAskProviderConfiguration,
+    );
+    if (provider.providerId !== providerId) {
+      throw new ApiError("Provider 状态响应与请求不一致。", 502, "INVALID_API_RESPONSE");
+    }
+    return provider;
   },
 
   async askProject(

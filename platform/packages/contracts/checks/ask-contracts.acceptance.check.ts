@@ -10,10 +10,13 @@ import {
   askProviderAvailabilitySchema,
   askProviderCapabilitiesSchema,
   askProviderCheckSchema,
+  askProviderConfigurationCheckSchema,
+  askProviderConfigurationSchema,
   askProviderIdSchema,
   askProviderProtocolSchema,
   askProviderStatusSchema,
   askWorkItemDraftSchema,
+  updateAskProviderConfigurationSchema,
 } from "../src/index.ts";
 
 /** Tier A contract checks mapped directly to ASK-AC-01/04/05/09/12. */
@@ -151,6 +154,79 @@ test("ASK-AC-01/03/09: Provider status/check output schemas are strict, sanitize
   assert.equal(askProviderCheckSchema.safeParse(check).success, true);
   assert.equal(askProviderCheckSchema.safeParse({ ...check, state: "rate_limited" }).success, false);
   assert.equal(askProviderCheckSchema.safeParse({ ...check, rawUpstreamBody: "secret" }).success, false);
+});
+
+test("PROV-AC-04/06/07: Provider control contracts separate record and configuration versions", () => {
+  const check = {
+    providerId: "custom",
+    state: "ready",
+    model: "model-v1",
+    message: "连接正常",
+    checkedAt: "2026-08-28T10:00:00.000Z",
+    version: 3,
+    configVersion: 2,
+  };
+  assert.equal(askProviderConfigurationCheckSchema.safeParse(check).success, true);
+  assert.equal(
+    askProviderConfigurationCheckSchema.safeParse({
+      ...check,
+      version: undefined,
+    }).success,
+    false,
+  );
+
+  const configuration = {
+    providerId: "custom",
+    label: "Custom",
+    enabled: true,
+    configured: true,
+    model: "model-v1",
+    protocol: "openai-chat",
+    dataBoundary: "operator-configured",
+    endpointLabel: "llm.example.test",
+    hasEndpoint: true,
+    hasCredential: true,
+    structuredOutput: false,
+    toolCalling: false,
+    allowInsecureHttp: false,
+    version: 4,
+    configVersion: 2,
+    lastCheck: check,
+    createdAt: "2026-08-28T09:00:00.000Z",
+    updatedAt: "2026-08-28T10:01:00.000Z",
+  };
+  assert.equal(askProviderConfigurationSchema.safeParse(configuration).success, true);
+  assert.equal(
+    askProviderConfigurationSchema.safeParse({
+      ...configuration,
+      version: 1,
+    }).success,
+    false,
+  );
+  assert.equal(
+    askProviderConfigurationSchema.safeParse({
+      ...configuration,
+      lastCheck: { ...check, version: 5 },
+    }).success,
+    false,
+  );
+
+  const update = {
+    expectedVersion: 4,
+    label: "Custom",
+    protocol: "openai-chat",
+    model: "model-v1",
+    endpoint: { action: "keep" },
+    credential: { action: "replace", value: "safe-secret" },
+    structuredOutput: false,
+    toolCalling: false,
+    allowInsecureHttp: false,
+  };
+  assert.equal(updateAskProviderConfigurationSchema.safeParse(update).success, true);
+  assert.equal(updateAskProviderConfigurationSchema.safeParse({
+    ...update,
+    credential: { action: "replace", value: "unsafe\tsecret" },
+  }).success, false);
 });
 
 test("ASK-AC-07/08/09: citation, work-item, and answer output schemas reject fabricated or inconsistent evidence", () => {

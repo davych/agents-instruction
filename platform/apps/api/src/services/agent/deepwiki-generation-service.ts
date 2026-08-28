@@ -108,6 +108,18 @@ export class DeepWikiGenerationService {
     }
     const settings = await this.store.getProjectAgentSettings(projectId);
     const providerId = input.providerId ?? settings.defaultProviderId;
+    return this.providers.runWithProvider(
+      providerId,
+      () => this.generatePinned(projectId, input, providerId, signal),
+    );
+  }
+
+  private async generatePinned(
+    projectId: string,
+    input: GenerateDeepWikiInput,
+    providerId: DeepWikiGenerationDto["providerId"],
+    signal?: AbortSignal,
+  ): Promise<DeepWikiGenerationDto> {
     const status = this.providers.status(providerId);
     if (!status.configured || !status.model) {
       throw new AppError(

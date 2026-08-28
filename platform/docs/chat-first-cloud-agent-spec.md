@@ -43,7 +43,7 @@ DeepWiki 不在仓库绑定时调用 LLM。当前已实现的入口只有仓库�
 - Repository alias 由服务端解析到 Project ID；模型不能把自由文本变成权限。
 - Sandbox 只能使用管理员批准并固定版本的 Blueprint，浏览器不能提交镜像、Host mount、Docker 参数或宿主路径。
 - Git 和 MCP Secret 只保存为服务端 Profile 引用，不进入消息、仓库或 Sandbox。
-- 项目聊天 Provider 的凭据只由服务端 Provider Profile 使用，不进入消息、仓库、Sandbox，也不传给阶段 Codex Worker。阶段 Codex Worker 使用独立、低权限的运行密钥。
+- 项目聊天 Provider 的凭据只由页面一次性提交到 API 加密 Vault，并由服务端 Provider Profile 使用；API 不回传，且它不进入消息、仓库、Sandbox，也不传给阶段 Codex Worker。阶段 Codex Worker 使用独立、低权限的运行密钥。
 - 只有当前项目已激活的只读 Work Item MCP 工具能进入本轮工具列表；工具说明、结果、Issue 和源码都按不可信数据处理。
 - 当前只向 Agent 开放受限的只读 Work Item MCP。非只读 MCP，以及外部写入、删除、push、PR、部署和发布工具均未开放；通用外部副作用 Human Gate 也尚未接通，不能把“等待确认”当成已有能力。
 - 每轮保存实际 Provider、模型、工具调用、源码 revision、Sandbox、Run 和角色产物关联。
@@ -92,6 +92,37 @@ Agent 可以自动 involve 下一角色；用户也可以说“让 Architect 评
 
 底层 Run、Phase、Artifact、Review、Ticket、Changeset 和高级审计能力不删除。
 
+## Provider 页面配置纠偏
+
+用户不应该为了换模型去修改服务器 `.env` 或重启 API。Cloud 主路径改成实例级 Provider 配置页，并保持下面这些单人 MVP 决定：
+
+- 一个实例共享 OpenAI、LM Studio、Ollama、Custom 四个固定槽位；项目只保存默认槽位，对话可在启用槽位间按下一条消息切换。
+- 当前唯一的 Cloud Bearer Token 同时代表实例管理员。多用户和 RBAC 不在本轮范围。
+- Provider Profile 与 Secret 存在 API 专属加密 Vault；密钥和密文分文件，均位于持久 Managed Root，阶段 Worker、项目 Workspace、MCP 和浏览器都拿不到。
+- 生产启动不再读取 `AI_SDLC_ASK_*` 作为 Provider 真相源，也不做双向同步或静默导入。
+- 编辑或停用不打断已经固定 Provider 快照的在途请求，但会立即阻止后续新请求。
+- OpenAI 使用官方 HTTPS endpoint；LM Studio、Ollama 和 Custom 可使用 API 主机明确支持的本地 endpoint。其他远端 endpoint 默认必须是 HTTPS，并继续拒绝 URL 凭据、query、fragment、重定向和高危保留地址。
+
+页面只有一套配置 Dialog：四张 Provider 卡片和一个主要动作“保存、测试并启用”。Secret 输入框永远为空；留空表示保留，显式清除表示删除。连接失败时保存草稿但保持停用，用户直接在原卡片修正，不进入额外向导。
+
+### Provider 配置验收条件
+
+- **PROV-AC-01**：从全局页头、Agent Provider 选择区或无可用 Provider 空状态，最多一次点击进入同一配置 Dialog。
+- **PROV-AC-02**：OpenAI、LM Studio、Ollama、Custom 四个固定槽位都能保存、编辑、连接检查、启用和停用；保存后无须重启 API。
+- **PROV-AC-03**：主按钮依次保存、使用刚保存的版本做真实连接检查，并且只在检查通过时启用；失败草稿保持停用。
+- **PROV-AC-04**：公开 DTO、HTTP 响应、错误、日志、浏览器缓存、消息、事件、数据库业务字段、Sandbox 和 Worker 环境都不包含 Provider Secret、密文或完整 Authorization Header。
+- **PROV-AC-05**：Secret 和 endpoint 使用明确的保留、替换或清除语义；编辑页不回填 Secret。endpoint origin 改变时不能沿用旧 Secret。
+- **PROV-AC-06**：所有写入带 optimistic version；旧页面更新返回 409，不能覆盖新配置。配置字段变化会让旧检查失效并自动停用。
+- **PROV-AC-07**：只有同一 configuration version 的 `ready` 检查才能启用；声明 tool calling 时还必须通过只解析、不执行的原生 tool-call 探针。
+- **PROV-AC-08**：停用或不可用 Provider 的新请求 fail closed，不静默 fallback；项目默认仍指向它时显示可操作错误，由用户明确切换。
+- **PROV-AC-09**：一个 Ask、DeepWiki 或 Agent Turn 在开始时固定 Provider 实例；过程中编辑配置不能把同一轮历史发给另一个 endpoint 或 Secret。
+- **PROV-AC-10**：Agent 输入框只列启用 Provider；切换只影响下一条消息，不清空历史，assistant 消息继续保存实际 Provider 与上游模型。
+- **PROV-AC-11**：配置文件损坏、认证标签不匹配、已有密文但主密钥丢失、原子写中断或残留临时文件时 fail closed，不能用空配置覆盖原文件。
+- **PROV-AC-12**：连接检查只发送固定的小型兼容性请求，不发送仓库、对话、DeepWiki 或 MCP 内容；上游错误正文不原样返回或记录。
+- **PROV-AC-13**：Provider endpoint 由 API 服务器访问。页面明确说明 `localhost` 指 API 运行环境；Docker Host 上的 LM Studio / Ollama 使用 `host.docker.internal`。
+- **PROV-AC-14**：项目默认 Provider、现有 Session/Message/DeepWiki Provider ID、固定六阶段、角色 owner、Artifact Review 和 Worker 密钥边界保持不变。
+- **PROV-AC-15**：本轮保持单 API 实例和单一 Custom 槽位；多租户、多个 Custom、跨副本一致性和企业 KMS 属于后续架构升级，不伪装成已完成。
+
 ## 验收条件
 
 - **CHAT-AC-01**：绑定仓库的默认表单只要求安全 HTTPS URL 和可选 Credential Profile；名称与 alias 自动推断。
@@ -120,7 +151,7 @@ Agent 可以自动 involve 下一角色；用户也可以说“让 Architect 评
 - 多个仓库同时写入或跨仓原子提交。
 - 把附加仓挂载给 Worker、读取任意源码正文、跨仓全文/向量检索或完整语义聚合；当前只提供固定 revision 的有界 Manifest 路径线索。
 - 任意用户上传 Dockerfile、镜像、Host mount 或 Shell 蓝图。
-- 浏览器直接保存 Git、Provider 或 MCP Secret；仍由管理员/Vault 提供 Profile。
+- Git / MCP Secret 的页面配置和通用 Secret 管理器；Provider 是当前唯一的页面 Secret 写入例外，而且保存后不能取回。
 - 通用外部副作用 Human Gate，以及任何外部写入、删除、push、PR、部署或发布工具。
 - 不支持原生 tool calling 的模型通过解析普通文本伪造工具调用。
 - 多租户强隔离、microVM、分布式 Session 队列和自动扩缩容。
@@ -130,7 +161,7 @@ Agent 可以自动 involve 下一角色；用户也可以说“让 Architect 评
 | 范围 | 结果 | 说明 |
 |---|---|---|
 | 仓库绑定 → 直接进入对话 | 已完成 | 只需要 HTTPS URL 与可选 Credential Profile；服务端推断名称和 alias。 |
-| 每轮 Provider 切换 | 已完成 | OpenAI、LM Studio、Ollama、Custom 共用 Registry，并记录实际 Provider / model。 |
+| 页面配置与每轮 Provider 切换 | 已完成 | OpenAI、LM Studio、Ollama、Custom 由模型设置管理并写入加密 Vault；启用后可按下一轮切换，并记录实际 Provider / model。 |
 | 手工 LLM DeepWiki | 已完成 | bind 后从设置弹窗调用 Project API；固定 revision，保存引用与用量，源码同步后旧版本 stale。 |
 | Agent 按需读取 Work Item | 已完成（只读范围） | 当前开放受限 Work Item Adapter；审计记录先于真实调用。 |
 | Session Sandbox | 已完成 | 与本 Session 的一个 Run 共用同一 exact-revision Workspace；阶段 Worker 短生命周期。 |

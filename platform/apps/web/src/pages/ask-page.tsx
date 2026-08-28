@@ -21,6 +21,7 @@ import {
   MessageSquare,
   RefreshCw,
   Send,
+  Settings2,
   ShieldCheck,
   Sparkles,
   Square,
@@ -71,6 +72,7 @@ import type {
 } from "@/lib/types";
 import { cn, formatDate } from "@/lib/utils";
 import { WORK_TYPE_OPTIONS } from "@/lib/change-contract";
+import { providerEnabled } from "@/lib/provider-settings";
 
 const SUGGESTED_QUESTIONS = [
   "这个项目从哪里启动？",
@@ -93,10 +95,10 @@ const PROVIDER_DISPLAY_NAME: Record<AskProviderId, string> = {
 };
 
 const PROVIDER_SERVER_HINT: Record<AskProviderId, string> = {
-  openai: "服务端配置 AI_SDLC_ASK_OPENAI_*；Web 不接收凭据。",
-  lmstudio: "服务端配置 AI_SDLC_ASK_LM_STUDIO_MODEL 与 AI_SDLC_ASK_LM_STUDIO_BASE_URL。",
-  ollama: "服务端配置 AI_SDLC_ASK_OLLAMA_MODEL 与 AI_SDLC_ASK_OLLAMA_BASE_URL。",
-  custom: "服务端配置 AI_SDLC_ASK_CUSTOM_PROTOCOL、AI_SDLC_ASK_CUSTOM_BASE_URL 与 AI_SDLC_ASK_CUSTOM_MODEL。",
+  openai: "在模型设置中填写 API Key 和模型。",
+  lmstudio: "在模型设置中填写 Cloud API 能访问的 LM Studio 地址与模型。",
+  ollama: "在模型设置中填写 Cloud API 能访问的 Ollama 地址与模型。",
+  custom: "在模型设置中填写服务地址、协议、模型和需要的密钥。",
 };
 
 const DATA_BOUNDARY_COPY: Record<AskProviderStatus["dataBoundary"], string> = {
@@ -115,10 +117,12 @@ export function AskPage({
   projectId,
   onBack,
   onOpenRun,
+  onOpenProviderSettings,
 }: {
   projectId: string;
   onBack: () => void;
   onOpenRun: (runId: string) => void;
+  onOpenProviderSettings: () => void;
 }) {
   const queryClient = useQueryClient();
   const [session, setSession] = useState<AskSessionState>(() => loadAskSession(projectId));
@@ -159,7 +163,7 @@ export function AskPage({
   });
 
   const configuredProviders = useMemo(
-    () => (providersQuery.data ?? []).filter((provider) => provider.configured),
+    () => (providersQuery.data ?? []).filter(providerEnabled),
     [providersQuery.data],
   );
   // Once a user/session has selected a Provider, keep that identity even when
@@ -222,12 +226,12 @@ export function AskPage({
   const providerCheckQuery = useQuery({
     queryKey: ["ask", "provider-check", selectedProviderId],
     queryFn: ({ signal }) => api.checkAskProvider(selectedProviderId!, { signal }),
-    enabled: Boolean(selectedProviderId && selectedProvider?.configured),
+    enabled: Boolean(selectedProviderId && selectedProvider && providerEnabled(selectedProvider)),
     staleTime: 30_000,
     retry: false,
     refetchOnWindowFocus: false,
   });
-  const providerReady = selectedProvider?.configured === true
+  const providerReady = Boolean(selectedProvider && providerEnabled(selectedProvider))
     && providerCheckQuery.data?.state === "ready";
 
   const askMutation = useMutation({
@@ -511,7 +515,7 @@ export function AskPage({
           icon={providerReady ? <Wifi /> : <WifiOff />}
           label="模型服务"
           value={selectedProvider?.label ?? "尚未配置"}
-          detail={selectedProvider?.model ?? "请先在 API 服务中配置 Provider"}
+          detail={selectedProvider?.model ?? "请先打开模型设置配置 Provider"}
         />
         <ContextCard
           icon={<ShieldCheck />}
@@ -565,9 +569,14 @@ export function AskPage({
           ) : null}
           <Card>
             <CardContent className="p-5">
-              <div className="flex items-center gap-2">
-                <Bot className="h-4 w-4 text-teal-600" aria-hidden />
-                <h2 className="text-sm font-semibold text-slate-950">回答模型</h2>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Bot className="h-4 w-4 text-teal-600" aria-hidden />
+                  <h2 className="text-sm font-semibold text-slate-950">回答模型</h2>
+                </div>
+                <Button type="button" size="sm" variant="ghost" aria-label="管理模型 Provider" onClick={onOpenProviderSettings}>
+                  <Settings2 className="h-4 w-4" aria-hidden />
+                </Button>
               </div>
               {configuredProviders.length > 0 ? (
                 <>
@@ -593,8 +602,8 @@ export function AskPage({
                       className="h-11 w-full appearance-none rounded-xl border border-slate-200 bg-white px-3.5 pr-9 text-sm font-semibold text-slate-900 shadow-sm outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 disabled:bg-slate-50"
                     >
                       {(providersQuery.data ?? []).map((provider) => (
-                        <option key={provider.id} value={provider.id} disabled={!provider.configured}>
-                          {provider.label} · {provider.configured ? provider.model ?? "未指定模型" : "未配置"}
+                        <option key={provider.id} value={provider.id} disabled={!providerEnabled(provider)}>
+                          {provider.label} · {providerEnabled(provider) ? provider.model ?? "未指定模型" : "未启用"}
                         </option>
                       ))}
                     </select>
@@ -602,11 +611,11 @@ export function AskPage({
                   </div>
                   <ProviderCheckStatus
                     provider={selectedProvider}
-                    state={selectedProvider?.configured ? providerCheckQuery.data?.state : "not_configured"}
-                    message={selectedProvider?.configured
+                    state={selectedProvider && providerEnabled(selectedProvider) ? providerCheckQuery.data?.state : "not_configured"}
+                    message={selectedProvider && providerEnabled(selectedProvider)
                       ? providerCheckQuery.data?.message
                       : selectedProvider?.message}
-                    reportedModel={selectedProvider?.configured
+                    reportedModel={selectedProvider && providerEnabled(selectedProvider)
                       ? providerCheckQuery.data?.model
                       : null}
                     loading={providerCheckQuery.isFetching}
@@ -616,10 +625,13 @@ export function AskPage({
                 </>
               ) : (
                 <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
-                  还没有配置可用的模型服务。可以在 API 环境中配置 OpenAI、LM Studio、Ollama 或自定义服务，然后重新加载。
+                  <p>还没有启用可用的模型服务。配置一次后，Ask 和 Agent Workspace 都能直接使用。</p>
+                  <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onOpenProviderSettings}>
+                    <Settings2 className="h-4 w-4" aria-hidden /> 配置 Provider
+                  </Button>
                 </div>
               )}
-              <ProviderInventory providers={providersQuery.data ?? []} />
+              <ProviderInventory providers={providersQuery.data ?? []} onOpenProviderSettings={onOpenProviderSettings} />
             </CardContent>
           </Card>
 
@@ -910,16 +922,27 @@ function ProviderCheckStatus({
   );
 }
 
-function ProviderInventory({ providers }: { providers: AskProviderStatus[] }) {
+function ProviderInventory({
+  providers,
+  onOpenProviderSettings,
+}: {
+  providers: AskProviderStatus[];
+  onOpenProviderSettings: () => void;
+}) {
   return (
     <section className="mt-4 border-t border-slate-100 pt-4" aria-labelledby="ask-provider-inventory-title">
-      <h3 id="ask-provider-inventory-title" className="text-xs font-semibold text-slate-700">
-        支持的 Provider
-      </h3>
+      <div className="flex items-center justify-between gap-2">
+        <h3 id="ask-provider-inventory-title" className="text-xs font-semibold text-slate-700">
+          支持的 Provider
+        </h3>
+        <button type="button" className="text-[11px] font-semibold text-teal-700 hover:text-teal-900" onClick={onOpenProviderSettings}>
+          模型设置
+        </button>
+      </div>
       <ul className="mt-2 space-y-2">
         {PROVIDER_ORDER.map((providerId) => {
           const provider = providers.find((item) => item.id === providerId);
-          const configured = provider?.configured === true;
+          const configured = Boolean(provider && providerEnabled(provider));
           return (
             <li key={providerId} className="rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2.5">
               <div className="flex items-center justify-between gap-2">
@@ -927,7 +950,7 @@ function ProviderInventory({ providers }: { providers: AskProviderStatus[] }) {
                   {PROVIDER_DISPLAY_NAME[providerId]}
                 </span>
                 <Badge variant={configured ? "success" : "muted"}>
-                  {configured ? "已配置" : "未配置"}
+                  {configured ? "已启用" : "未启用"}
                 </Badge>
               </div>
               <p className="mt-1 break-words text-[11px] leading-4 text-slate-500">

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { AccessTokenGate } from "@/components/access-token-gate";
 import { AppShell } from "@/components/app-shell";
+import { ProviderSettingsDialog } from "@/components/provider-settings-dialog";
 import { ErrorState, PageSkeleton } from "@/components/states";
 import { api, ApiError, getAccessToken, setAccessToken } from "@/lib/api";
 import { routeTitle } from "@/lib/navigation";
@@ -63,6 +64,7 @@ function readRoute(): RouteState {
 
 export default function App() {
   const [route, setRoute] = useState<RouteState>(readRoute);
+  const [providerSettingsOpen, setProviderSettingsOpen] = useState(false);
   const initialAccessTokenRef = useRef(getAccessToken());
   const [authenticationApproved, setAuthenticationApproved] = useState(false);
   const navigationKindRef = useRef<"initial" | "push" | "pop">("initial");
@@ -224,7 +226,12 @@ export default function App() {
       : [];
 
   return (
-    <AppShell crumbs={crumbs} onHome={() => navigate({})}>
+    <>
+      <AppShell
+      crumbs={crumbs}
+      onHome={() => navigate({})}
+      onOpenProviderSettings={() => setProviderSettingsOpen(true)}
+    >
       {route.runId ? (
         <RunPage
           runId={route.runId}
@@ -246,6 +253,7 @@ export default function App() {
             projectId={route.projectId}
             onBack={() => navigate({ projectId: route.projectId })}
             onOpenRun={(runId) => navigate({ projectId: route.projectId, runId })}
+            onOpenProviderSettings={() => setProviderSettingsOpen(true)}
           />
         </Suspense>
       ) : route.projectId && route.projectView === "overview" ? (
@@ -266,6 +274,7 @@ export default function App() {
           })}
           onBack={() => navigate({})}
           onOpenRun={(runId) => navigate({ projectId: route.projectId, sessionId: route.sessionId, runId })}
+          onOpenProviderSettings={() => setProviderSettingsOpen(true)}
         />
       ) : (
         <ProjectsPage onOpenWorkspace={(projectId, sessionId) => navigate({
@@ -274,6 +283,11 @@ export default function App() {
           projectView: "workspace",
         })} />
       )}
-    </AppShell>
+      </AppShell>
+      <ProviderSettingsDialog
+        open={providerSettingsOpen}
+        onOpenChange={setProviderSettingsOpen}
+      />
+    </>
   );
 }

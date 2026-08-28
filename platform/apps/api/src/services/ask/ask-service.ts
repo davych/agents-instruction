@@ -119,7 +119,26 @@ export class AskService {
     }
   }
 
-  private async answerFromResolvedRoot(
+  private answerFromResolvedRoot(
+    input: AskProjectInput,
+    projectRoot: string,
+    signal?: AbortSignal,
+    knowledge?: TrustedProjectKnowledge,
+    externalContext?: unknown,
+  ): Promise<AskAnswerDto> {
+    return this.providers.runWithProvider(
+      input.providerId,
+      () => this.answerFromPinnedResolvedRoot(
+        input,
+        projectRoot,
+        signal,
+        knowledge,
+        externalContext,
+      ),
+    );
+  }
+
+  private async answerFromPinnedResolvedRoot(
     input: AskProjectInput,
     projectRoot: string,
     signal?: AbortSignal,

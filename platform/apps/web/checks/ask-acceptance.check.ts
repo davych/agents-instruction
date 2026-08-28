@@ -109,8 +109,8 @@ test("ASK-AC-02/10: a restored session keeps its selected Provider even after th
     /if \(session\.providerId \|\| !selectedProviderId\) return/u,
     "default selection must never overwrite a restored Provider",
   );
-  assert.match(askPage, /selectedProvider\?\.configured === true/u);
-  assert.match(askPage, /reportedModel=\{selectedProvider\?\.configured/u);
+  assert.match(askPage, /providerEnabled\(selectedProvider\)/u);
+  assert.match(askPage, /reportedModel=\{selectedProvider && providerEnabled\(selectedProvider\)/u);
   assert.match(askPage, /上游报告模型：\{reportedModel\}/u);
 });
 

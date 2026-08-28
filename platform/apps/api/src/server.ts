@@ -13,7 +13,7 @@ import {
   parseAllowedOrigins,
 } from "./services/access-control.js";
 import { runCloudStartupPreflight } from "./services/cloud-startup-preflight.js";
-import { createAskProviderRegistryFromEnv } from "./services/llm/provider-registry.js";
+import { ProviderConfigurationService } from "./services/llm/provider-configuration-service.js";
 import { createGitCredentialRegistryFromEnv } from "./services/git-credential-registry.js";
 import { RepositoryPolicy } from "./services/repository-policy.js";
 import { createWorkItemMcpRegistryFromEnv } from "./services/work-item/work-item-mcp-registry.js";
@@ -54,6 +54,9 @@ try {
     ),
   });
   await migrate(pool);
+  const providerConfigurations = await ProviderConfigurationService.create({
+    managedRoot: cloudPreflight.managedRoot,
+  });
   const app = await buildApp({
     pool,
     logger: true,
@@ -86,7 +89,7 @@ try {
     cliPath: process.env.AI_SDLC_CLI_PATH
       ? path.resolve(process.cwd(), process.env.AI_SDLC_CLI_PATH)
       : undefined,
-    askProviders: createAskProviderRegistryFromEnv(process.env),
+    providerConfigurations,
     sandboxBlueprintRegistry: createSandboxBlueprintRegistryFromEnv(
       process.env,
       cloudPreflight.docker.workerImage ?? undefined,
