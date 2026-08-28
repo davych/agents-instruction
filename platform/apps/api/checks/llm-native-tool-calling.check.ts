@@ -152,7 +152,10 @@ test("native tool calls use each provider's documented wire shape and one normal
       fetchImpl: capture.fetchImpl,
     });
 
-    const response = await provider.complete(TOOL_REQUEST);
+    const response = await provider.complete({
+      ...TOOL_REQUEST,
+      toolChoice: "required",
+    });
     assert.deepEqual(response.toolCalls?.[0], {
       id: "chat_call_1",
       type: "function",
@@ -162,7 +165,7 @@ test("native tool calls use each provider's documented wire shape and one normal
     const body = capture.calls[0]!.body;
     const tools = body.tools as Array<{ function?: { strict?: unknown } }>;
     assert.equal(tools[0]?.function?.strict, true);
-    assert.equal(body.tool_choice, "auto");
+    assert.equal(body.tool_choice, "required");
     assert.equal(body.parallel_tool_calls, false);
   });
 
@@ -275,6 +278,27 @@ test("providers reject tools unless that concrete endpoint/model was configured 
   );
 });
 
+test("Ollama rejects required tool choice instead of pretending to enforce it", async () => {
+  const provider = new OllamaChatProvider({
+    id: "ollama",
+    label: "Ollama",
+    protocol: "ollama-chat",
+    dataBoundary: "local",
+    baseUrl: new URL("http://127.0.0.1:11434"),
+    model: "qwen3",
+    structuredOutput: true,
+    toolCalling: true,
+    timeoutMs: 1_000,
+    maxResponseBytes: 32_000,
+    fetchImpl: captureJsonFetch({}).fetchImpl,
+  });
+  await assert.rejects(
+    provider.complete({ ...TOOL_REQUEST, toolChoice: "required" }),
+    (error: unknown) => error instanceof AskProviderError
+      && error.code === "ASK_PROVIDER_REQUEST_INVALID",
+  );
+});
+
 test("malformed native arguments fail at the provider boundary before any router can execute them", async () => {
   const capture = captureJsonFetch({
     status: "completed",
@@ -321,7 +345,11 @@ function routerProvider(fixture: RouterProviderFixture): AskProviderRegistry {
         label: "fixture",
         configured: true,
         model: "fixture-model",
-        protocol: "openai-responses",
+        protocol: providerId === "ollama"
+          ? "ollama-chat"
+          : providerId === "lmstudio"
+            ? "openai-chat"
+            : "openai-responses",
         dataBoundary: "local",
         endpointLabel: "fixture.test",
         capabilities: {

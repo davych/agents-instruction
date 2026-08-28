@@ -169,11 +169,14 @@ export class ProviderConfigurationVault {
     const key = await loadOrCreateKey(paths);
     const stored = hasCiphertext ? await loadDocument(paths.ciphertext, key) : null;
     if (hasCiphertext && !stored) throw new ProviderConfigurationVaultError();
-    const document = stored ?? createDefaultProviderVaultDocument();
+    const migration = migrateProviderVaultDocument(
+      stored ?? createDefaultProviderVaultDocument(),
+    );
+    const document = migration.document;
     // A brand-new empty directory is initialized as one explicit key/cipher
     // pair. If the process dies between those operations, the next start sees
     // an incomplete pair and fails closed for operator recovery.
-    if (!hasCiphertext) await writeDocument(paths, key, document);
+    if (!hasCiphertext || migration.changed) await writeDocument(paths, key, document);
     return new ProviderConfigurationVault(document, key, paths);
   }
 
@@ -216,7 +219,7 @@ export function createDefaultProviderVaultDocument(): ProviderVaultDocument {
     },
     lmstudio: {
       label: "LM Studio",
-      protocol: "openai-responses",
+      protocol: "openai-chat",
       endpoint: "http://127.0.0.1:1234/v1",
       model: null,
       structuredOutput: true,
@@ -255,6 +258,32 @@ export function createDefaultProviderVaultDocument(): ProviderVaultDocument {
       updatedAt: null,
     })),
   });
+}
+
+/**
+ * LM Studio's documented JSON Schema transport is Chat Completions. Earlier
+ * Provider Vaults fixed this slot to Responses, whose LM Studio implementation
+ * can ignore Responses `text.format` and return unconstrained prose. Preserve the
+ * user's endpoint, model, credential and capability choice, but invalidate the
+ * old check and require an explicit re-enable after the one-time wire migration.
+ */
+function migrateProviderVaultDocument(
+  document: ProviderVaultDocument,
+): { document: ProviderVaultDocument; changed: boolean } {
+  const lmStudio = document.providers.find(({ providerId }) => providerId === "lmstudio");
+  if (!lmStudio || lmStudio.protocol !== "openai-responses") {
+    return { document, changed: false };
+  }
+  const migrated = structuredClone(document);
+  const target = migrated.providers.find(({ providerId }) => providerId === "lmstudio");
+  if (!target) throw new ProviderConfigurationVaultError();
+  target.protocol = "openai-chat";
+  target.enabled = false;
+  target.version += 1;
+  target.configVersion += 1;
+  target.lastCheck = null;
+  target.updatedAt = new Date().toISOString();
+  return { document: parseVaultDocument(migrated), changed: true };
 }
 
 function parseVaultDocument(value: unknown): ProviderVaultDocument {

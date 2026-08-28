@@ -219,9 +219,11 @@ async function checkSavedProvider(
       },
       strict: true,
     }],
-    toolChoice: configuration.protocol === "ollama-chat"
-      ? "auto"
-      : { type: "function", name: PROVIDER_PROBE_TOOL_NAME },
+    toolChoice: configuration.providerId === "lmstudio"
+      ? "required"
+      : configuration.protocol === "ollama-chat"
+        ? "auto"
+        : { type: "function", name: PROVIDER_PROBE_TOOL_NAME },
     maxOutputTokens: 512,
   };
   try {
@@ -251,7 +253,7 @@ async function checkSavedProvider(
         providerId: configuration.providerId,
         state: error.availability,
         model: configuration.model,
-        message: error.message,
+        message: toolProbeFailureMessage(configuration, error.message),
         checkedAt: new Date().toISOString(),
       };
     }
@@ -267,9 +269,20 @@ function failedToolProbe(
     providerId: configuration.providerId,
     state: "protocol_error",
     model: configuration.model,
-    message,
+    message: toolProbeFailureMessage(configuration, message),
     checkedAt: new Date().toISOString(),
   };
+}
+
+function toolProbeFailureMessage(
+  configuration: StoredProviderConfiguration,
+  message: string,
+): string {
+  if (configuration.providerId === "openai") return message;
+  return [
+    message,
+    "普通 Ask 和 DeepWiki 已通过基础检查；如果不需要 Agent 或 MCP，请关闭“Agent 工具调用（可选）”后重新保存、测试并启用",
+  ].join("。");
 }
 
 function applyUpdate(
@@ -383,7 +396,7 @@ function assertEditableConfiguration(configuration: StoredProviderConfiguration)
     structuredOutput: boolean;
   }> = {
     openai: { label: "OpenAI", protocol: "openai-responses", structuredOutput: true },
-    lmstudio: { label: "LM Studio", protocol: "openai-responses", structuredOutput: true },
+    lmstudio: { label: "LM Studio", protocol: "openai-chat", structuredOutput: true },
     ollama: { label: "Ollama", protocol: "ollama-chat", structuredOutput: true },
   };
   if (configuration.providerId !== "custom") {

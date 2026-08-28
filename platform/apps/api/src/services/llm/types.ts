@@ -25,7 +25,7 @@ export interface AskLlmFunctionTool {
   strict: true;
 }
 
-export type AskLlmToolChoice = "auto" | "none" | {
+export type AskLlmToolChoice = "auto" | "none" | "required" | {
   type: "function";
   name: string;
 };
@@ -238,7 +238,12 @@ function assertFunctionTools(
   if (serializedCharacters > 128_000) {
     throw invalidRequest(providerId, "Ask function tool schemas 超过内部安全上限");
   }
-  if (request.toolChoice === undefined || request.toolChoice === "auto" || request.toolChoice === "none") {
+  if (
+    request.toolChoice === undefined
+    || request.toolChoice === "auto"
+    || request.toolChoice === "none"
+    || request.toolChoice === "required"
+  ) {
     return;
   }
   if (

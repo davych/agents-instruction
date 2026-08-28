@@ -56,11 +56,14 @@ export class OllamaChatProvider implements AskLlmProvider {
   ): Promise<AskLlmCompleteResponse> {
     assertCompleteRequest(this.id, request);
     assertToolCallingConfigured(this.id, this.options.toolCalling, request);
-    if (request.tools && typeof request.toolChoice === "object") {
+    if (
+      request.tools
+      && (typeof request.toolChoice === "object" || request.toolChoice === "required")
+    ) {
       throw new AskProviderError(
         this.id,
         "ASK_PROVIDER_REQUEST_INVALID",
-        "Ollama Chat API 不支持强制指定单个 tool_choice",
+        "Ollama Chat API 不支持强制 tool_choice",
         "protocol_error",
         500,
         false,

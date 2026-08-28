@@ -12,6 +12,7 @@ const paths = {
   agent: sourcePath("../src/pages/agent-workspace-page.tsx"),
   ask: sourcePath("../src/pages/ask-page.tsx"),
   api: sourcePath("../src/lib/api.ts"),
+  providerSettings: sourcePath("../src/lib/provider-settings.ts"),
 };
 
 test("Provider settings is one global dialog with lightweight entry points", async () => {
@@ -33,22 +34,32 @@ test("Provider settings is one global dialog with lightweight entry points", asy
   assert.match(agent, /aria-label="管理模型 Provider"/u);
   assert.match(ask, /配置 Provider/u);
   assert.match(ask, /onOpenProviderSettings/u);
+  assert.match(dialog, /lmstudio:[\s\S]{0,260}protocol: "openai-chat"/u);
+  assert.match(dialog, /平台会自动使用兼容的 JSON 接口，无需选择协议/u);
+  assert.match(dialog, /Agent 工具调用（可选）/u);
+  assert.match(dialog, /只在 Agent 或 MCP 需要调用工具时开启/u);
   assert.match(dialog, /structuredOutput: provider\.providerId === "custom" \? provider\.structuredOutput : true/u);
   assert.match(dialog, /支持原生结构化输出/u);
 });
 
 test("Provider secrets and endpoints are write-only drafts with explicit keep or clear", async () => {
-  const dialog = await readFile(paths.dialog, "utf8");
+  const [dialog, providerSettings] = await Promise.all([
+    readFile(paths.dialog, "utf8"),
+    readFile(paths.providerSettings, "utf8"),
+  ]);
 
   assert.match(dialog, /const \[credentialDraft, setCredentialDraft\] = useState\(""\)/u);
   assert.match(dialog, /type="password"[\s\S]{0,160}value=\{credentialDraft\}[\s\S]{0,160}autoComplete="new-password"/u);
   assert.match(dialog, /setCredentialDraft\(""\)[\s\S]{0,500}api\.saveAskProviderConfiguration/u);
-  assert.match(dialog, /credential: clearCredential[\s\S]{0,180}action: "clear"[\s\S]{0,180}action: "replace"[\s\S]{0,100}action: "keep"/u);
+  assert.match(dialog, /providerWriteOnlyUpdates\(editingProvider/u);
+  assert.match(dialog, /credential: sensitiveUpdates\.credential/u);
+  assert.match(providerSettings, /credential: input\.clearCredential[\s\S]{0,180}action: "clear"[\s\S]{0,180}action: "replace"[\s\S]{0,100}action: "keep"/u);
   assert.doesNotMatch(dialog, /defaultValue=.*credential|localStorage|sessionStorage/u);
 
   assert.match(dialog, /const \[endpointDraft, setEndpointDraft\] = useState\(""\)/u);
   assert.match(dialog, /value=\{endpointDraft\}/u);
-  assert.match(dialog, /endpoint: editingProvider\.providerId === "openai"[\s\S]{0,100}action: "keep"[\s\S]{0,240}action: "clear"[\s\S]{0,180}action: "replace"/u);
+  assert.match(dialog, /endpoint: sensitiveUpdates\.endpoint/u);
+  assert.match(providerSettings, /endpoint: provider\.providerId === "openai"[\s\S]{0,100}action: "keep"[\s\S]{0,240}action: "clear"[\s\S]{0,180}action: "replace"/u);
   assert.doesNotMatch(dialog, /value=\{editingProvider\.endpointLabel\}|defaultValue=\{editingProvider\.endpointLabel\}/u);
   assert.match(dialog, /已保存：\$\{editingProvider\.endpointLabel\}/u);
   assert.match(dialog, /OpenAI 卡固定使用官方服务；代理或 OpenAI-compatible 服务请使用 Custom/u);

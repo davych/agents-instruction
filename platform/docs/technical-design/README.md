@@ -210,6 +210,10 @@ sequenceDiagram
 
 Provider Registry 的 endpoint、protocol、model 和 API key 来自 API 专属加密 Vault。持有部署级 Bearer Token 的管理员在 Web 四张固定卡中保存配置；Secret 输入框不回填，公开 DTO 只返回是否已保存、脱敏 Host、模型、版本、启停和最近检查。配置写入采用 optimistic version，更新会让旧检查失效并先停用；只有当前版本的 JSON 检查和可选原生 tool-call 探针都通过后才能启用。保存后 Registry 在线替换，不需要重启 API，也不会 fallback 到另一个 Provider。
 
+LM Studio 固定映射为 OpenAI-compatible Chat Completions：API 调用 `POST /v1/chat/completions`，JSON 产物通过 `response_format.json_schema` 约束并继续在服务端校验。`openai/gpt-oss-20b` 可以作为模型 ID 使用，但能否通过检查仍取决于当前 LM Studio 版本、推理运行时和实际加载的模型；设计不把“模型支持”推断成“所有 LM Studio 版本都兼容”。检查失败时运维者先确认模型已加载并升级 LM Studio/推理运行时，仍失败则换用支持结构化 JSON 的模型，再从同一页面重试；协议由平台固定处理。
+
+早期 Vault 把 LM Studio 固定为 OpenAI Responses。启动时的一次性增量迁移只把该槽的协议改为 Chat Completions，保留 endpoint、model、credential 和 tool-calling 选择，同时清除旧检查、设为停用并递增 record/config version。这样旧的 Responses 检查不能被拿来启用新协议；管理员只需在 Web 重新检查并启用，不需要重填 Secret。已经是 Chat Completions 的记录不会重复迁移。
+
 每个 Ask、DeepWiki 或 Agent Turn 在开始时取得不可变 Provider 实例快照。在途请求可以按已固定的 endpoint / Secret 完成；同名配置编辑或停用只影响后续新请求，避免同一轮把历史发送到两个信任边界。
 
 远程 Phase Runtime 使用启动时验证过的 Worker image ID。Docker spec 固定非 root UID:GID、只读 rootfs、`cap-drop ALL`、`no-new-privileges`、CPU/内存/PID/超时限制、bounded tmpfs 和精确 bind mounts。真实远程仓库还必须出现在 `AI_SDLC_REAL_EXECUTION_TRUSTED_REPOSITORIES` 的完整 URL allowlist 中；空列表拒绝所有真实远程阶段。
@@ -346,6 +350,7 @@ flowchart TB
 | Provider/MCP/Planner 失败 | 记录安全失败事件，用户消息标记 failed，Session 回到 idle | 修正 Provider/Adapter 后发送新消息；不会自动重放外部调用 |
 | Provider Vault 缺文件、认证失败、损坏或遗留中断临时文件 | API 启动 fail closed，不生成空配置覆盖旧状态 | 运维者检查并成对恢复 key/ciphertext；不能靠页面绕过或静默重建 |
 | Provider 页面配置冲突或检查失败 | 旧 version 返回 409；草稿保存后保持停用；后续请求不 fallback | 刷新配置，在原卡片修正并重新“保存、测试并启用” |
+| 旧 LM Studio Responses 配置迁移 | 启动时保留地址、模型、凭据和工具设置，改为 Chat Completions；旧检查失效并安全停用 | 确认模型已加载，在原卡片重新检查并启用；若 JSON 检查仍失败，升级 LM Studio 和推理运行时后重试 |
 | Git import/sync 中断 | 未采用 Workspace 标记失败并清理，Project 保存安全错误 | 服务启动会重新调度仍处于未完成状态的 repository operation |
 | Worker 超时或非零退出 | TERM 后 KILL，尝试强制删除精确容器；Execution/Phase 标记 failed | 修正配置/代码后在同一 Run 重试当前阶段 |
 | Worker 容器无法确认清理 | Workspace 在当前 API 进程内 quarantine，不再并发使用 | 下次启动 preflight 先删除同 deployment 的遗留 Worker，再开放服务 |

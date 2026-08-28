@@ -126,7 +126,7 @@ flowchart TD
 3. 用户点击“绑定仓库”，填写远端 Git HTTPS 地址。公共仓库不需要授权；私有仓库只能选择服务端已经配置好的 Credential Profile。
 4. 用户可选填分支、Tag 或 Commit；不填时使用远端默认分支。
 5. 平台校验并拉取仓库，把源码固定到一个精确 Git revision，生成不消耗模型额度的 Repository Manifest，然后直接打开一个长期 Agent Session。
-6. 仓库就绪后，如尚无可用模型，用户从页头或输入框旁进入“模型设置”。OpenAI 固定官方地址，只填 model 和 API Key；其他槽位再填 endpoint。点击一次“保存、测试并启用”，成功后无需重启 API。
+6. 仓库就绪后，如尚无可用模型，用户从页头或输入框旁进入“模型设置”。OpenAI 固定官方地址，只填 model 和 API Key；其他槽位再填 endpoint。LM Studio 固定走 Chat Completions 和 `response_format.json_schema`，不需要用户再选协议；例如已加载 `openai/gpt-oss-20b` 时，模型名称就原样填写这个 ID。点击一次“保存、测试并启用”，成功后无需重启 API。
 7. 用户可继续调整仓库能力，也可以直接发消息。只有明确需要工作时，平台才懒启动该 Session 的 Sandbox。
 
 远端仓库不需要预先安装 `CLAUDE.md`、`AGENTS.md`、`.codex` 或 `ai-native.yaml`。六角色、流程和产物模板由平台在仓库外的固定 Control Pack 提供。
@@ -159,6 +159,8 @@ flowchart TD
 Provider 能聊天不等于能启动工作。要让 Agent 调用只读 MCP、创建 Run 或在批准后自动继续，所选 Provider 必须真实支持原生 tool calling。只支持文本的 Provider 仍可用于普通问答或 DeepWiki。
 
 Provider Profile 是实例级能力，不要求每个仓库重复保存密钥。全局“模型设置”固定显示 OpenAI、LM Studio、Ollama 和 Custom 四张卡；可以编辑、检查、启用或停用。Secret 输入框不会回填，公开页面只显示“是否已保存”和脱敏后的 Host。配置存在 API 专属加密 Vault，不进入仓库、对话、DeepWiki、Sandbox 或阶段 Worker。
+
+平台升级后，如果原来的 LM Studio 卡片从“已启用”变成“已停用”，通常是旧 Responses 配置已经自动迁移成固定的 Chat Completions。地址、模型、密钥和工具调用选择仍然保留，只需在同一张卡片重新测试并启用。若 `openai/gpt-oss-20b` 等模型仍没有通过 JSON 检查，先确认模型已经在 LM Studio 中加载，再升级 LM Studio 和推理运行时；仍不通过时换用支持结构化 JSON 的模型。平台会自动处理协议，也不会假定所有版本或所有模型都支持所需格式。
 
 ## 4. 消息和任务从哪里来
 
@@ -242,6 +244,7 @@ Provider Profile 是实例级能力，不要求每个仓库重复保存密钥。
 | 仓库绑定或同步失败 | 不发布未完成的源码快照，也不能基于未知版本开始工作 | 检查 HTTPS 地址、允许的 Origin、Credential Profile、ref 和网络后重试 |
 | 同步后旧 Session 仍显示旧代码 | 这是版本固定的预期行为，不是缓存错误 | 继续旧 Run 就保留旧 revision；要用新代码则新建 Session |
 | Provider 未配置、不可达或模型不可用 | 明确区分配置、认证、网络、模型和协议问题 | 在页面“模型设置”中修改并重新检查，或切换到已启用 Provider；无需改 `.env` 或重启 API |
+| LM Studio 升级后显示停用，或 JSON 检查失败 | 旧 Responses 配置会自动迁移到固定的 Chat Completions，并让旧检查失效；检查失败时不会误启用 | 先确认模型已加载，再升级 LM Studio 和推理运行时；仍失败就换用支持结构化 JSON 的模型。回到原卡片重新测试并启用，协议会自动处理，endpoint 和已保存密钥不需要重填 |
 | Provider 只能文本对话 | 可以问答或生成 DeepWiki，但不会伪造工具调用来启动工作 | 切换到真实支持 tool calling 的 Provider，再发起或继续工作 |
 | MCP 读取失败 | 不猜测 Jira / Linear 内容，不启动一个依据不明的任务 | 修复管理员 Adapter / 授权，或把任务内容手工写进聊天框 |
 | Sandbox 或阶段执行失败 | 记录失败事件，不自动越过当前阶段 | 运维者修复 Worker 镜像、执行信任、容量或环境后重试；恢复仍使用 Session 固定 revision |

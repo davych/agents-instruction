@@ -26,6 +26,7 @@ import type {
 import {
   currentProviderCheck,
   providerCardActions,
+  providerWriteOnlyUpdates,
 } from "@/lib/provider-settings";
 
 const PROVIDER_IDS: readonly AskProviderId[] = ["openai", "lmstudio", "ollama", "custom"];
@@ -46,9 +47,9 @@ const PROVIDER_META: Record<AskProviderId, {
   },
   lmstudio: {
     label: "LM Studio",
-    description: "连接 Cloud API 所在网络能够访问的 LM Studio 服务。",
+    description: "平台自动选择兼容方式，你只需填写服务地址和模型。",
     defaultModel: "",
-    protocol: "openai-responses",
+    protocol: "openai-chat",
     endpointHint: "例如 http://host.docker.internal:1234/v1",
   },
   ollama: {
@@ -197,13 +198,12 @@ export function ProviderSettingsDialog({
     event.preventDefault();
     if (!editingProvider || !form) return;
     const model = form.model.trim();
-    const endpoint = endpointDraft.trim();
     const credential = credentialDraft;
     if (!model) {
       setNotice({ kind: "error", message: "请填写模型名称。" });
       return;
     }
-    if (editingProvider.providerId === "custom" && !editingProvider.hasEndpoint && !endpoint) {
+    if (editingProvider.providerId === "custom" && !editingProvider.hasEndpoint && !endpointDraft.trim()) {
       setNotice({ kind: "error", message: "首次配置 Custom Provider 时需要填写服务地址。" });
       return;
     }
@@ -224,19 +224,19 @@ export function ProviderSettingsDialog({
     setCredentialDraft("");
     let configurationSaved = false;
     try {
+      const sensitiveUpdates = providerWriteOnlyUpdates(editingProvider, {
+        endpointDraft,
+        credentialDraft: credential,
+        clearEndpoint,
+        clearCredential,
+      });
       const saved = await api.saveAskProviderConfiguration(editingProvider.providerId, {
         expectedVersion: editingProvider.version,
         label: form.label.trim() || PROVIDER_META[editingProvider.providerId].label,
         protocol: form.protocol,
         model,
-        endpoint: editingProvider.providerId === "openai"
-          ? { action: "keep" }
-          : clearEndpoint
-            ? { action: "clear" }
-            : endpoint ? { action: "replace", value: endpoint } : { action: "keep" },
-        credential: clearCredential
-          ? { action: "clear" }
-          : credential ? { action: "replace", value: credential } : { action: "keep" },
+        endpoint: sensitiveUpdates.endpoint,
+        credential: sensitiveUpdates.credential,
         structuredOutput: form.structuredOutput,
         toolCalling: form.toolCalling,
         allowInsecureHttp: editingProvider.providerId === "openai" ? false : form.allowInsecureHttp,
@@ -327,6 +327,11 @@ export function ProviderSettingsDialog({
                         ? "官方服务地址固定；密钥不会回显。密钥留空就是保留，只有“明确清除”才会删除。"
                         : "服务地址和密钥都不会回显。留空表示保留服务端已有值；两个“明确清除”开关只删除各自对应的值。"}
                     </p>
+                    {editingProvider.providerId === "lmstudio" ? (
+                      <p className="mt-1 text-xs font-medium leading-5 text-teal-700">
+                        平台会自动使用兼容的 JSON 接口，无需选择协议。
+                      </p>
+                    ) : null}
                   </div>
                   <Button type="button" variant="ghost" size="sm" disabled={Boolean(pendingAction)} onClick={() => {
                     resetSensitiveDrafts();
@@ -446,8 +451,8 @@ export function ProviderSettingsDialog({
                       className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
                     />
                     <span>
-                      <span className="block font-semibold text-slate-800">支持原生工具调用</span>
-                      <span className="mt-0.5 block">开启后连接检查还必须验证无副作用 tool-call，才能启动 Agent 工作回合。</span>
+                      <span className="block font-semibold text-slate-800">Agent 工具调用（可选）</span>
+                      <span className="mt-0.5 block">只在 Agent 或 MCP 需要调用工具时开启；连接检查会验证无副作用 tool-call。</span>
                     </span>
                   </label>
                   {editingProvider.providerId === "custom" ? (

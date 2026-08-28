@@ -189,7 +189,7 @@ function assertProviderCheckPayload(providerId: AskProviderId, text: string): vo
   try {
     parsed = JSON.parse(text.trim()) as unknown;
   } catch {
-    throw protocolError(providerId, "模型服务无法按 Ask 所需的 JSON 格式回答");
+    throw protocolError(providerId, providerJsonFormatMessage(providerId));
   }
   if (
     parsed === null
@@ -198,8 +198,14 @@ function assertProviderCheckPayload(providerId: AskProviderId, text: string): vo
     || (parsed as Record<string, unknown>).ok !== true
     || Object.keys(parsed as Record<string, unknown>).length !== 1
   ) {
-    throw protocolError(providerId, "模型服务无法按 Ask 所需的 JSON 格式回答");
+    throw protocolError(providerId, providerJsonFormatMessage(providerId));
   }
+}
+
+function providerJsonFormatMessage(providerId: AskProviderId): string {
+  return providerId === "lmstudio"
+    ? "已连接 LM Studio，但当前模型没有返回可验证的 JSON。平台已自动选择接口，无需修改协议；请确认模型已加载。仍失败时，请升级 LM Studio 和推理运行时，或换用支持结构化 JSON 的模型"
+    : "模型服务无法按 Ask 所需的 JSON 格式回答";
 }
 
 export function configuredStatus(

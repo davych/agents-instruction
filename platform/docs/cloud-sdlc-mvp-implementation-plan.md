@@ -72,7 +72,7 @@ PM/BA → Designer → Architect → Engineer → Tester → DevOps
 项目配置一个默认 Provider，对话输入框可按消息切换：
 
 - OpenAI；
-- LM Studio；
+- LM Studio（固定使用 Chat Completions + JSON Schema）；
 - Ollama；
 - 自定义 OpenAI Responses、OpenAI Chat 或 Ollama Chat 兼容端点。
 
@@ -223,13 +223,14 @@ AI_SDLC_WORKER_IMAGE=ai-sdlc-worker:local yarn test:docker-smoke
 2026-08-28 在当前工作区完成最后一轮验证：
 
 - `platform/yarn typecheck`：通过。
-- `platform/yarn test`：命令通过；Contracts 52/52，Web 143/143（含 Provider 页面配置、业务流程与技术设计文档验收），API 973 项中 972 通过、0 失败、1 项按设计跳过。普通全量套件不把没有显式镜像的 Docker 检查冒充成成功。
-- Provider 控制面独立安全回归：48/48 通过，覆盖页面背后的保存 / 测试 / 启用门禁、记录级版本冲突、脱敏 DTO、加密 Vault、危险字面量地址、OpenAI 官方地址约束和运行中 Provider 快照；Web Provider 状态回归 9/9、Contracts Provider 回归 7/7 通过。
+- `platform/yarn test`：命令通过；Contracts 52/52，Web 145/145（含 Provider 页面配置、业务流程与技术设计文档验收），API 976 项中 975 通过、0 失败、1 项按设计跳过。普通全量套件不把没有显式镜像的 Docker 检查冒充成成功。
+- API Provider 定向回归：97/97 通过，覆盖保存 → 测试 → 启用 → Ask 全程使用 LM Studio Chat Completions、严格 JSON Schema、可选原生工具调用、旧 Responses Vault 增量迁移、记录级版本冲突、脱敏 DTO、加密 Vault、危险地址和运行中 Provider 快照；Web Provider 回归 11/11 通过。
 - `platform/yarn build`：通过。Vite 仅报告现有动态导入和大 chunk 提示，没有构建失败。
 - `AI_SDLC_WORKER_IMAGE=ai-sdlc-worker:local yarn test:docker-smoke`：真实 Tier-D 1/1 通过，验证 Worker 能读 Control、写 Run Workspace，不能改只读 `.git` / Control，也拿不到 Docker socket。
 - 根目录 `npm test`：32/32 通过。
 - 根目录 `npm pack --dry-run --cache /private/tmp/ai-sdlc-npm-cache`：通过，79 个发布文件，tarball 约 138.2 kB。使用临时 cache 是为了绕开当前用户 npm cache 的历史 owner 问题，不是绕过包检查。
 - `git diff --check`：通过。
+- 本机真实 LM Studio `openai/gpt-oss-20b` smoke：修复后的生产适配器不再调用 Responses；一次冷启动超过 60 秒后，后续 4/4 次 JSON Schema 检查通过且没有格式错误。独立的 `tool_choice: required` 无副作用探针 1/1 通过，返回唯一且参数正确的原生工具调用。
 - 浏览器主路径：远端仓库绑定后直接进入 Agent Session；消息创建同一个 Run 并启动 PM/BA；3 份当前产物全部展开后批准按钮才解锁；批准后沿用原 Run，Designer 真正启动并交出 2 份待审阅产物。
 - 独立七视角与对抗审查发现并修复了 Run/Session 跨事务恢复、MCP 虚构工单引用、Blueprint 网络能力误报，以及 Provider 记录级 CAS、OpenAI 官方地址边界和禁用 Provider 的页面提示问题；OpenAI 原始 API 的地址清除恢复问题也已在复核中关闭。故障切点与边界定向回归 31/31 通过，最终没有未解决的 P0/P1/P2/P3。
 

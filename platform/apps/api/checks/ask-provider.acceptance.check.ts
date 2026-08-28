@@ -151,12 +151,12 @@ test("ASK-AC-02/04: all four Provider registrations use their explicit wire prot
     assert.equal("tools" in body, false, "Ask must not grant model tools");
   });
 
-  await t.test("LM Studio uses its OpenAI-compatible POST /v1/responses shape", async () => {
-    const capture = captureJsonFetch(responsesResult("lm-model"));
-    const provider = new OpenAiResponsesProvider({
+  await t.test("LM Studio uses documented Chat Completions JSON Schema shape", async () => {
+    const capture = captureJsonFetch(chatResult("lm-model"));
+    const provider = new OpenAiChatProvider({
       id: "lmstudio",
       label: "LM Studio",
-      protocol: "openai-responses",
+      protocol: "openai-chat",
       dataBoundary: "local",
       baseUrl: new URL("http://127.0.0.1:1234/v1"),
       model: "lm-model",
@@ -168,12 +168,65 @@ test("ASK-AC-02/04: all four Provider registrations use their explicit wire prot
 
     const result = await provider.complete(COMPLETE_REQUEST);
     assert.equal(result.text, "{\"answer\":\"ok\"}");
-    assert.equal(capture.calls[0]?.url, "http://127.0.0.1:1234/v1/responses");
+    assert.equal(capture.calls[0]?.url, "http://127.0.0.1:1234/v1/chat/completions");
     const body = requestBody(capture.calls[0]!);
     assert.equal(body.model, "lm-model");
-    assert.equal(body.max_output_tokens, 321);
-    assert.deepEqual(body.input, COMPLETE_REQUEST.messages);
+    assert.equal(body.max_tokens, 321);
+    assert.deepEqual(body.messages, [
+      { role: "system", content: COMPLETE_REQUEST.systemPrompt },
+      ...COMPLETE_REQUEST.messages,
+    ]);
+    assert.equal(
+      (body.response_format as { type?: string }).type,
+      "json_schema",
+    );
+    assert.deepEqual(
+      (body.response_format as { json_schema?: { schema?: unknown } }).json_schema?.schema,
+      COMPLETE_REQUEST.jsonSchema,
+    );
+    assert.equal(
+      (body.response_format as { json_schema?: { name?: unknown } }).json_schema?.name,
+      "ask_answer",
+    );
+    assert.equal(
+      (body.response_format as { json_schema?: { strict?: unknown } }).json_schema?.strict,
+      true,
+    );
+    assert.equal("text" in body, false, "LM Studio must not receive the Responses JSON Schema shape");
+    assert.equal("input" in body, false, "LM Studio must not receive Responses input items");
     assert.equal(headers(capture.calls[0]!).has("authorization"), false);
+  });
+
+  await t.test("LM Studio check rejects prose without silently retrying Responses", async () => {
+    const capture = captureJsonFetch({
+      object: "chat.completion",
+      model: "openai/gpt-oss-20b",
+      choices: [{
+        finish_reason: "stop",
+        message: { role: "assistant", content: "当然可以：{\"ok\":true}" },
+      }],
+      usage: { prompt_tokens: 11, completion_tokens: 7 },
+    });
+    const provider = new OpenAiChatProvider({
+      id: "lmstudio",
+      label: "LM Studio",
+      protocol: "openai-chat",
+      dataBoundary: "local",
+      baseUrl: new URL("http://127.0.0.1:1234/v1"),
+      model: "openai/gpt-oss-20b",
+      structuredOutput: true,
+      timeoutMs: 1_000,
+      maxResponseBytes: 32_000,
+      fetchImpl: capture.fetchImpl,
+    });
+
+    const check = await provider.check();
+    assert.equal(check.state, "protocol_error");
+    assert.match(check.message, /无需修改协议/u);
+    assert.match(check.message, /换用支持结构化 JSON 的模型/u);
+    assert.equal(capture.calls.length, 1, "a failed strict check must not retry another protocol");
+    assert.equal(capture.calls[0]?.url, "http://127.0.0.1:1234/v1/chat/completions");
+    assert.equal(capture.calls.some(({ url }) => url.endsWith("/responses")), false);
   });
 
   await t.test("Ollama uses native POST /api/chat without streaming or model pulls", async () => {
@@ -377,7 +430,11 @@ class RecordingProvider implements AskLlmProvider {
       label: this.id,
       configured: true,
       model: `${this.id}-model`,
-      protocol: this.id === "ollama" ? "ollama-chat" : "openai-responses",
+      protocol: this.id === "ollama"
+        ? "ollama-chat"
+        : this.id === "lmstudio"
+          ? "openai-chat"
+          : "openai-responses",
       dataBoundary: this.id === "openai" ? "remote" : "local",
       endpointLabel: "synthetic.test",
       capabilities: { streaming: false, structuredOutput: true, toolCalling: false },
@@ -472,6 +529,7 @@ test("ASK-AC-01/04: server configuration exposes four sanitized statuses and rej
   const statuses = registry.statuses();
   assert.deepEqual(statuses.map(({ id }) => id), ["openai", "lmstudio", "ollama", "custom"]);
   assert.equal(statuses.every(({ configured }) => configured), true);
+  assert.equal(statuses.find(({ id }) => id === "lmstudio")?.protocol, "openai-chat");
   const publicJson = JSON.stringify(statuses);
   for (const secret of secretMarkers) assert.doesNotMatch(publicJson, new RegExp(secret, "u"));
   assert.doesNotMatch(publicJson, /apiKey|authorization/iu);

@@ -10,12 +10,23 @@ import type {
 } from "@ai-sdlc/contracts";
 
 import { AppError } from "../src/domain/errors.ts";
+import {
+  askAnswerJsonSchema,
+  parseAndValidateAskAnswer,
+} from "../src/services/ask/ask-answer.ts";
 import { ProviderConfigurationService } from "../src/services/llm/provider-configuration-service.ts";
 import { AskProviderError } from "../src/services/llm/types.ts";
 
 const SECRET_A = "provider-service-secret-a";
 const SECRET_B = "provider-service-secret-b";
 const PRIVATE_PATH = "tenant-private-endpoint";
+const ASK_RESPONSE_TEXT = JSON.stringify({
+  answer: "项目入口由 [S1] 说明。",
+  evidence: [{ sourceId: "S1", summary: "README 给出项目入口" }],
+  uncertainties: [],
+  suggestedQuestions: [],
+  workItemDraft: null,
+});
 
 async function serviceFixture() {
   const managedRoot = await mkdtemp(path.join(os.tmpdir(), "provider-configuration-service-"));
@@ -53,7 +64,7 @@ function lmStudioUpdate(
   return {
     expectedVersion,
     label: "LM Studio",
-    protocol: "openai-responses",
+    protocol: "openai-chat",
     model: "local-model",
     endpoint: { action: "replace", value: endpoint },
     credential: { action: "clear" },
@@ -96,6 +107,7 @@ test("PROV-AC-02/04/05: four fixed slots expose sanitized keep/replace/clear sem
       fixture.service.list().map(({ providerId }) => providerId),
       ["openai", "lmstudio", "ollama", "custom"],
     );
+    assert.equal(fixture.service.get("lmstudio").protocol, "openai-chat");
 
     const replaced = await fixture.service.update("custom", customUpdate(1));
     assert.equal(replaced.version, 2);
@@ -230,23 +242,29 @@ async function providerServer(
 }
 
 function compatibilityResponse(body: Record<string, unknown>): Record<string, unknown> {
+  return chatCompletionResponse(body, '{"ok":true}');
+}
+
+function chatCompletionResponse(
+  body: Record<string, unknown>,
+  content: string,
+): Record<string, unknown> {
   const model = typeof body.model === "string" ? body.model : "local-model";
   return {
-    object: "response",
-    status: "completed",
+    object: "chat.completion",
     model,
-    output_text: '{"ok":true}',
-    output: [{
-      type: "message",
-      role: "assistant",
-      content: [{ type: "output_text", text: '{"ok":true}' }],
+    choices: [{
+      finish_reason: "stop",
+      message: { role: "assistant", content, tool_calls: [] },
     }],
-    usage: { input_tokens: 1, output_tokens: 1 },
+    usage: { prompt_tokens: 1, completion_tokens: 1 },
   };
 }
 
-test("PROV-AC-06/07/08: save disables and invalidates; only this version's ready check can enable", async () => {
-  const upstream = await providerServer();
+test("PROV-AC-06/07/08: save, check, enable, and an actual Ask-shaped answer all use LM Studio Chat", async () => {
+  const upstream = await providerServer((body, index) => (
+    chatCompletionResponse(body, index === 0 ? '{"ok":true}' : ASK_RESPONSE_TEXT)
+  ));
   const fixture = await serviceFixture();
   try {
     const saved = await fixture.service.update(
@@ -274,6 +292,11 @@ test("PROV-AC-06/07/08: save disables and invalidates; only this version's ready
     assert.equal(check.state, "ready");
     assert.equal(check.version, 3);
     assert.equal(check.configVersion, 2);
+    assert.equal(upstream.requests[0]?.url, `${upstream.origin}/v1/chat/completions`);
+    assert.equal(
+      (upstream.requests[0]?.body.response_format as Record<string, unknown>).type,
+      "json_schema",
+    );
     assert.equal(fixture.service.get("lmstudio").version, 3, "a check is a CAS-protected record write");
     assert.equal(fixture.service.get("lmstudio").configVersion, 2);
     assert.equal(fixture.service.get("lmstudio").lastCheck?.configVersion, 2);
@@ -285,6 +308,40 @@ test("PROV-AC-06/07/08: save disables and invalidates; only this version's ready
     assert.equal(enabled.version, 4, "enable is a CAS-protected record write");
     assert.equal(enabled.configVersion, 2, "enable does not manufacture a config version");
     assert.equal(enabled.enabled, true);
+
+    const askResponse = await fixture.service.providers.complete("lmstudio", {
+      systemPrompt: "只根据给定证据回答，并严格返回 Ask JSON。",
+      messages: [{ role: "user", content: "项目入口在哪里？" }],
+      jsonSchema: askAnswerJsonSchema as unknown as Record<string, unknown>,
+      maxOutputTokens: 4_096,
+    });
+    const answer = parseAndValidateAskAnswer(askResponse.text, [{
+      sourceId: "S1",
+      path: "README.md",
+      startLine: 1,
+      endLine: 10,
+      sha256: "a".repeat(64),
+      revision: "b".repeat(40),
+      excerpt: "项目入口说明",
+    }]);
+    assert.equal(answer.answer, "项目入口由 [S1] 说明。");
+    assert.equal(answer.citations.length, 1);
+    assert.equal(upstream.requests[1]?.url, `${upstream.origin}/v1/chat/completions`);
+    assert.deepEqual(
+      (
+        upstream.requests[1]?.body.response_format as {
+          json_schema?: { schema?: unknown };
+        }
+      ).json_schema?.schema,
+      askAnswerJsonSchema,
+    );
+    assert.equal("text" in upstream.requests[1]!.body, false);
+    assert.equal("input" in upstream.requests[1]!.body, false);
+    assert.equal(
+      upstream.requests.some(({ url }) => url.endsWith("/responses")),
+      false,
+      "LM Studio must not silently retry the Responses protocol",
+    );
 
     const changed = await fixture.service.update("lmstudio", lmStudioUpdate(4, `${upstream.origin}/v1`, {
       model: "changed-model",
@@ -360,6 +417,7 @@ test("PROV-AC-02/07/08: an enabled Provider is restored from the Vault after API
       maxOutputTokens: 8,
     });
     assert.equal(completion.model, "local-model");
+    assert.equal(upstream.requests.at(-1)?.url, `${upstream.origin}/v1/chat/completions`);
   } finally {
     await upstream.close();
     await fixture.dispose();
@@ -526,34 +584,41 @@ function toolProbeResponse(
   const model = typeof body.model === "string" ? body.model : "local-model";
   if (mode === "no-call") {
     return {
-      ...compatibilityResponse(body),
-      output_text: "probe not called",
-      output: [{
-        type: "message",
-        role: "assistant",
-        content: [{ type: "output_text", text: "probe not called" }],
+      object: "chat.completion",
+      model,
+      choices: [{
+        finish_reason: "stop",
+        message: { role: "assistant", content: "probe not called", tool_calls: [] },
       }],
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
     };
   }
   const oneCall = {
-    type: "function_call",
-    id: "fc_probe_1",
-    call_id: "call_probe_1",
-    name: "ai_sdlc_provider_probe",
-    arguments: JSON.stringify(
-      mode === "wrong-arguments"
-        ? { ack: "wrong-value" }
-        : { ack: "provider-check-v1" },
-    ),
+    id: "call_probe_1",
+    type: "function",
+    function: {
+      name: "ai_sdlc_provider_probe",
+      arguments: JSON.stringify(
+        mode === "wrong-arguments"
+          ? { ack: "wrong-value" }
+          : { ack: "provider-check-v1" },
+      ),
+    },
   };
   return {
-    object: "response",
-    status: "completed",
+    object: "chat.completion",
     model,
-    output: mode === "multiple-calls"
-      ? [oneCall, { ...oneCall, id: "fc_probe_2", call_id: "call_probe_2" }]
-      : [oneCall],
-    usage: { input_tokens: 1, output_tokens: 1 },
+    choices: [{
+      finish_reason: "tool_calls",
+      message: {
+        role: "assistant",
+        content: null,
+        tool_calls: mode === "multiple-calls"
+          ? [oneCall, { ...oneCall, id: "call_probe_2" }]
+          : [oneCall],
+      },
+    }],
+    usage: { prompt_tokens: 1, completion_tokens: 1 },
   };
 }
 
@@ -574,19 +639,24 @@ test("PROV-AC-07/12: toolCalling check requires exactly one fixed native probe a
 
         const jsonRequest = upstream.requests[0]!.body;
         assert.equal("tools" in jsonRequest, false);
-        assert.deepEqual(jsonRequest.input, [{ role: "user", content: 'Return {"ok":true} now.' }]);
+        assert.equal(upstream.requests[0]!.url, `${upstream.origin}/v1/chat/completions`);
+        assert.deepEqual(
+          (jsonRequest.messages as Array<Record<string, unknown>>).at(-1),
+          { role: "user", content: 'Return {"ok":true} now.' },
+        );
+        assert.equal(
+          (jsonRequest.response_format as Record<string, unknown>).type,
+          "json_schema",
+        );
 
         const probeRequest = upstream.requests[1]!.body;
-        const tools = probeRequest.tools as Array<Record<string, unknown>>;
+        const tools = probeRequest.tools as Array<{ function: Record<string, unknown> }>;
         assert.equal(tools.length, 1);
-        assert.equal(tools[0]?.name, "ai_sdlc_provider_probe");
-        assert.equal(tools[0]?.strict, true);
-        assert.deepEqual(probeRequest.tool_choice, {
-          type: "function",
-          name: "ai_sdlc_provider_probe",
-        });
+        assert.equal(tools[0]?.function.name, "ai_sdlc_provider_probe");
+        assert.equal(tools[0]?.function.strict, true);
+        assert.equal(probeRequest.tool_choice, "required");
         assert.equal(probeRequest.parallel_tool_calls, false);
-        const parameters = tools[0]?.parameters as Record<string, unknown>;
+        const parameters = tools[0]?.function.parameters as Record<string, unknown>;
         assert.equal(parameters.additionalProperties, false);
         assert.deepEqual(parameters.required, ["ack"]);
         assert.deepEqual(
@@ -597,6 +667,8 @@ test("PROV-AC-07/12: toolCalling check requires exactly one fixed native probe a
         if (mode === "valid") {
           assert.equal(fixture.service.get("lmstudio").lastCheck?.state, "ready");
         } else {
+          assert.match(check.message, /普通 Ask 和 DeepWiki 已通过基础检查/u);
+          assert.match(check.message, /关闭“Agent 工具调用（可选）”/u);
           assert.equal(fixture.service.get("lmstudio").enabled, false);
           await assert.rejects(
             () => fixture.service.setEnabled("lmstudio", {

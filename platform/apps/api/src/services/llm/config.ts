@@ -220,7 +220,7 @@ function loadLmStudio(
     return disabledRegistration({
       id: "lmstudio",
       label: "LM Studio",
-      protocol: "openai-responses",
+      protocol: "openai-chat",
       dataBoundary,
       baseUrl,
       message: `请配置 ${prefix}_MODEL 后使用 LM Studio`,
@@ -229,7 +229,7 @@ function loadLmStudio(
   return configuredRegistration({
     id: "lmstudio",
     label: "LM Studio",
-    protocol: "openai-responses",
+    protocol: "openai-chat",
     dataBoundary,
     baseUrl,
     model,

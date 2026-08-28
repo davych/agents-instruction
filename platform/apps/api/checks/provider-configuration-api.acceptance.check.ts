@@ -98,6 +98,12 @@ test("PROV-AC-02..08/12: authenticated three-step Provider API is CAS-safe and n
       initialProviders.map((value) => askProviderConfigurationSchema.parse(value).providerId),
       ["openai", "lmstudio", "ollama", "custom"],
     );
+    assert.equal(
+      initialProviders
+        .map((value) => askProviderConfigurationSchema.parse(value))
+        .find(({ providerId }) => providerId === "lmstudio")?.protocol,
+      "openai-chat",
+    );
 
     const unofficialOpenAi = await app.inject({
       method: "PUT",

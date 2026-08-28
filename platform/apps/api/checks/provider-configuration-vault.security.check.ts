@@ -38,6 +38,12 @@ function customConfiguration(document: ProviderVaultDocument) {
   return custom;
 }
 
+function lmStudioConfiguration(document: ProviderVaultDocument) {
+  const lmStudio = document.providers.find(({ providerId }) => providerId === "lmstudio");
+  assert.ok(lmStudio);
+  return lmStudio;
+}
+
 async function seedEncryptedVault() {
   const fixture = await vaultFixture();
   await fixture.vault.update((document) => {
@@ -99,6 +105,66 @@ test("PROV-AC-04/11: Vault keeps a 256-bit key and AES-GCM ciphertext in separat
     const restored = customConfiguration(reopened.snapshot());
     assert.equal(restored.credential, SECRET_MARKER);
     assert.equal(restored.endpoint, `https://llm.example.test/v1/${ENDPOINT_PATH_MARKER}`);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("PROV-AC-04: a legacy LM Studio Responses record migrates once to Chat without losing private configuration", async () => {
+  const fixture = await vaultFixture();
+  try {
+    await fixture.vault.update((document) => {
+      const lmStudio = lmStudioConfiguration(document);
+      lmStudio.protocol = "openai-responses";
+      lmStudio.model = "openai/gpt-oss-20b";
+      lmStudio.endpoint = "http://127.0.0.1:1234/v1";
+      lmStudio.credential = SECRET_MARKER;
+      lmStudio.toolCalling = true;
+      lmStudio.allowInsecureHttp = true;
+      lmStudio.enabled = true;
+      lmStudio.version = 7;
+      lmStudio.configVersion = 4;
+      lmStudio.lastCheck = {
+        providerId: "lmstudio",
+        state: "ready",
+        model: "openai/gpt-oss-20b",
+        message: "legacy ready",
+        checkedAt: new Date(0).toISOString(),
+        version: 7,
+        configVersion: 4,
+      };
+      lmStudio.createdAt = new Date(0).toISOString();
+      lmStudio.updatedAt = new Date(0).toISOString();
+    });
+
+    const migratedVault = await ProviderConfigurationVault.open(fixture.managedRoot);
+    const migrated = lmStudioConfiguration(migratedVault.snapshot());
+    assert.equal(migrated.protocol, "openai-chat");
+    assert.equal(migrated.model, "openai/gpt-oss-20b");
+    assert.equal(migrated.endpoint, "http://127.0.0.1:1234/v1");
+    assert.equal(migrated.credential, SECRET_MARKER);
+    assert.equal(migrated.toolCalling, true);
+    assert.equal(migrated.structuredOutput, true);
+    assert.equal(migrated.allowInsecureHttp, true);
+    assert.equal(migrated.enabled, false);
+    assert.equal(migrated.version, 8);
+    assert.equal(migrated.configVersion, 5);
+    assert.equal(migrated.lastCheck, null);
+    assert.equal(migrated.createdAt, new Date(0).toISOString());
+    assert.notEqual(migrated.updatedAt, new Date(0).toISOString());
+
+    const ciphertextAfterMigration = await readFile(fixture.vault.paths.ciphertext, "utf8");
+    const reopened = await ProviderConfigurationVault.open(fixture.managedRoot);
+    assert.deepEqual(reopened.snapshot(), migratedVault.snapshot(), "migration must be idempotent");
+    assert.equal(
+      await readFile(fixture.vault.paths.ciphertext, "utf8"),
+      ciphertextAfterMigration,
+      "an idempotent reopen must not rewrite the encrypted generation",
+    );
+    assert.doesNotMatch(
+      await readFile(fixture.vault.paths.ciphertext, "utf8"),
+      new RegExp(SECRET_MARKER, "u"),
+    );
   } finally {
     await fixture.dispose();
   }

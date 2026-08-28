@@ -160,11 +160,15 @@ Provider 不再要求改服务器 `.env`。持有本实例访问令牌的用户�
 | Provider | 协议 | 常见 endpoint | 说明 |
 |---|---|---|---|
 | OpenAI | [OpenAI Responses](https://developers.openai.com/api/reference/cli/resources/responses/methods/create) | 固定 `https://api.openai.com/v1` | 不能改成代理或兼容服务，避免把别的服务误记为 OpenAI；这类地址请用 Custom。选中的仓库片段会发给 OpenAI；默认模型 [`gpt-5.6-terra`](https://developers.openai.com/api/docs/models/gpt-5.6-terra) 的官方能力表包含 Responses、Function calling 与 Structured outputs。 |
-| LM Studio | OpenAI Responses-compatible | `http://host.docker.internal:1234/v1` | 先在 LM Studio 加载模型；只有 API 确实运行在同一受信任 Host 时才开启不安全 HTTP。 |
+| LM Studio | [OpenAI-compatible Chat Completions](https://lmstudio.ai/docs/developer/openai-compat/chat-completions) + [`response_format.json_schema`](https://lmstudio.ai/docs/developer/openai-compat/structured-output) | `http://host.docker.internal:1234/v1` | 平台固定使用 `POST /v1/chat/completions`，不要求用户再选协议。先在 LM Studio 加载模型；只有 API 确实运行在同一受信任 Host 时才开启不安全 HTTP。 |
 | Ollama | Ollama Chat | `http://host.docker.internal:11434` | 模型须提前存在；平台不会自动 pull，也不会替换模型。 |
 | Custom | OpenAI Responses、OpenAI Chat 或 Ollama Chat | 你的兼容服务地址 | 只兼容所选协议，不声称兼容任意私有请求格式。 |
 
 页面里的可编辑 endpoint 是 **API 服务器去访问的地址**。Compose 中的 `127.0.0.1` 指 API 容器本身；访问 Docker Host 上的 LM Studio 或 Ollama 通常应填 `host.docker.internal`。OpenAI 槽固定官方 HTTPS origin；代理和兼容服务必须使用 Custom。其他远端服务也必须使用 HTTPS，只应为你控制的本机服务开启 HTTP。URL 中的账号密码、query、fragment 和高风险保留地址会被拒绝。
+
+LM Studio 中可以加载 `openai/gpt-oss-20b`，然后在页面把模型名称原样填写为 `openai/gpt-oss-20b`。平台会用固定的小型 JSON Schema 请求做真实检查；只有当前 LM Studio 版本、推理运行时和已加载模型确实按所需格式回答时才会启用，因此这里不承诺所有 LM Studio 版本或所有模型都兼容。如果仍提示 JSON 格式错误，先确认模型已在 LM Studio 中加载，再把 LM Studio 和它的推理运行时升级到当前稳定版本；仍不通过时换用支持结构化 JSON 的模型，然后回到页面重新点击 **保存、测试并启用**。协议由平台自动处理，不需要修改。
+
+从早期版本升级时，API 会把 LM Studio 槽中旧的 Responses 配置一次性迁移到 Chat Completions。原 endpoint、模型、密钥和工具调用选择会保留，但旧检查会失效，Provider 会安全地保持停用；打开 **模型设置** 重新测试并启用即可，不需要重填密钥、修改 `.env` 或重启项目 Sandbox。
 
 “支持结构化输出”和“支持工具调用”是对当前 endpoint + model 的能力声明，不是让模型凭空获得能力。保存时平台先做连接检查，只发送一个不含仓库或聊天内容的小型兼容性请求；声明工具调用时还要通过只解析、不执行的原生 tool-call 探针。只有当前配置版本检查通过后才能启用。OpenAI Responses 通常支持原生工具；LM Studio、Ollama 和 Custom 是否支持取决于具体版本和模型。格式错误、多重调用或普通文本伪装的调用都会在 MCP 执行前被拒绝。
 

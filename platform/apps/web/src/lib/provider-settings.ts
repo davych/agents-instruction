@@ -3,6 +3,7 @@ import type {
   AskProviderConfigurationCheck,
   AskProviderId,
   AskProviderStatus,
+  SaveAskProviderConfigurationInput,
 } from "@/lib/types";
 
 export function providerEnabled(provider: AskProviderStatus | AskProviderConfiguration): boolean {
@@ -55,5 +56,36 @@ export function providerCardActions(
     canEnable: expectedEnableVersion !== null,
     canDisable: provider.configured && provider.enabled,
     expectedEnableVersion,
+  };
+}
+
+/**
+ * Provider endpoints and credentials are write-only. An existing configuration
+ * therefore submits explicit `keep` actions when the edit form leaves both
+ * sensitive drafts empty, including immediately after a Vault migration.
+ */
+export function providerWriteOnlyUpdates(
+  provider: Pick<AskProviderConfiguration, "providerId" | "hasEndpoint" | "hasCredential">,
+  input: {
+    endpointDraft: string;
+    credentialDraft: string;
+    clearEndpoint: boolean;
+    clearCredential: boolean;
+  },
+): Pick<SaveAskProviderConfigurationInput, "endpoint" | "credential"> {
+  const endpoint = input.endpointDraft.trim();
+  return {
+    endpoint: provider.providerId === "openai"
+      ? { action: "keep" }
+      : input.clearEndpoint && provider.hasEndpoint
+        ? { action: "clear" }
+        : endpoint
+          ? { action: "replace", value: endpoint }
+          : { action: "keep" },
+    credential: input.clearCredential && provider.hasCredential
+      ? { action: "clear" }
+      : input.credentialDraft
+        ? { action: "replace", value: input.credentialDraft }
+        : { action: "keep" },
   };
 }

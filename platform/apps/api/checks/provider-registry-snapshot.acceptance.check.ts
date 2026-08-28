@@ -35,7 +35,11 @@ class VersionedProvider implements AskLlmProvider {
       label: `${this.id}-${this.marker}`,
       configured: this.configured,
       model: this.configured ? `${this.marker}-model` : null,
-      protocol: this.id === "ollama" ? "ollama-chat" : "openai-responses",
+      protocol: this.id === "ollama"
+        ? "ollama-chat"
+        : this.id === "lmstudio"
+          ? "openai-chat"
+          : "openai-responses",
       dataBoundary: this.id === "openai" ? "remote" : "local",
       endpointLabel: `${this.marker}.example.test`,
       capabilities: {

@@ -5,6 +5,7 @@ import {
   currentProviderCheck,
   providerCardActions,
   providerSelectionState,
+  providerWriteOnlyUpdates,
 } from "../src/lib/provider-settings.ts";
 import type {
   AskProviderConfiguration,
@@ -17,7 +18,11 @@ const runtimeProvider = (id: AskProviderStatus["id"], configured: boolean): AskP
   label: id,
   configured,
   model: configured ? `${id}-model` : null,
-  protocol: id === "ollama" ? "ollama-chat" : "openai-responses",
+  protocol: id === "ollama"
+    ? "ollama-chat"
+    : id === "lmstudio"
+      ? "openai-chat"
+      : "openai-responses",
   dataBoundary: id === "openai" ? "remote" : "local",
   endpointLabel: configured ? `${id}.example` : "未配置",
   capabilities: { streaming: configured, structuredOutput: configured, toolCalling: configured },
@@ -55,6 +60,31 @@ const configuration = (overrides: Partial<AskProviderConfiguration> = {}): AskPr
   createdAt: "2026-08-28T09:00:00.000Z",
   updatedAt: "2026-08-28T10:00:00.000Z",
   ...overrides,
+});
+
+test("LM Studio runtime fixtures use its fixed Chat Completions protocol", () => {
+  assert.equal(runtimeProvider("lmstudio", true).protocol, "openai-chat");
+});
+
+test("a migrated LM Studio configuration keeps its write-only endpoint and credential", () => {
+  const migrated = configuration({
+    providerId: "lmstudio",
+    label: "LM Studio",
+    protocol: "openai-chat",
+    enabled: false,
+    hasEndpoint: true,
+    hasCredential: true,
+  });
+
+  assert.deepEqual(providerWriteOnlyUpdates(migrated, {
+    endpointDraft: "",
+    credentialDraft: "",
+    clearEndpoint: false,
+    clearCredential: false,
+  }), {
+    endpoint: { action: "keep" },
+    credential: { action: "keep" },
+  });
 });
 
 test("a persisted disabled Provider stays selected but requires an explicit replacement", () => {
