@@ -2674,10 +2674,10 @@ async function runDockerCleanupCommand(
 }
 
 function dockerCleanupDelay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, milliseconds);
-    timer.unref();
-  });
+  // This delay is part of a fail-closed cleanup operation and is awaited by
+  // the caller. Keep the timer referenced so a quiet process cannot exit with
+  // the removal confirmation Promise still pending between retries.
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function environmentNumber(value: string | undefined, fallback: number): number {

@@ -226,17 +226,20 @@ process.stdout.write(JSON.stringify({
   }
 });
 
-test("CLOUD-AC-11/Tier C: an unconfirmed Worker removal fails closed", async () => {
+test("CLOUD-AC-11/Tier C: an unconfirmed Worker removal awaits every retry and fails closed", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "ai-sdlc-docker-orphan-"));
   const sourceRoot = path.join(parent, "workspace");
   const controlRoot = path.join(parent, "control");
   const dockerStub = path.join(parent, "docker-stub.mjs");
+  const dockerCallsLog = path.join(parent, "docker-calls.jsonl");
   try {
     await Promise.all([mkdir(sourceRoot), mkdir(controlRoot)]);
     await execFile("git", ["init", "--initial-branch=main"], { cwd: sourceRoot });
     await writeFile(path.join(controlRoot, "ai-native.yaml"), "version: 1\n", "utf8");
     await writeFile(dockerStub, `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
 const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(dockerCallsLog)}, JSON.stringify(args) + "\\n");
 if (args[0] === "run") process.exit(17);
 if (args[0] === "rm") process.exit(1);
 if (args[0] === "container" && args[1] === "inspect") process.exit(0);
@@ -254,6 +257,23 @@ process.exit(99);
       () => runner.run(remoteRequest(sourceRoot, controlRoot), async () => undefined),
       (error: unknown) => (error as { code?: string }).code === "DOCKER_WORKER_CLEANUP_FAILED",
     );
+    const calls = (await readFile(dockerCallsLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    const cleanupCalls = calls.filter(([command]) => command !== "run");
+    const containerNames = cleanupCalls.map((args) => args.at(-1));
+    assert.equal(calls.filter(([command]) => command === "run").length, 1);
+    assert.deepEqual(cleanupCalls.map((args) => args.slice(0, -1)), [
+      ["rm", "--force"],
+      ["container", "inspect"],
+      ["rm", "--force"],
+      ["container", "inspect"],
+      ["rm", "--force"],
+      ["container", "inspect"],
+    ]);
+    assert.equal(containerNames.every((name) => name === containerNames[0]), true);
+    assert.match(containerNames[0] ?? "", /^ai-sdlc-[a-f0-9]{32}$/u);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
