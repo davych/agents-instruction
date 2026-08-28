@@ -203,6 +203,26 @@ test("CHAT-AC-19/20: the default workspace offers Patch/audit, not privilege ele
   assert.doesNotMatch(workspace.text, /自动(?: push|创建 PR|合并|部署|发布)/u);
 });
 
+test("failed event noise can be cleared without deleting Session or SDLC audit state", async () => {
+  const [workspace, visibility] = await Promise.all([
+    readWorkspace(),
+    source("lib/agent-failure-visibility.ts"),
+  ]);
+  const implementation = `${workspace.text}\n${visibility}`;
+
+  assert.match(implementation, /此浏览器清理失败提示/u);
+  assert.match(implementation, /恢复失败提示/u);
+  assert.match(implementation, /localStorage/u);
+  assert.match(implementation, /服务端审计记录仍保留/u);
+  assert.match(implementation, /turn\.failed/u);
+  assert.match(implementation, /tool\.failed/u);
+  assert.match(implementation, /sandbox\.failed/u);
+  assert.match(implementation, /key=\{session\.id\}/u);
+  assert.match(implementation, /const runId = \[\.\.\.\(session\?\.events/u);
+  assert.match(implementation, /<RoleTimeline[\s\S]{0,120}session=\{session\}/u);
+  assert.doesNotMatch(implementation, /deleteAgentSession|deleteWorkflowRun|deleteArtifact/u);
+});
+
 test("the Chat-first product spec names only implemented entry points and security gates", async () => {
   const spec = await readFile(productSpecPath, "utf8");
 

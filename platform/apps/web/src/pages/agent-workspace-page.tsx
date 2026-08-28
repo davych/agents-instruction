@@ -18,6 +18,7 @@ import {
   GitBranch,
   LoaderCircle,
   Eye,
+  EyeOff,
   MessageSquarePlus,
   PackageCheck,
   Play,
@@ -38,6 +39,13 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { artifactReviewHeadKey, currentArtifactHeadIds } from "@/lib/artifact-review";
+import {
+  conversationFailureEvents,
+  mergeDismissedAgentFailureEventIds,
+  readDismissedAgentFailureEventIds,
+  visibleConversationActivityEvents,
+  writeDismissedAgentFailureEventIds,
+} from "@/lib/agent-failure-visibility";
 import type {
   AgentEvent,
   AgentHumanGate,
@@ -380,7 +388,9 @@ export function AgentWorkspacePage({
                   </div>
                 </div>
               ))}
-              <ConversationActivity events={session?.events ?? []} />
+              {session ? (
+                <ConversationActivity key={session.id} sessionId={session.id} events={session.events ?? []} />
+              ) : null}
               {runId && awaitingReviewPhase ? (
                 <InlinePhaseReviewCard
                   key={`${awaitingReviewPhase.id ?? awaitingReviewPhase.phaseId}:${artifactHeadsSignature(awaitingReviewPhase.artifacts)}`}
@@ -559,15 +569,78 @@ function ProviderCapability({ provider }: { provider?: AskProviderStatus }) {
   );
 }
 
-function ConversationActivity({ events }: { events: AgentEvent[] }) {
-  const visible = events.filter(({ kind }) => [
-    "tool.completed", "tool.failed", "sandbox.starting", "sandbox.ready", "sandbox.failed",
-    "sdlc.run-created", "turn.failed",
-  ].includes(kind));
-  if (!visible.length) return null;
+function ConversationActivity({ sessionId, events }: { sessionId: string; events: AgentEvent[] }) {
+  const [dismissedFailureEventIds, setDismissedFailureEventIds] = useState<string[]>(() => {
+    try {
+      return readDismissedAgentFailureEventIds(window.localStorage, sessionId);
+    } catch {
+      return [];
+    }
+  });
+  const [announcement, setAnnouncement] = useState("");
+  const failures = conversationFailureEvents(events);
+  const dismissed = new Set(dismissedFailureEventIds);
+  const visibleFailureIds = failures
+    .filter(({ id }) => !dismissed.has(id))
+    .map(({ id }) => id);
+  const hiddenFailureCount = failures.length - visibleFailureIds.length;
+  const visible = visibleConversationActivityEvents(events, dismissedFailureEventIds);
+
+  const saveDismissed = (ids: string[]): boolean => {
+    setDismissedFailureEventIds(ids);
+    try {
+      return writeDismissedAgentFailureEventIds(window.localStorage, sessionId, ids);
+    } catch {
+      return false;
+    }
+  };
+
+  const dismissVisibleFailures = () => {
+    const next = mergeDismissedAgentFailureEventIds(
+      events,
+      dismissedFailureEventIds,
+      visibleFailureIds,
+    );
+    const persisted = saveDismissed(next);
+    setAnnouncement(persisted
+      ? `已从当前浏览器隐藏 ${visibleFailureIds.length} 条失败提示，服务端审计记录仍保留。`
+      : `已在本页隐藏 ${visibleFailureIds.length} 条失败提示；浏览器禁止持久保存，刷新后会恢复。`);
+  };
+
+  const restoreFailures = () => {
+    const persisted = saveDismissed([]);
+    setAnnouncement(persisted
+      ? `已恢复 ${hiddenFailureCount} 条失败提示。`
+      : `已在本页恢复 ${hiddenFailureCount} 条失败提示；浏览器保存未更新，刷新后可能再次隐藏。`);
+  };
+
+  if (!visible.length && hiddenFailureCount === 0) return null;
   return (
     <div className="space-y-2" aria-label="Agent 事件 timeline">
-      {visible.slice(-8).map((event) => (
+      <div className="flex min-h-7 flex-wrap items-center justify-end gap-1.5">
+        {failures.length > 0 ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className={cn(
+              "h-7 px-2 text-[11px]",
+              visibleFailureIds.length > 0
+                ? "text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                : "text-slate-500",
+            )}
+            onClick={visibleFailureIds.length > 0 ? dismissVisibleFailures : restoreFailures}
+          >
+            {visibleFailureIds.length > 0 ? (
+              <><EyeOff className="h-3.5 w-3.5" aria-hidden /> 此浏览器清理失败提示 ({visibleFailureIds.length})</>
+            ) : (
+              <><Eye className="h-3.5 w-3.5" aria-hidden /> 恢复失败提示 ({hiddenFailureCount})</>
+            )}
+          </Button>
+        ) : null}
+      </div>
+      <span className="sr-only" aria-live="polite">{announcement}</span>
+      {visible.map((event) => (
         <div key={event.id} className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs text-slate-600">
           {event.status === "failed" ? (
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-500" aria-hidden />
