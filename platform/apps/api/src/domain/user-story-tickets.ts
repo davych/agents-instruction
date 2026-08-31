@@ -13,6 +13,11 @@ export interface ParsedStoryTicket {
   position: number;
 }
 
+export interface UserStoryFileEntry {
+  relativePath: string;
+  content: string;
+}
+
 interface SnapshotFileSection {
   sourcePath: string;
   contentStart: number;
@@ -20,18 +25,32 @@ interface SnapshotFileSection {
 }
 
 const snapshotFileHeading = /^##[ \t]+((?:[^/\\\r\n]+[/\\])*[^/\\\r\n]+\.md)[ \t]*\r?$/gimu;
-const storyHeading = /^#[ \t]+(US-(\d{3,}))[ \t]*[:：][ \t]*(.+?)[ \t]*#*[ \t]*$/iu;
+const storyHeading = /^#[ \t]+(US-(\d{3,}))[ \t]*[:：—-][ \t]*(.+?)[ \t]*#*[ \t]*$/iu;
 const categoryLine = /^\*\*Category:\*\*[ \t]*(.+?)[ \t]*$/imu;
 
+export function hasValidUserStoryHeading(content: string): boolean {
+  const firstLine = content.trim().replace(/^\uFEFF/u, "").split(/\r?\n/u, 1)[0] ?? "";
+  return storyHeading.test(firstLine);
+}
+
 export function parseUserStoryTickets(snapshot: string): ParsedStoryTicket[] {
-  const sections = snapshotSections(snapshot);
+  return parseUserStoryTicketEntries(snapshotSections(snapshot).map((section) => ({
+    relativePath: section.sourcePath,
+    content: snapshot.slice(section.contentStart, section.contentEnd),
+  })));
+}
+
+export function parseUserStoryTicketEntries(
+  entries: readonly UserStoryFileEntry[],
+): ParsedStoryTicket[] {
   const tickets: ParsedStoryTicket[] = [];
   const sourcePathByKey = new Map<string, string>();
 
-  for (const section of sections) {
-    if (!/(?:^|\/)story\.md$/iu.test(section.sourcePath)) continue;
+  for (const entry of entries) {
+    const sourcePath = normalizeSourcePath(entry.relativePath);
+    if (!/(?:^|\/)story\.md$/iu.test(sourcePath)) continue;
 
-    const content = snapshot.slice(section.contentStart, section.contentEnd).trim();
+    const content = entry.content.trim();
     const firstLine = content.replace(/^\uFEFF/u, "").split(/\r?\n/u, 1)[0] ?? "";
     const heading = storyHeading.exec(firstLine);
     if (!heading) continue;
@@ -47,18 +66,18 @@ export function parseUserStoryTickets(snapshot: string): ParsedStoryTicket[] {
         `用户故事包含重复编号 ${storyKey}`,
         422,
         "INVALID_USER_STORIES",
-        { storyKey, sourcePaths: [previousSourcePath, section.sourcePath] }
+        { storyKey, sourcePaths: [previousSourcePath, sourcePath] }
       );
     }
 
-    const category = categoryLine.exec(content)?.[1]?.trim() || categoryFromPath(section.sourcePath);
+    const category = categoryLine.exec(content)?.[1]?.trim() || categoryFromPath(sourcePath);
     const acceptanceCriteriaCount = countAcceptanceCriteria(content, storyKey);
-    sourcePathByKey.set(storyKey, section.sourcePath);
+    sourcePathByKey.set(storyKey, sourcePath);
     tickets.push({
       storyKey,
       title,
       category,
-      sourcePath: section.sourcePath,
+      sourcePath,
       content,
       contentHash: createHash("sha256").update(content).digest("hex"),
       acceptanceCriteriaCount,
@@ -94,7 +113,7 @@ function categoryFromPath(sourcePath: string): string {
 function countAcceptanceCriteria(content: string, storyKey: string): number {
   const escapedKey = storyKey.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const acceptanceHeading = new RegExp(
-    `^###[ \\t]+${escapedKey}-AC-\\d+[ \\t]*(?:[:：]|$)`,
+    `^###[ \\t]+${escapedKey}-AC-\\d+[ \\t]*(?:[:：—-]|$)`,
     "gimu"
   );
   return [...content.matchAll(acceptanceHeading)].length;

@@ -125,6 +125,33 @@ test("structured human decisions require unique ids, meaningful answers, and loc
     responses: [{ id: "PROD-Q-01", response: "ok" }],
     expectedArtifactIds: [artifactId],
   }).success, false);
+  for (const response of [
+    "yes",
+    "agree!!!",
+    "approved approved",
+    "OK，ok",
+    "同意同意同意",
+    "确认！！！",
+    "可以，可以",
+    "好的好的",
+    "！！！...",
+  ]) {
+    assert.equal(captureHumanDecisionsSchema.safeParse({
+      responses: [{ id: "PROD-Q-01", response }],
+      expectedArtifactIds: [artifactId],
+    }).success, false, response);
+  }
+  for (const response of [
+    "Yes — use the red theme and keep the layout flexible.",
+    "同意使用红色主题，layout 可以调整。",
+    "可以不展示任何 AI SDLC 指标。",
+    "Approved: preserve the existing project list.",
+  ]) {
+    assert.equal(captureHumanDecisionsSchema.safeParse({
+      responses: [{ id: "PROD-Q-01", response }],
+      expectedArtifactIds: [artifactId],
+    }).success, true, response);
+  }
   assert.equal(captureHumanDecisionsSchema.safeParse({
     responses: [
       { id: "PROD-Q-01", response: "First answer" },

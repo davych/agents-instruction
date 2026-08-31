@@ -109,6 +109,50 @@ test("a Bug Change Contract can approve Product, skip Design and Architecture, t
   }
 });
 
+test("an explicit human no-impact decision can close a failed started Architecture phase", async () => {
+  const fixture = await routingFixture("late-architecture-skip");
+  try {
+    const run = await fixture.service.createRun(fixture.project.id, {
+      title: "README 布局调整",
+      objective: "只调整现有 README 的内容结构",
+      changeContract: changeContract("bug"),
+    });
+    const contract = requiredHead(fixture.store.requiredBundle(), "discovery", "change-contract");
+    await fixture.service.assessProductImpact(run.id, {
+      mode: "direct",
+      rationale: "README 目标和验收已由 Change Contract 明确记录。",
+      selectedArtifactIds: [],
+      expectedBaselineArtifactIds: [],
+      affectedOutputKeys: [],
+    });
+    await fixture.service.assessDesignImpact(run.id, {
+      mode: "skip",
+      rationale: "内容顺序调整不引入新的设计系统或交互行为。",
+      selectedArtifactIds: [contract.id],
+      expectedBaselineArtifactIds: [],
+      affectedOutputKeys: [],
+    });
+    const stale = fixture.store.simulateFailedArchitecture();
+
+    await fixture.service.waiveArchitecture(run.id, {
+      mode: "skip",
+      rationale: "人已明确确认这是 README 内容与布局修改，不改变运行时、API、数据、安全或部署边界。",
+      selectedArtifactIds: [contract.id],
+      expectedBaselineArtifactIds: [],
+      affectedOutputKeys: [],
+    });
+
+    const bundle = fixture.store.requiredBundle();
+    const architecture = requiredPhase(bundle, "architecture");
+    assert.equal(architecture.status, "approved");
+    assert.equal(architecture.resolution?.mode, "skip");
+    assert.equal(stale.reviewStatus, "superseded");
+    assert.equal(requiredPhase(bundle, "implementation").status, "ready");
+  } finally {
+    await fixture.dispose();
+  }
+});
+
 test("Product partial inherits the approved baseline, limits mutation scope, and can be approved", async () => {
   const fixture = await routingFixture("product-partial");
   try {
@@ -481,6 +525,51 @@ class RoutingMemoryStore {
     return this.bundle;
   }
 
+  simulateFailedArchitecture(): ArtifactDto {
+    const phase = requiredPhase(this.requiredBundle(), "architecture");
+    const createdAt = this.instant();
+    const artifact: ArtifactDto = {
+      id: randomUUID(),
+      phaseRunId: phase.id,
+      artifactKey: "architecture",
+      filePath: "docs/ai-native/architecture/architecture.md",
+      content: "# Superseded failed architecture attempt\n",
+      contentHash: createHash("sha256").update("# Superseded failed architecture attempt\n").digest("hex"),
+      reviewStatus: "pending",
+      revision: 1,
+      revisionSource: "ai",
+      parentArtifactId: null,
+      createdAt,
+    };
+    const execution: ExecutionDto = {
+      id: randomUUID(),
+      phaseRunId: phase.id,
+      status: "failed",
+      selectedArtifactIds: [],
+      selectedOutputKeys: ["architecture"],
+      runnerMode: "real",
+      model: "local-model",
+      reasoningEffort: null,
+      command: "provider-native:lmstudio",
+      exitCode: null,
+      error: "AGENT_PROVIDER_REQUIRED_TOOL_MISSING",
+      startedAt: createdAt,
+      finishedAt: createdAt,
+      createdAt,
+    };
+    phase.status = "failed";
+    phase.artifacts.push(artifact);
+    phase.executions.push(execution);
+    this.artifacts.set(artifact.id, artifact);
+    this.executions.set(execution.id, execution);
+    this.addReview(
+      phase,
+      "request_changes",
+      "其实这是一个很简单的 README 修改，不需要架构。",
+    );
+    return artifact;
+  }
+
   convertCurrentRunToLegacy(): void {
     const bundle = this.requiredBundle();
     bundle.run.changeContract = null;
@@ -613,8 +702,16 @@ class RoutingMemoryStore {
     const bundle = await this.getRun(runId);
     const resolution = input.resolution;
     const phase = requiredPhase(bundle, resolution.phaseId);
-    assert.equal(phase.status, "ready");
+    const lateArchitectureSkip = input.allowStartedArchitectureSkip === true
+      && resolution.phaseId === "architecture"
+      && resolution.mode === "skip"
+      && ["awaiting_review", "changes_requested", "failed"].includes(phase.status);
+    if (!lateArchitectureSkip) assert.equal(phase.status, "ready");
     assert.equal(phase.resolution, null);
+
+    if (lateArchitectureSkip) {
+      for (const artifact of phase.artifacts) artifact.reviewStatus = "superseded";
+    }
 
     if (resolution.sourcePhaseRunId) {
       const baseline = (this.baselines.get(resolution.phaseId as "discovery" | "design") ?? [])

@@ -453,15 +453,36 @@ class FakeVerificationE2eCoordinator {
     _runId: string,
     input: ReviewVerificationE2eScriptsInput,
   ): Promise<E2eAuthoringDto> {
+    const prepared = await this.prepareReview(_project, _runId, input);
+    await prepared.commit();
+    return prepared.authoring;
+  }
+
+  async prepareReview(
+    _project: ProjectDto,
+    _runId: string,
+    input: ReviewVerificationE2eScriptsInput,
+  ) {
     assert.ok(this.authoring);
     assert.equal(input.expectedPatchHash, this.authoring.patchHash);
-    this.authoring = {
+    const previous = this.authoring;
+    const next = {
       ...this.authoring,
       status: input.decision === "approve" ? "approved" : "changes_requested",
       reviewComment: input.comment,
       reviewedAt: new Date().toISOString(),
+    } satisfies E2eAuthoringDto;
+    let committed = false;
+    return {
+      authoring: next,
+      commit: async () => {
+        this.authoring = next;
+        committed = true;
+      },
+      rollback: async () => {
+        if (committed) this.authoring = previous;
+      },
     };
-    return this.authoring;
   }
 
   async execute(input: {
@@ -610,6 +631,34 @@ class E2eWorkflowStore {
       createdAt: new Date().toISOString(),
     };
     phase.events.push(event);
+  }
+
+  async commitVerificationE2eScriptReview<T>(
+    _runId: string,
+    operation: () => Promise<{
+      result: T;
+      executionId: string;
+      payload: unknown;
+      rollback: () => Promise<void>;
+    }>,
+  ): Promise<T> {
+    const committed = await operation();
+    try {
+      const phase = requiredPhase(this.bundle, "verification");
+      const nextSequence = phase.events
+        .filter(({ executionId }) => executionId === committed.executionId)
+        .reduce((maximum, { sequence }) => Math.max(maximum, sequence), 0) + 1;
+      await this.appendEvent(
+        committed.executionId,
+        nextSequence,
+        "e2e.script.reviewed",
+        committed.payload,
+      );
+      return committed.result;
+    } catch (error) {
+      await committed.rollback();
+      throw error;
+    }
   }
 
   async completeExecution(

@@ -7,48 +7,45 @@ const projectPagePath = fileURLToPath(
   new URL("../src/pages/project-page.tsx", import.meta.url),
 );
 
-test("AC6: feature intake renders no Change Contract fields", async () => {
+test("CLOUD-WORK-UI-01: intake supports honest manual and operator-configured MCP sources", async () => {
   const dialogSource = await createRunDialogSource();
 
-  assert.match(
-    dialogSource,
-    /\{\s*isLinkedWorkType\(draft\.workType\)\s*\?[\s\S]*?<OriginalTaskSelector[\s\S]*?label="期望行为"[\s\S]*?:\s*null\s*\}/u,
-    "original-task and expected-behavior controls must render only for linked work types",
-  );
-  for (const removedLabel of [
-    "变更摘要",
-    "当前行为",
-    "范围内事项",
-    "范围外事项",
-    "验收标准",
-    "回归范围",
-    "风险标记",
-    "证据引用",
-  ]) {
-    assert.doesNotMatch(
-      dialogSource,
-      new RegExp(`label=["']${removedLabel}["']`, "u"),
-      `${removedLabel} must not be rendered by the create dialog`,
-    );
-  }
+  assert.match(dialogSource, /手工描述/u);
+  assert.match(dialogSource, /Jira \/ Linear 等 MCP/u);
+  assert.match(dialogSource, /api\.listWorkItemAdapters/u);
+  assert.match(dialogSource, /api\.resolveWorkItem/u);
+  assert.match(dialogSource, /adapterId/u);
+  assert.match(dialogSource, /externalReference/u);
+  assert.match(dialogSource, /管理员还没有配置[\s\S]*不会伪装成已连接 Jira 或 Linear/u);
+  assert.match(dialogSource, /外部标题和描述只是待确认资料[\s\S]*不能改变阶段顺序/u);
 });
 
-test("AC6: feature intake submits title-derived legacy input without contract validation", async () => {
+test("CLOUD-WORK-UI-02: every Run freezes a complete, plain-language Change Contract", async () => {
   const dialogSource = await createRunDialogSource();
-  const submitStart = dialogSource.indexOf("const submit =");
-  const renderStart = dialogSource.indexOf("\n\n  return (");
-  assert.ok(submitStart >= 0 && renderStart > submitStart, "submit source must be discoverable");
-  const submitSource = dialogSource.slice(submitStart, renderStart);
-  const linkedGuard = dialogSource.indexOf("if (isLinkedWorkType(draft.workType))");
-  assert.ok(linkedGuard >= submitStart && linkedGuard < renderStart);
-  assert.match(
-    submitSource,
-    /mutation\.mutate\(\s*\{\s*title:\s*title\.trim\(\),\s*objective:\s*title\.trim\(\),?\s*\}\s*\)/su,
-    "feature should use the existing legacy { title, objective: title } API shape",
-  );
-  assert.doesNotMatch(
-    submitSource,
-    /changeContractMissingFields|materializeChangeContract/u,
+  for (const label of [
+    "现在是什么情况",
+    "完成后应该怎样",
+    "这次具体要做什么",
+    "怎样才算完成",
+    "至少要回头检查哪些地方",
+  ]) {
+    assert.match(dialogSource, new RegExp(`label=["']${label}["']`, "u"));
+  }
+  assert.match(dialogSource, /materializeChangeContract/u);
+  assert.match(dialogSource, /changeContractMissingFields/u);
+  assert.match(dialogSource, /changeContract:\s*contract/u);
+  assert.match(dialogSource, /baseRevision/u);
+});
+
+test("CLOUD-WORK-UI-03: MCP evidence is preserved while the human remains the confirmation gate", async () => {
+  const dialogSource = await createRunDialogSource();
+  assert.match(dialogSource, /workItem:\s*workItem\.source/u);
+  assert.match(dialogSource, /fingerprint\.slice/u);
+  assert.match(dialogSource, /点击创建就是人工确认/u);
+  assert.equal(
+    (dialogSource.match(/mutation\.mutate\(\{/gu) ?? []).length,
+    1,
+    "only the explicit form submit may create a Run",
   );
 });
 

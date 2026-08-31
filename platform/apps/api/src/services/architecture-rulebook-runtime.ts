@@ -25,6 +25,8 @@ interface ArchitectureArtifactContent {
 
 interface ValidateArchitectureRulebookReviewInput {
   projectRoot: string;
+  /** Platform-managed rule/config root; defaults to projectRoot for legacy projects. */
+  controlRoot?: string;
   stage: "checkpoint" | "final";
   artifacts: ReadonlyArray<ArchitectureArtifactContent>;
   documentedOptionIds: string[];
@@ -47,7 +49,9 @@ const architectConfigSchema = z.object({
 export async function validateArchitectureRulebookReview(
   input: ValidateArchitectureRulebookReviewInput,
 ): Promise<void> {
-  const configured = await loadArchitectureRulebookContext(input.projectRoot);
+  const configured = await loadArchitectureRulebookContext(
+    input.controlRoot ?? input.projectRoot,
+  );
   if (configured.validation !== "required") return;
   const byKey = new Map(input.artifacts.map((artifact) => [artifact.artifactKey, artifact.content]));
   const adrArtifact = input.artifacts.find((artifact) => artifact.artifactKey === "architecture-adrs");

@@ -1,16 +1,73 @@
-# AI SDLC Platform
+# AI SDLC Cloud Platform
 
-The Platform is a local React/Fastify application for operating projects initialized by [`create-ai-native-sdlc`](../README.md). It persists Runs, impact decisions, executions, artifact revisions, reviews, and semantic-gate results. It does not replace the repository initializer.
+这是一个可自托管的 Chat-first Cloud SDLC Agent。用户在浏览器里绑定远程 Git HTTPS 仓库并选择授权，随后直接进入一个持久对话；用户用白话或 `@repo` 下任务，Agent 自己选择项目已激活的 MCP、懒启动 Session Sandbox，并按固定六角色组织执行、产物和人工审核。远程仓库不需要 `CLAUDE.md`、`AGENTS.md`、`.codex` 或 `ai-native.yaml`，平台会在仓库之外准备自己的 Control Pack。
 
-> **Security boundary:** this V1 has no authentication. Real jobs run Codex with approval and CLI sandbox bypassed, without an OS process-isolation boundary. Use it only for local, trusted, disposable or otherwise recoverable projects. Do not expose it remotely or register untrusted repositories. Read the [full security model](docs/security-model.md) before enabling real execution.
+它不是 Devin 的复刻，也不是通用聊天壳。当前 MVP 的重点是：一个轻量对话入口、一条固定且可解释的六角色 SDLC、可审计的上下游产物、可按消息切换的 Provider、受控远程 Sandbox 和人工可下载的 Patch。它不会自动 push、创建 PR、合并、部署或发布。
+
+> **真实边界：**这是单租户自托管 MVP，不是生产多租户 SaaS。API 有一个部署级 Bearer Token，但没有用户、组织、RBAC、计费或租户隔离。Chat-first 六阶段通过可信 API 进程内的 Provider-native rooted 文件工具执行，不向模型提供 Shell、网络工具或 hostile-code 容器隔离；API 仍会按已保存 Profile 调用模型 endpoint。旧独立 Run/Codex 路径继续使用受限 Docker Worker。可信 API 仍持有 Git Broker 凭据、数据库权限和 Docker socket。部署前请阅读[安全模型](docs/security-model.md)。
+
+产品侧的完整主路径、六角色交接和返工规则见[业务流程 README 与思维导图](docs/business-flow/README.md)；服务边界、状态模型、运行时和信任边界见[项目技术设计与架构图](docs/technical-design/README.md)。
+
+## 默认使用方式
+
+1. 输入远端 HTTPS Git URL，私有仓库再选择管理员配置的 Credential Profile。
+2. 仓库 ready 后系统直接打开 Agent Session；名称、`@alias` 和源码 revision 都由服务端确定。
+3. 在同一页按需选择默认 Provider、固定 Sandbox Blueprint、激活 MCP，或手工生成 LLM DeepWiki。
+4. 发一条消息，例如“`@backend 处理 Linear ENG-123，修好并跑测试`”。
+5. Agent 建立同一 Session 的 Sandbox 与 Run，从 PM/BA 开始固定串联六角色。
+6. 对话中央持续显示 Run 的加载、运行、待审、修改、失败、可继续和完成状态；每个角色完成后展开全部当前产物。“批准并继续”会直接推进同一 Run 的下一角色，“要求修改”会留在本阶段。
+7. 最后查看 Diff、测试、风险和 Patch；完整 Run 页面只作为高级审计入口。
 
 ## Prerequisites
 
 - Node.js 20 or newer with Corepack;
 - Docker; Compose v2 is used when available, with a Docker CLI fallback;
-- Codex CLI for real jobs. The fake runner does not require Codex.
+- 一个 Docker Host；Cloud 启动预检和旧独立 Run/Codex 兼容路径使用固定 Worker 镜像。Chat-first Provider-native 阶段本身不调用 Codex CLI。
 
-## Start locally
+## 启动 Cloud MVP
+
+从 `platform/` 开始：
+
+```bash
+cp .env.cloud.example .env.cloud
+# 分别运行两次，生成数据库密码和访问 Token；把两段不同的输出粘贴进 .env.cloud
+openssl rand -hex 32
+openssl rand -hex 32
+# 再填写精确 Origin、专用绝对 Workspace 路径和 Docker socket group id
+mkdir -p /你在_AI_SDLC_HOST_WORKSPACE_ROOT_里填写的绝对路径
+# Compose 中 API/Worker 默认使用 10001:10001；让这个专用目录归它所有
+sudo chown 10001:10001 /你在_AI_SDLC_HOST_WORKSPACE_ROOT_里填写的绝对路径
+docker compose --env-file .env.cloud -f docker-compose.cloud.yml \
+  --profile worker-image build
+# 可选但推荐：在正式启动前跑一次真实隔离边界验收（Tier D）
+AI_SDLC_WORKER_IMAGE=ai-sdlc-worker:local yarn test:docker-smoke
+docker compose --env-file .env.cloud -f docker-compose.cloud.yml up -d postgres api web
+```
+
+本机浏览器打开 `http://localhost:8080`，输入 `.env.cloud` 中的 `AI_SDLC_ACCESS_TOKEN`。Compose 默认把 Web 端口只绑定到 `127.0.0.1`，这正是推荐的本机使用方式。
+
+远程访问时不要把 8080 的明文 HTTP 直接暴露出去。保留 `AI_SDLC_WEB_BIND_HOST=127.0.0.1`，在同一台主机上用 Caddy、Nginx 或云负载均衡终止 TLS，再把**精确的 HTTPS Origin** 写入 `AI_SDLC_ALLOWED_ORIGINS`。例如：
+
+```caddyfile
+sdlc.example.com {
+  reverse_proxy 127.0.0.1:8080
+}
+```
+
+```dotenv
+AI_SDLC_WEB_BIND_HOST=127.0.0.1
+AI_SDLC_ALLOWED_ORIGINS=https://sdlc.example.com
+```
+
+Bearer Token 只有在 HTTPS 内传输才不会被同网段窃听；不要使用 `http://sdlc.example.com`。API 会拒绝把非 loopback 的明文 HTTP Origin 当成远程 Cloud 配置。Web 与 API 默认走同源反向代理，不需要浏览器填写 API 地址。
+
+`AI_SDLC_HOST_WORKSPACE_ROOT` 必须是 Docker Host 上已经存在的专用绝对目录。可信 API 直接在其中管理 Chat-first Session Workspace，并以相同绝对路径挂载，以便 Host Docker daemon 能把独立 Run 的具体 Workspace 只挂给兼容 Worker。不要填 home、现有源码仓库或共享业务目录。请把 Managed Root 放在独立、带操作系统或存储层**硬容量配额**的 filesystem / volume：Git 的 byte 限制在 materialization 完成后才验收，Provider-native 工具和兼容 Worker 都可能继续写 Workspace，应用层限制不能阻止瞬时磁盘占用或恶意写满空间。
+
+Linux 还要把 `AI_SDLC_DOCKER_GID` 设为 `/var/run/docker.sock` 的 group id。API 与 Worker 的 uid:gid 必须一致。启动时 API 会实际创建、读回并删除一个 Workspace sentinel，再读取 Docker Server Version 和带 `com.ai-sdlc.worker=true` 标签的 Worker 镜像；任一步失败都不会对外监听。`AI_SDLC_CLOUD_SKIP_DOCKER_PREFLIGHT=1` 只允许与 `AI_SDLC_CODEX_FAKE=1` 一起用于测试或本地演示，真实远程 Run 不能绕过这道检查。
+
+`.env.cloud.example` 故意把密码、Token、Workspace Root 和 Docker GID 留空；Compose 用 `${VAR:?}` 在启动前拒绝空值。不要把示例文本当成 Secret，Access Token 也会主动拒绝仓库曾使用过的占位字符串。
+
+### 本地开发
 
 From `platform/`:
 
@@ -22,7 +79,7 @@ yarn db:up
 yarn dev
 ```
 
-Edit `.env` before registering a project. At minimum, replace `AI_SDLC_ALLOWED_PROJECT_ROOTS` with the narrowest trusted absolute parent directory the platform may access.
+`.env.example` 同时包含 Cloud 和 legacy local 开发变量。Cloud Web 只显示远程仓库入口；旧本地 Project 数据与显式 API 仍保留兼容。
 
 The Web app is served at <http://localhost:5174> and the API at <http://localhost:4100>. PostgreSQL uses host port `54329` by default. `yarn db:up` waits for the database health check.
 
@@ -38,11 +95,23 @@ yarn db:down
 
 `yarn db:down` stops PostgreSQL but keeps its named volume. Remove the volume only when local data loss is intended.
 
-## Configure local access and execution
+## 关键 Cloud 配置
 
 | Variable | Purpose |
 |---|---|
-| `AI_SDLC_ALLOWED_PROJECT_ROOTS` | Host-delimited list of absolute parent directories the API may access |
+| `AI_SDLC_ACCESS_TOKEN` | 部署级访问令牌；非 loopback 监听时必填，至少 24 个无空白字符 |
+| `AI_SDLC_ALLOWED_ORIGINS` | 允许访问 API 的精确浏览器 Origin，不能写通配符 |
+| `AI_SDLC_WEB_BIND_HOST` | Compose Web 发布地址；默认 `127.0.0.1`，远程访问仍应保持 loopback 并在前面终止 TLS |
+| `AI_SDLC_MANAGED_WORKSPACE_ROOT` | API 看到的受管 Workspace 根；Compose 会从 Host 绝对路径注入 |
+| `AI_SDLC_GIT_ALLOWED_ORIGINS` | 可导入仓库的精确 HTTPS Origin 列表 |
+| `AI_SDLC_GIT_CREDENTIAL_PROFILES` | 私有仓库 Profile 元数据；Secret 只通过 Profile 的 `secretEnv` 变量提供 |
+| `AI_SDLC_WORKER_IMAGE` | 管理员构建并批准的固定远程阶段镜像；不配置时 real remote Run fail closed |
+| `AI_SDLC_SANDBOX_BLUEPRINTS` | 可选的名称/版本/说明目录；每项都由服务端绑定到启动时验证通过的同一个 Worker 镜像，不能携带镜像或命令 |
+| `AI_SDLC_REAL_EXECUTION_TRUSTED_REPOSITORIES` | 允许真实阶段执行的精确仓库 URL，逗号分隔；空值表示全部拒绝，导入/Ask/Fake 不受影响 |
+| `AI_SDLC_MAX_CONCURRENT_PHASES` | 单个 API 进程的真实阶段并发上限，默认 `1`；超出时返回 429，不排队 |
+| `AI_SDLC_MCP_BIN_ROOT` | Host 上的 MCP Adapter 可执行文件目录；Compose 只读挂载到 API 的 `/opt/ai-sdlc/mcp-bin` |
+| `AI_SDLC_CLOUD_SKIP_DOCKER_PREFLIGHT` | 仅 Fake/test 可设为 `1`；真实 Cloud 固定为 `0` |
+| `AI_SDLC_ALLOWED_PROJECT_ROOTS` | 仅 legacy-local API 使用的本地父目录 allowlist；Cloud 项目只能进入 Managed Root |
 | `AI_SDLC_CODEX_BIN` | Codex executable used for real jobs; defaults to `codex` |
 | `AI_SDLC_CODEX_TIMEOUT_MS` | Real-execution timeout; defaults to 30 minutes |
 | `AI_SDLC_CODEX_FAKE` | `0` for real execution; `1` only for tests or deterministic demos |
@@ -51,30 +120,102 @@ yarn db:down
 | `HOST` / `PORT` | API bind address and port |
 | `VITE_API_URL` | API URL used by the Web app |
 
-The execution dialog obtains the project-scoped Codex model catalog and records the selected model and reasoning effort for each real phase run. Optional model allowlists and defaults are documented in the [runtime contract](docs/runtime-contract.md).
+## 手工、Jira 与 Linear 工作项
 
-## Register an initialized project
+它们都从同一个聊天框进入。用户可以直接描述任务，也可以说“`@backend 处理 Linear ENG-123`”。如果当前 Provider 支持原生 tool calling，Agent 只会从这个项目已经激活的 MCP 中选择工具；读取结果与用户文字一起整理为 Change Contract，再启动固定六角色 Run，不要求用户先选择来源或填写长表单。
 
-1. Confirm that the project already contains `ai-native.yaml`.
-2. Add its parent directory to `AI_SDLC_ALLOWED_PROJECT_ROOTS`.
-3. Start the database and application.
-4. In the Web app, choose the existing-project flow and enter the name, summary, and absolute project path.
+MVP 提供的是通用、服务端 stdio MCP Adapter，不内置 Jira 或 Linear 的账号/OAuth 页面。管理员先安装厂商 MCP Server，或用固定版本的 stdio bridge 连接远程 MCP；项目设置里只做激活。浏览器只看见 Adapter 的安全摘要，不会提交 command、args、tool、固定参数、字段映射或 Secret。当前开放的是只读 Work Item 工具；未知、未激活、多重或参数不合法的调用全部拒绝。
 
-Registration stores platform metadata. It does not rerun the initializer or overwrite workflow files.
+```dotenv
+AI_SDLC_WORK_ITEM_MCP_ADAPTERS=[{"id":"linear-readonly","label":"Linear（只读）","command":"/opt/ai-sdlc/mcp-bin/linear-mcp","args":[],"toolName":"get_issue","referenceArgument":"issueId","fixedArguments":{},"secretEnv":{"LINEAR_API_TOKEN":"AI_SDLC_LINEAR_API_TOKEN"},"mapping":{"title":"issue.title","description":"issue.description","externalId":"issue.identifier","url":"issue.url","acceptanceCriteria":"issue.acceptanceCriteria","labels":"issue.labels"},"defaultWorkType":"feature"}]
+AI_SDLC_LINEAR_API_TOKEN=replace-me
+AI_SDLC_WORK_ITEM_MCP_TIMEOUT_MS=20000
+AI_SDLC_WORK_ITEM_MCP_MAX_OUTPUT_BYTES=2097152
+AI_SDLC_WORK_ITEM_MCP_MAX_CONCURRENT=4
+```
 
-## Initialize and register a new project
+`command` 必须是 API 运行环境里的绝对可执行路径；Compose 默认镜像不会偷偷下载或执行 `npx` 最新版。先把固定版本的 Adapter 安装进一个专用 Host 目录，再通过 `AI_SDLC_MCP_BIN_ROOT` 只读挂载：
 
-1. Add the target's parent directory to `AI_SDLC_ALLOWED_PROJECT_ROOTS`.
-2. In the Web app, choose the new-project flow.
-3. Enter the project name, summary, target path, and native Agent client: Codex, Claude Code, or GitHub Copilot.
+```bash
+mkdir -p mcp-bin
+install -m 0755 /你审核并固定版本的/linear-mcp mcp-bin/linear-mcp
+```
 
-The API runs the repository initializer and registers the project only after filesystem initialization succeeds. Initialization remains create-only and fail-closed; an existing `ai-native.yaml`, unsafe path, symlink parent, or file conflict is rejected. If a response is lost after initialization, refresh the project list before retrying so an already committed project is not duplicated.
+Compose 内的配置统一写 `/opt/ai-sdlc/mcp-bin/linear-mcp`，不要写 Host 绝对路径。`mcp-bin/` 默认不进入 Git；二进制来源、版本和校验值由运维者自己记录。Adapter 必须完成 MCP `initialize`，随后接受固定的 `tools/call`，并返回 `structuredContent` 或包含 JSON 的 text content。字段路径由 `mapping` 明确配置，平台不会让 LLM 猜厂商响应。超时、输出和并发都有硬限制；请求结束时 API 会等待子进程退出，必要时强制结束，再释放并发名额。stderr、底层路径和 Secret 不返回浏览器。
 
-The selected native client controls the Agent files installed for direct IDE discovery. Web jobs still execute through the local Codex runner; selecting Claude Code or GitHub Copilot does not make the API launch that client.
+Linear 官方远程 MCP 地址及只读方式见 [Linear MCP 文档](https://linear.app/docs/mcp)；Jira 可通过 [Atlassian Rovo MCP 的 Jira 工具](https://support.atlassian.com/atlassian-rovo-mcp-server/docs/supported-tools/)接入。两者的 OAuth、Cloud ID、工具名和返回字段可能变化，属于管理员 Adapter 配置，不应写死在浏览器。列表中的“已配置”不代表远端已经联网；真正读取工作项时仍会按协议调用并清楚报告失败。
 
-## Fake and real jobs
+## 配置对话与 DeepWiki Provider
 
-Real execution is the default:
+OpenAI、LM Studio、Ollama 和 Custom 共用一套服务端 Provider Registry。它们负责 Agent Session 里的聊天、任务规划、只读 MCP 选择、手工 DeepWiki，以及支持原生工具调用时的 Chat-first 六阶段执行；输入框可为下一条消息或下一阶段切换 Provider，历史不会清空，并会记录实际 Provider 与模型。仓库检索只发送有界片段并校验引用；Secret、忽略文件、常见敏感文件、生成目录、二进制、符号链接和超大文件会被排除。
+
+Chat-first 固定六阶段继承输入框本轮选择的 Provider 和服务端有界会话历史，通过 Provider-native Runtime 在同一个 Session Workspace 中工作，不要求用户另行调用 Codex。只有已启用、明确声明并通过原生 tool-call 探针的 Provider 才能启动工作回合；平台不会解析普通模型文本来伪造工具调用。
+
+Provider-native 阶段只开放仓库相对路径的列出、读取、搜索、建目录、写文件和补丁工具；PM / BA 在选中 `user-stories` 时还可使用无路径参数的结构化 Blocker 工具，由平台确定性生成固定 Markdown。读取与搜索会拒绝符号链接、硬链接和常见敏感目录；所有阶段都在写入前拒绝未选注册产物和 `.ai-sdlc`、native Agent 配置等控制目录，Implementation 的较宽源码权限也不能越过这条边界。外层仍保留失败回滚、Artifact/Control 快照与 Artifact 采集。Provider 返回的原始 tool-call ID 不原样持久化，事件使用平台审计 ID 和参数/结果 hash。它没有任意 Shell、命令或网络工具，也不支持 Desktop Figma。Rooted tool host 的检查合同只接受 Blueprint allowlist 的 `checkId`，但本版 Chat-first 生产接线没有注入检查 Runner，因此不能宣称已经运行测试命令；需要命令证据时必须如实标记 Pending / Blocked。Session-linked 高级审计只承担完整查看，以及未完成状态明确允许的 Artifact 审阅与结构化决定；任何执行意图都会返回原 Session。Session-owned Run 完成后，高级审计也只读，不再允许人工修订、决定捕获或 E2E script review。只有 standalone legacy Run 的执行控件继续使用 Codex、独立低权限密钥和受限 Docker Worker，且其既有完成态语义不变。
+
+Provider 的无工具回复只是“尝试结束”。受守护阶段必然需要更新注册输出，因此支持强制 `tool_choice` 的协议从第一次响应起就要求选择真实工具；模型第一次漏掉 required/named tool call 时，平台会原约束重试一次且不消耗工具或修复轮次，第二次仍遗漏或选择了错误的 named tool 才明确报 Provider 工具兼容性问题，不会伪装成 Artifact 错误。Ollama Chat 因原生 API 限制保持 `auto`。平台会先按最终 Artifact 采集的同一规则检查所有 selected outputs；缺失、空白、该更新却未更新，或 `user-stories` 只有 placeholder/不完整 Story/无效 Blocker 时，会在同一个模型循环里最多两轮返回仅含安全 artifact key、仓库相对路径、结构化质量 issue code 和修复要求的补齐提示。阶段总工具上限中的 4 次预留给质量修复；每次修复工具后立即重新门禁，失败时保留同轮尚未使用的额度，不会因为模型提前结束而搁浅。Story 质量修复会按顺序强制 `read_file`、`write_file`，Blocker 修复会按名称强制选择结构化工具，平台从字段生成唯一独立 sentinel 行、Status、H2 和 bullets。补齐不会重置工具/修复预算或延长绝对运行上限；被接受的模型响应、工具结果和门禁结果只会刷新连续无活动租约。仍不完整或不可审核才失败，并恢复本轮 selected output 的执行前状态；Implementation 的其他获准源码/测试变更（如有）仍保留在 Diff 中供复核。Session 会同步显示异步完成/失败、当前 execution 的工具步数、最近动作、“质量门禁未通过，正在自动修复”和必需工具重试；成功后直接出现产物 Diff 与审核动作，失败展示安全 artifact key、具体结构问题和精确回滚边界，不保存 Provider 原文或被拒绝的产物正文。
+
+Ollama Chat 无法强制 required/named tool choice，因此它若在修复提示后仍只回文字，平台会结束当前有界修复轮次，而不是不断续租到总超时；它调用了不同工具也不会误推进 Story 的 `read_file` → `write_file` 序列。
+
+Provider 不再要求改服务器 `.env`。持有本实例访问令牌的用户从任意页面页头点击 **模型设置**：OpenAI 只填写 model 和 API Key，固定使用官方地址；LM Studio、Ollama、Custom 再填写各自 endpoint。点击 **保存、测试并启用** 后即可在对话中选择，不需要重启 API；检查失败时草稿会保留，但不会误启用或回退到别的 Provider。
+
+这四个槽位是整个单人实例共享的能力，项目只保存默认选择。Provider Profile 和 Secret 由 API 写入 Managed Workspace Root 内的加密 Vault；浏览器保存后只能看到是否已有凭据和 endpoint 的 Host 摘要，不能取回 API Key 或完整 endpoint。Secret 输入框永远为空：留空表示保留，勾选清除才会删除。Vault 主密钥与密文分文件保存，二者都要和 PostgreSQL、Managed Root 一起纳入受限备份；丢失其中任意一个都不会自动降级成明文或空配置。
+
+### 四种 Provider 怎么填
+
+| Provider | 协议 | 常见 endpoint | 说明 |
+|---|---|---|---|
+| OpenAI | [OpenAI Responses](https://developers.openai.com/api/reference/cli/resources/responses/methods/create) | 固定 `https://api.openai.com/v1` | 不能改成代理或兼容服务，避免把别的服务误记为 OpenAI；这类地址请用 Custom。选中的仓库片段会发给 OpenAI；默认模型 [`gpt-5.6-terra`](https://developers.openai.com/api/docs/models/gpt-5.6-terra) 的官方能力表包含 Responses、Function calling 与 Structured outputs。 |
+| LM Studio | [OpenAI-compatible Chat Completions](https://lmstudio.ai/docs/developer/openai-compat/chat-completions) + [`response_format.json_schema`](https://lmstudio.ai/docs/developer/openai-compat/structured-output) | `http://host.docker.internal:1234/v1` | 平台固定使用 `POST /v1/chat/completions`，不要求用户再选协议。先在 LM Studio 加载模型；只有 API 确实运行在同一受信任 Host 时才开启不安全 HTTP。 |
+| Ollama | Ollama Chat | `http://host.docker.internal:11434` | 模型须提前存在；平台不会自动 pull，也不会替换模型。 |
+| Custom | OpenAI Responses、OpenAI Chat 或 Ollama Chat | 你的兼容服务地址 | 只兼容所选协议，不声称兼容任意私有请求格式。 |
+
+页面里的可编辑 endpoint 是 **API 服务器去访问的地址**。Compose 中的 `127.0.0.1` 指 API 容器本身；访问 Docker Host 上的 LM Studio 或 Ollama 通常应填 `host.docker.internal`。OpenAI 槽固定官方 HTTPS origin；代理和兼容服务必须使用 Custom。其他远端服务也必须使用 HTTPS，只应为你控制的本机服务开启 HTTP。URL 中的账号密码、query、fragment 和高风险保留地址会被拒绝。
+
+LM Studio 中可以加载 `openai/gpt-oss-20b`，然后在页面把模型名称原样填写为 `openai/gpt-oss-20b`。平台会用固定的小型 JSON Schema 请求做真实检查；只有当前 LM Studio 版本、推理运行时和已加载模型确实按所需格式回答时才会启用，因此这里不承诺所有 LM Studio 版本或所有模型都兼容。兼容性探针保持 60 秒快速失败，实际 Chat-first/Agent 单次模型调用允许 180 秒。阶段 Runtime 只有连续 4 分钟没有新的模型响应、工具结果或门禁结果时才判定 idle timeout；持续活动可以续租，但永远不能越过非 Implementation 30 分钟、Implementation 45 分钟的绝对上限，也不能重置工具、修复、输出或上下文预算。这样本地大模型持续有效工作时不会被旧的 6 分钟整轮硬切误杀，同时仍不会无限运行。如果仍提示 JSON 格式错误，先确认模型已在 LM Studio 中加载，再把 LM Studio 和它的推理运行时升级到当前稳定版本；仍不通过时换用支持结构化 JSON 的模型，然后回到页面重新点击 **保存、测试并启用**。协议由平台自动处理，不需要修改。
+
+从早期版本升级时，API 会把 LM Studio 槽中旧的 Responses 配置一次性迁移到 Chat Completions。原 endpoint、模型、密钥和工具调用选择会保留，但旧检查会失效，Provider 会安全地保持停用；打开 **模型设置** 重新测试并启用即可，不需要重填密钥、修改 `.env` 或重启项目 Sandbox。
+
+“支持结构化输出”和“支持工具调用”是对当前 endpoint + model 的能力声明，不是让模型凭空获得能力。保存时平台先做连接检查，只发送一个不含仓库或聊天内容的小型兼容性请求；声明工具调用时还要通过只解析、不执行的原生 tool-call 探针。只有当前配置版本检查通过后才能启用。OpenAI Responses 通常支持原生工具；LM Studio、Ollama 和 Custom 是否支持取决于具体版本和模型。格式错误、多重调用或普通文本伪装的调用都会在 MCP 执行前被拒绝。
+
+Use the check result as the next-action guide:
+
+| State | What it means | What to do |
+|---|---|---|
+| `ready` | The endpoint answered the required small JSON check and reported the actual model. | Ask a repository question. |
+| `not_configured` | 必填项未保存，或配置已被清除。 | 在同一张 Provider 卡片补齐并重新保存。 |
+| `authentication_failed` | endpoint 拒绝了保存的凭据。 | 在卡片中输入新 API Key 并重新检查；旧 Key 不会回显。 |
+| `unreachable` | The endpoint timed out, refused the connection, returned a server error, or rate-limited the check. | Confirm the service is running, its port is reachable from the API process, and its request limit has recovered. |
+| `model_unavailable` | 配置的模型不存在或尚未加载。 | 把 endpoint 的精确模型 ID 填到页面，并在模型服务侧加载或创建。平台不会自动 pull。 |
+| `protocol_error` | The URL or selected protocol does not match the response shape Ask requires. | Check the base path (`/v1` where applicable), custom protocol, structured-output flag, and endpoint documentation. |
+
+检查结果必须是 `ready` 才能启用。日常操作都在 **模型设置** 完成；API 仍提供经过部署令牌保护的 `GET /api/ask/provider-configurations`、`PUT /api/ask/provider-configurations/:providerId`、`POST /api/ask/provider-configurations/:providerId/check` 和 `PATCH /api/ask/provider-configurations/:providerId/enabled`，分别用于读取脱敏配置、保存、检查和启停。所有公开响应都只返回脱敏状态。
+
+Cloud Agent Session 保存在 PostgreSQL，并固定主 Project 与 raw Git source revision。浏览器只提交新消息、客户端幂等 ID、预期 sequence 和可选的下一轮 Provider，不提交权威 history；服务端从数据库恢复受限上下文。Session 明细直接返回持久化 `agent_session_runs` 投影，Web 用它恢复关联 Run，只有旧响应才回退到事件推断。项目同步后，旧 Session 继续使用旧 revision，不会静默切换源码。
+
+一个 Session 只有主仓库可写。消息里明确提到的额外 `@repo` 会按服务端 alias 绑定成只读仓并固定自己的 exact revision；平台只把经过校验、受大小限制的语言、入口、文档、测试、构建和关键路径 Manifest 交给 Planner，并写进不可变 Change Contract，供六角色看到同一份参考。附加仓不会暴露给 Provider-native 文件工具，也不会挂载给兼容 Worker；不传整仓源码正文，也不能获得写权限。每轮最多引用 4 个附加仓；需要新增或替换 Run 的仓库上下文时，应新建 Agent Session。
+
+`involve Architect`、`involve Tester` 之类的文字只是关注点：流程到该角色自己的阶段时重点处理。它不能跳过 PM/BA，也不能阻塞当前角色；六角色始终按 PM/BA → Designer → Architect → Software Engineer → Tester → DevOps 运行并保留产物。
+
+一个 Session 的首个工作任务会建立持久 Sandbox，并让该 Session 的 Run 直接复用同一 Workspace。显式“继续当前 Run”仍可沿用它；产物审核后的正常推进则直接调用 Session-scoped advance API，以 Run 归属、`expectedPhaseId` 和本次 `providerId` 确定性启动下一角色，不合成聊天消息，也不重新跑 Planner。Provider 暂不可执行时 Review 仍会保存，状态卡提示切换 Provider 后继续。Run 完成后，这条 Session 关联成为只读审计边界：仍可查看 Artifact、Review、事件、Changeset 和 Patch，但不能再人工改 revision、记录 Review/决定、审核 E2E script、重试或推进。另一项工作应创建新 Session，平台不会悄悄把两个 Run 混进一个可写 Sandbox。旧的独立 Ask Thread / Run API 仍作为兼容和高级入口保留，其 standalone 语义不变。
+
+独立 Run 的 execution dialog 仍读取项目范围 Codex model catalog，并记录该兼容路径每次真实阶段执行选择的模型与 reasoning effort。Chat-first 状态卡使用当前会话 Provider，不展示第二套 Codex 选择。可选 Codex allowlist 与默认值见 [runtime contract](docs/runtime-contract.md)。
+
+## Legacy local 兼容
+
+旧数据和 `sourceKind: legacy-local` 请求仍可使用原有本地目录 Definition 与 Host runner，方便已有安装逐步迁移。Cloud Web 不再提供本地绝对路径、initialize 或 Agent Client 表单。Legacy real runner 没有远程 Docker Worker 的隔离保证，不能用于不可信仓库，也不应暴露成公共服务。
+
+## Cloud Verification 的范围
+
+Chat-first Provider-native 阶段当前没有注入 check Runner，因此 Cloud Tester 只能审阅仓库现有测试、代码变化和上游证据，不能声称已经执行测试命令或浏览器套件；验收需要运行证据时必须明确 Pending / Blocked。旧的独立 Run/Codex 路径仍可在受限 Worker 中执行仓库已有且符合运行合同的检查，但不会要求用户再绑定本地 E2E 目录，也不会冒充已经完成独立浏览器安装和完整证据晋升。
+
+带第二个本地 Workspace、staging author、人工脚本哈希审核和独立 Playwright 执行的完整 Linked E2E 流程只属于 `legacy-local`。具体边界见 [runtime contract](docs/runtime-contract.md)。
+
+## 独立 Run/Codex 的 Fake 与 real jobs
+
+下面配置只控制旧的独立 Run/Codex 兼容路径；Chat-first Provider-native 阶段始终记录实际 Provider/model，不会因 `AI_SDLC_CODEX_FAKE=1` 变成假 Provider 执行。
+
+Codex real execution is the default:
 
 ```dotenv
 AI_SDLC_CODEX_FAKE=0
@@ -82,24 +223,61 @@ AI_SDLC_CODEX_FAKE=0
 
 Use `AI_SDLC_CODEX_FAKE=1` for UI development, tests, and deterministic demonstrations. A fake execution proves only platform state handling; it is never evidence that a real Agent, test, or Release task succeeded.
 
+独立远程 Codex 阶段还要求两个显式条件：配置 `AI_SDLC_WORKER_IMAGE`，并把项目导入时保存的**完整、精确仓库 URL**列入 `AI_SDLC_REAL_EXECUTION_TRUSTED_REPOSITORIES`。Origin allowlist 只代表“允许拉取”，不是“允许 Codex 执行”；执行信任列表为空时一律拒绝。建议兼容 Worker 使用单独、低额度、可快速轮换的模型密钥。
+
+`AI_SDLC_MAX_CONCURRENT_PHASES` 默认是 `1`，而且只是当前 API 进程内的上限。MVP 没有耐久队列、暂停/取消或多 API 实例协调；超出并发时直接返回 429。不要用多个 API 副本共享同一个 Managed Root。
+
+`yarn test:docker-smoke` 是显式的 Tier-D 检查：它会真的启动配置的 Worker 镜像，验证 Worker 能读取只读 Control Pack、能写 Run Workspace、不能改 `.git` 或 Control，并且看不到 Docker socket。普通 CI 没有 Docker 时，该用例保持清楚的 Skip；发布环境应显式执行并通过。
+
 Before running real jobs, review the [runtime contract](docs/runtime-contract.md) and [security model](docs/security-model.md). The runtime contract explains selected outputs, human revisions, Architecture checkpoints, E2E staging and promotion, Release readiness, and direct-IDE versus Web guarantees.
 
 ## Architecture at a glance
 
 ```text
-apps/web        browser UI (Vite, port 5174)
-    |
-    v
-apps/api        project registry, workflow coordination, and local runner (port 4100)
-    | \
-    |  +------> allowed local project roots
-    v
-PostgreSQL      Run, revision, review, and execution state (host port 54329)
-
-packages/contracts   shared API contracts and validation
+Browser → Web/Nginx → Fastify API（Bearer + exact CORS）
+                         ├─ PostgreSQL：Project / Agent Session / Run / Artifact / Review
+                         ├─ Git Broker：短时使用 Credential Profile 拉取 HTTPS 仓库
+                         ├─ Provider Registry：固定本轮 Provider / model / Secret 快照
+                         ├─ Provider-native Runtime：Chat-first 六阶段的有界历史与 rooted 文件工具
+                         ├─ Managed Root
+                         │    ├─ Project Snapshot：Repository Manifest / Ask / DeepWiki
+                         │    ├─ Session Sandbox：一个任务的持久 exact-revision Workspace
+                         │    ├─ Run：直接复用该 Session Sandbox，六角色共享代码状态
+                         │    └─ Control Pack：仓库外的固定六阶段 Prompt / Role / Template
+                         └─ Docker Worker：仅独立 Run/Codex 兼容路径按阶段启动
 ```
 
-The API is the application-level boundary for filesystem and command access; it is not an authentication or process-isolation boundary. Keep allowed roots narrow and retain explicit human review for consequential project changes.
+API 是可信协调层，不是租户隔离边界；Provider-native 文件操作发生在该信任域内，不是 microVM。兼容 Worker 不拿 Git Token、数据库凭据、平台 Token 或 Docker socket。最终输出是可审核 Changeset / Patch；外部写入仍由人或另一个明确授权系统完成。
+
+## DeepWiki、Prompt 与 Control Pack 的真实边界
+
+绑定仓库时只建立不花模型额度的 Repository Manifest：它针对一个 exact revision 确定性记录文件/语言规模、常见入口、文档、测试/构建线索和关键路径摘要。LLM DeepWiki 在绑定后由用户手工选择 Provider 生成；API 先把任务排入服务端后台，关闭设置弹窗或离开页面不会取消它。生成会按 Provider 控制源码片段、输入和输出预算，保存 revision、模型、引用和用量；格式偶发不完整时服务端只自动整理一次。失败会显示可重试原因，并继续保留上一份已发布版本。源码更新后，旧 LLM DeepWiki 会标记为 stale；旧 Session 和旧 Run 仍固定旧版本。
+
+这不是 DeepWiki 网站的完整复刻，也不是全仓向量搜索或可浏览语义图谱。它的目标是让 Agent 在不依赖仓库内 `CLAUDE.md` 的情况下，拿到可验证、版本固定的项目上下文。
+
+用户无需维护 `CLAUDE.md` 或一根超长 Prompt。Chat-first Provider-native 阶段把角色边界、当前流程、产物模板、Change Contract、已批准输入 manifest 和人工反馈分层组装，完整已批准输入通过受限文件读取；兼容 Codex Prompt 继续加入固定 revision 的 DeepWiki 线索。这里的承诺是“由平台管理、可追踪、分层有边界”，不是无限上下文：Provider-native 阶段合同与继承历史分别有严格字符预算，兼容 Codex 的复杂 Run 产物上下文预算最高约 180,000 字符。任何路径超过预算都会截断或拒绝。
+
+Project 和 Run 会 pin 创建时的 Control Pack `definitionVersion`。平台升级模板不会静默改变旧 Run，也不会自动改写已导入 Project；要采用新版本，应重新导入/登记 Project 并创建新 Run，先在非关键项目验证。MVP 没有 Control Pack 原地升级或自动迁移按钮。
+
+## 清理无引用 Workspace
+
+平台不会自动删除成功 Run Workspace，因为它仍是产物、Changeset 和 Patch 的交付证据。日常清理只处理达到年龄阈值、处于非活动状态、且没有被 Project 当前快照、Ask Thread 或 Run 引用的残留 Workspace。先 dry-run，并在单 API 实例空闲、没有导入/创建 Run/阶段执行等维护并发时操作：
+
+```bash
+curl -fsS -X POST \
+  -H "Authorization: Bearer $AI_SDLC_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"dryRun":true,"olderThanHours":24,"limit":100}' \
+  http://127.0.0.1:8080/api/operator/workspaces/prune
+
+curl -fsS -X POST \
+  -H "Authorization: Bearer $AI_SDLC_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"dryRun":false,"olderThanHours":24,"limit":100}' \
+  http://127.0.0.1:8080/api/operator/workspaces/prune
+```
+
+远程入口把 URL 改为 `https://sdlc.example.com/api/operator/workspaces/prune`；只有本地开发直连 API 时才使用 `http://127.0.0.1:4100`。`olderThanHours` 取 `0`～`8760`，`limit` 取 `1`～`500`；建议保留默认 `24` 小时和 `100` 条分批处理。确认 dry-run 的 `candidates` 后再正式执行，并检查 `removed`、`retained`、`failed` 与 `moreAvailable`。Ask/Run 引用会被再次检查并保留，但该接口不是多节点垃圾回收器，也不能替代 Managed Root 的容量监控和备份。
 
 ## Related documentation
 

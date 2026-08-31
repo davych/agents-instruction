@@ -22,6 +22,10 @@ test("lazy ticket synchronization promotes inherited stories to todo when Discov
   const client = {
     async query(sql: string, values?: unknown[]) {
       queries.push({ sql, values });
+      if (sql.includes("SELECT status FROM workflow_runs")) {
+        return { rows: [{ status: "active" }] };
+      }
+      if (sql.includes("FROM agent_session_runs")) return { rows: [] };
       return { rows: [] };
     },
     release() {
@@ -118,6 +122,58 @@ test("Design partial approval rejects an affected optional output that is still 
   assert.equal(harness.queries.at(-2)?.sql, "ROLLBACK");
 });
 
+test("completed Agent Session Run rejects phase impact inside the store transaction", async () => {
+  const sessionId = crypto.randomUUID();
+  const harness = phaseResolutionHarness("completed", sessionId);
+  const store = new PgWorkflowStore(harness.pool);
+
+  await assert.rejects(
+    () => store.applyPhaseResolution(harness.runId, harness.input),
+    (error: unknown) => (
+      (error as { code?: string }).code === "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE"
+      && (error as { details?: { sessionId?: string } }).details?.sessionId === sessionId
+    ),
+  );
+  assert.match(
+    harness.queries.find(({ sql }) => sql.includes("FROM phase_runs pr"))?.sql ?? "",
+    /LEFT JOIN agent_session_runs/u,
+  );
+  assert.equal(harness.queries.some(({ sql }) => sql.includes("INSERT INTO reviews")), false);
+  assert.equal(harness.queries.at(-2)?.sql, "ROLLBACK");
+});
+
+test("completed standalone Run keeps the existing phase impact behavior", async () => {
+  const harness = phaseResolutionHarness("completed", null);
+
+  const review = await new PgWorkflowStore(harness.pool).applyPhaseResolution(
+    harness.runId,
+    harness.input,
+  );
+
+  assert.equal(review.decision, "approve");
+  assert.ok(harness.queries.some(({ sql }) => sql.includes("INSERT INTO reviews")));
+  assert.equal(harness.queries.at(-2)?.sql, "COMMIT");
+});
+
+test("late Architecture skip supersedes failed output heads and unlocks the next phase", async () => {
+  const harness = lateArchitectureResolutionHarness();
+  const review = await new PgWorkflowStore(harness.pool).applyPhaseResolution(
+    harness.runId,
+    harness.input,
+  );
+
+  assert.equal(review.decision, "approve");
+  assert.ok(harness.queries.some((query) => (
+    query.sql.includes("UPDATE artifacts")
+    && query.sql.includes("review_status = 'superseded'")
+  )));
+  assert.ok(harness.queries.some((query) => (
+    query.sql.includes("UPDATE phase_runs")
+    && query.values?.[1] === "approved"
+  )));
+  assert.equal(harness.queries.at(-2)?.sql, "COMMIT");
+});
+
 function partialDesignHeads(includePrototype: boolean) {
   const executionId = crypto.randomUUID();
   const sourceBaselineId = ids.sourceBaseline;
@@ -191,7 +247,7 @@ function reviewHarness(heads: ReturnType<typeof partialDesignHeads>): {
   const client = {
     async query(sql: string, values?: unknown[]) {
       queries.push({ sql, values });
-      if (sql.includes("SELECT * FROM phase_runs")) {
+      if (sql.includes("FROM phase_runs pr")) {
         return {
           rows: [{
             id: phaseRunId,
@@ -234,5 +290,158 @@ function reviewHarness(heads: ReturnType<typeof partialDesignHeads>): {
         return client;
       },
     } as unknown as pg.Pool,
+  };
+}
+
+function phaseResolutionHarness(
+  workflowRunStatus: "active" | "completed",
+  agentSessionId: string | null,
+) {
+  const runId = crypto.randomUUID();
+  const phaseRunId = crypto.randomUUID();
+  const nextPhaseRunId = crypto.randomUUID();
+  const queries: CapturedQuery[] = [];
+  const resolution: PhaseResolutionDto = {
+    phaseId: "discovery",
+    mode: "direct",
+    rationale: "The accepted Change Contract is sufficient for this narrow technical change.",
+    inputArtifactIds: [],
+    sourceRunId: null,
+    sourceRunTitle: null,
+    sourcePhaseRunId: null,
+    sourceArtifactIds: [],
+    affectedOutputKeys: [],
+    routeVersion: PHASE_ROUTE_VERSION,
+    decidedAt: "2026-08-29T08:00:00.000Z",
+  };
+  const client = {
+    async query(sql: string, values?: unknown[]) {
+      queries.push({ sql, values });
+      if (sql.includes("FROM phase_runs pr") && sql.includes("pr.phase_id = $2")) {
+        return { rows: [{
+          id: phaseRunId,
+          workflow_run_id: runId,
+          phase_id: "discovery",
+          position: 0,
+          status: "ready",
+          phase_resolution: null,
+          architecture_impact: null,
+          project_id: crypto.randomUUID(),
+          workflow_run_status: workflowRunStatus,
+          agent_session_id: agentSessionId,
+        }] };
+      }
+      if (sql.includes("SELECT * FROM artifacts")) return { rows: [] };
+      if (sql.includes("SELECT id FROM executions")) return { rows: [] };
+      if (sql.includes("SELECT id FROM reviews")) return { rows: [] };
+      if (sql.includes("INSERT INTO reviews")) {
+        return { rows: [{
+          id: values?.[0],
+          phase_run_id: phaseRunId,
+          decision: values?.[2],
+          comment: values?.[3],
+          reviewed_artifact_ids: [],
+          created_at: new Date("2026-08-29T08:01:00.000Z"),
+        }] };
+      }
+      if (sql.includes("SELECT id, status FROM phase_runs")) {
+        return { rows: [{ id: nextPhaseRunId, status: "pending" }] };
+      }
+      return { rows: [] };
+    },
+    release() {
+      queries.push({ sql: "RELEASE" });
+    },
+  };
+  return {
+    runId,
+    input: {
+      resolution,
+      expectedBaselineArtifactIds: [],
+      targetArtifactPaths: {},
+    },
+    queries,
+    pool: { async connect() { return client; } } as unknown as pg.Pool,
+  };
+}
+
+function lateArchitectureResolutionHarness() {
+  const runId = crypto.randomUUID();
+  const phaseRunId = crypto.randomUUID();
+  const nextPhaseRunId = crypto.randomUUID();
+  const artifactId = crypto.randomUUID();
+  const inputArtifactId = crypto.randomUUID();
+  const queries: CapturedQuery[] = [];
+  const resolution: PhaseResolutionDto = {
+    phaseId: "architecture",
+    mode: "skip",
+    rationale: "Human confirmed the README-only change has no architecture impact.",
+    inputArtifactIds: [inputArtifactId],
+    sourceRunId: null,
+    sourceRunTitle: null,
+    sourcePhaseRunId: null,
+    sourceArtifactIds: [],
+    affectedOutputKeys: [],
+    routeVersion: PHASE_ROUTE_VERSION,
+    decidedAt: "2026-08-30T10:30:00.000Z",
+  };
+  const client = {
+    async query(sql: string, values?: unknown[]) {
+      queries.push({ sql, values });
+      if (sql.includes("FROM phase_runs pr") && sql.includes("pr.phase_id = $2")) {
+        return { rows: [{
+          id: phaseRunId,
+          workflow_run_id: runId,
+          phase_id: "architecture",
+          position: 2,
+          status: "failed",
+          phase_resolution: null,
+          architecture_impact: null,
+          project_id: crypto.randomUUID(),
+          workflow_run_status: "active",
+          agent_session_id: crypto.randomUUID(),
+        }] };
+      }
+      if (sql.includes("SELECT * FROM artifacts")) {
+        return { rows: [{ id: artifactId, artifact_key: "architecture" }] };
+      }
+      if (sql.includes("SELECT id, status FROM executions")) {
+        return { rows: [{ id: crypto.randomUUID(), status: "failed" }] };
+      }
+      if (sql.includes("SELECT id FROM reviews")) {
+        return { rows: [{ id: crypto.randomUUID() }] };
+      }
+      if (sql.includes("FROM artifacts a") && sql.includes("input_phase")) {
+        return { rows: [{ id: inputArtifactId }] };
+      }
+      if (sql.includes("INSERT INTO reviews")) {
+        return { rows: [{
+          id: values?.[0],
+          phase_run_id: phaseRunId,
+          decision: values?.[2],
+          comment: values?.[3],
+          reviewed_artifact_ids: [],
+          created_at: new Date("2026-08-30T10:31:00.000Z"),
+        }] };
+      }
+      if (sql.includes("SELECT id, status FROM phase_runs")) {
+        return { rows: [{ id: nextPhaseRunId, status: "pending" }] };
+      }
+      return { rows: [] };
+    },
+    release() {
+      queries.push({ sql: "RELEASE" });
+    },
+  };
+  return {
+    runId,
+    input: {
+      resolution,
+      expectedBaselineArtifactIds: [],
+      targetArtifactPaths: {},
+      allowStartedArchitectureSkip: true,
+    },
+    queries,
+    pool: { async connect() { return client; } } as unknown as pg.Pool,
   };
 }

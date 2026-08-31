@@ -74,3 +74,13 @@ This brief authorizes only the named local work. It is not a platform clearance,
 ## Human and machine language
 
 Use `project.locale` for explanatory prose. Keep artifact IDs, stable requirement/decision IDs, enum values, JSON/YAML keys, exact validator headings, selection markers, sentinels, hashes, and other machine-contract tokens canonical. If localized prose contradicts a machine token, stop and repair the contract instead of guessing.
+
+## Human-readable output contract
+
+Every phase writes for a human reviewer first, while preserving the exact template and machine fields:
+
+1. Start with the conclusion, current status, and the next human action. Do not make the reviewer search through background material to learn whether the work is ready or blocked.
+2. Use short paragraphs, concrete verbs, and the project's ordinary words. Explain an unavoidable specialist term in one plain sentence the first time it appears.
+3. Separate confirmed facts, recommendations, risks, and unknowns. Never hide an unknown behind confident or abstract language.
+4. Prefer a small table only when it makes a comparison or traceability map easier to scan. Do not repeat the same point in several sections merely to make the artifact longer.
+5. Keep canonical headings, IDs, hashes, paths, commands, thresholds, and evidence rows exact. Plain language improves the explanation; it never weakens a gate or removes required evidence.

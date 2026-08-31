@@ -1,14 +1,14 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
   Bot,
-  CheckCircle2,
-  FolderGit2,
-  FolderPlus,
-  GitBranch,
+  ChevronDown,
+  Cloud,
+  KeyRound,
+  LoaderCircle,
+  MessageSquareText,
   Plus,
-  Sparkles,
 } from "lucide-react";
 
 import { EmptyState, ErrorState, Field, PageSkeleton } from "@/components/states";
@@ -17,38 +17,40 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import type { CreateProjectInput, Project } from "@/lib/types";
-import { cn, formatDate, initials, truncate } from "@/lib/utils";
+import {
+  parseRemoteRepositoryUrl,
+  projectRepositoryLabel,
+  projectStatusLabel,
+  projectStatusVariant,
+  shortRevision,
+} from "@/lib/cloud-project";
+import type { BindRemoteRepositoryInput, Project, RepositoryBindingResult } from "@/lib/types";
+import { formatDate, initials, truncate } from "@/lib/utils";
 
-const AGENT_CLIENT_OPTIONS = [
-  {
-    id: "codex",
-    label: "Codex",
-    description: "生成适合 Codex CLI 与 IDE 客户端读取的项目入口。",
-  },
-  {
-    id: "claude",
-    label: "Claude Code",
-    description: "生成适合 Claude Code 读取的项目入口。",
-  },
-  {
-    id: "copilot",
-    label: "GitHub Copilot",
-    description: "生成适合 GitHub Copilot 读取的项目入口。",
-  },
-] as const satisfies ReadonlyArray<{
-  id: NonNullable<CreateProjectInput["agentClient"]>;
-  label: string;
-  description: string;
-}>;
+// The compatibility API still calls this sourceKind: "remote-git". The
+// default browser journey sends only the binding contract below.
+const EMPTY_PROJECT: BindRemoteRepositoryInput = {
+  repositoryUrl: "",
+};
 
-export function ProjectsPage({ onSelectProject }: { onSelectProject: (id: string) => void }) {
+export function ProjectsPage({
+  onOpenWorkspace,
+}: {
+  onOpenWorkspace: (projectId: string, sessionId?: string) => void;
+}) {
   const [createOpen, setCreateOpen] = useState(false);
   const projectsQuery = useQuery({
     queryKey: ["projects"],
     queryFn: api.listProjects,
+    refetchInterval: (query) => {
+      const projects = query.state.data;
+      return projects?.some((project) =>
+        project.repository?.operation?.state === "queued" ||
+        project.repository?.operation?.state === "running" ||
+        project.knowledge?.status === "indexing"
+      ) ? 1_500 : false;
+    },
   });
 
   if (projectsQuery.isLoading) return <PageSkeleton />;
@@ -57,47 +59,36 @@ export function ProjectsPage({ onSelectProject }: { onSelectProject: (id: string
   }
 
   const projects = projectsQuery.data ?? [];
-  const initialized = projects.filter((project) => project.initialized !== false).length;
-  const workflows = projects.reduce((total, project) => total + (project.runCount ?? 0), 0);
-
   return (
-    <div className="space-y-9 animate-fade-up">
-      <section className="grid items-end gap-6 xl:grid-cols-[minmax(0,1fr)_auto]">
+    <div className="space-y-8 animate-fade-up">
+      <section className="grid items-center gap-6 rounded-3xl border border-slate-200/80 bg-white/80 p-6 shadow-sm backdrop-blur-sm sm:p-8 xl:grid-cols-[minmax(0,1fr)_auto]">
         <div>
-          <Badge variant="success" className="mb-4">
-            <Sparkles className="h-3 w-3" aria-hidden />
-            Local-first AI delivery
-          </Badge>
+          <Badge variant="success" className="mb-3">Cloud Agent workspace</Badge>
           <h1 tabIndex={-1} className="max-w-3xl text-balance text-3xl font-bold tracking-[-0.035em] text-slate-950 focus:outline-none sm:text-4xl">
-            把每一次 AI 交付，变成
-            <span className="text-teal-600"> 看得见的工作流</span>
+            绑定仓库，然后直接和 Agent 对话
           </h1>
-          <p className="mt-4 max-w-2xl text-base leading-7 text-slate-600">
-            创建一个本地项目，从 PM / BA 开始。每个角色执行、每份产物与每次人工审核都会留在同一条交付链路里。
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
+            仓库通过 <span className="font-mono font-semibold text-teal-700">@repo</span> 加入会话。需要干活时，Agent 会启动隔离沙盒，并在后台串联 SDLC 角色与产物。
           </p>
         </div>
         <Button size="lg" variant="primary" onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" aria-hidden />
-          创建项目
+          绑定仓库
         </Button>
-      </section>
-
-      <section className="grid gap-3 sm:grid-cols-3" aria-label="项目概览">
-        <Metric label="本地项目" value={projects.length} icon={<FolderGit2 />} />
-        <Metric label="已初始化" value={initialized} icon={<CheckCircle2 />} />
-        <Metric label="故事工作流" value={workflows} icon={<GitBranch />} />
       </section>
 
       <section>
         <div className="mb-4 flex items-center justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold tracking-tight text-slate-950">你的项目</h2>
-            <p className="mt-1 text-sm text-slate-500">项目文件保留在所选本地目录；真实 Codex 执行会把完成任务所需的上下文发送给已配置的模型服务。</p>
+            <h2 className="text-lg font-semibold tracking-tight text-slate-950">Repositories</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              选择一个仓库，继续最近的 Agent Session。
+            </p>
           </div>
           {projects.length ? (
             <Button variant="outline" size="sm" onClick={() => setCreateOpen(true)}>
-              <FolderPlus className="h-4 w-4" aria-hidden />
-              新项目
+              <Cloud className="h-4 w-4" aria-hidden />
+              绑定另一个仓库
             </Button>
           ) : null}
         </div>
@@ -109,18 +100,18 @@ export function ProjectsPage({ onSelectProject }: { onSelectProject: (id: string
                 key={project.id}
                 project={project}
                 index={index}
-                onSelect={() => onSelectProject(project.id)}
+                onSelect={() => onOpenWorkspace(project.id)}
               />
             ))}
           </div>
         ) : (
           <EmptyState
-            title="还没有项目"
-            description="选择一个已有代码目录，平台会读取现有 AI SDLC 配置；也可以让平台初始化一个新项目。"
+            title="还没有绑定仓库"
+            description="提供一个 Git HTTPS 地址。绑定完成后会直接进入对话工作台。"
             action={
               <Button variant="primary" onClick={() => setCreateOpen(true)}>
                 <Plus className="h-4 w-4" aria-hidden />
-                创建第一个项目
+                绑定第一个仓库
               </Button>
             }
           />
@@ -130,25 +121,9 @@ export function ProjectsPage({ onSelectProject }: { onSelectProject: (id: string
       <CreateProjectDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        onCreated={(project) => onSelectProject(project.id)}
+        onCreated={({ project, session }) => onOpenWorkspace(project.id, session.id)}
       />
     </div>
-  );
-}
-
-function Metric({ label, value, icon }: { label: string; value: number; icon: React.ReactNode }) {
-  return (
-    <Card className="border-white/80 bg-white/70 shadow-none backdrop-blur-sm">
-      <CardContent className="flex items-center gap-4 p-4">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-500 [&>svg]:h-[18px] [&>svg]:w-[18px]">
-          {icon}
-        </span>
-        <div>
-          <div className="text-xl font-bold tracking-tight text-slate-950">{value}</div>
-          <div className="text-xs font-medium text-slate-500">{label}</div>
-        </div>
-      </CardContent>
-    </Card>
   );
 }
 
@@ -161,7 +136,8 @@ function ProjectCard({
   onSelect: () => void;
   index: number;
 }) {
-  const rootPath = project.rootPath || project.workspacePath || "未设置目录";
+  const operation = project.repository?.operation;
+  const inProgress = operation?.state === "queued" || operation?.state === "running";
   return (
     <Card
       className="group overflow-hidden transition duration-300 hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-panel"
@@ -173,34 +149,44 @@ function ProjectCard({
             <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-slate-950 text-sm font-bold text-white shadow-sm">
               {initials(project.name) || <Bot className="h-5 w-5" />}
             </span>
-            <Badge variant={project.initialized === false ? "warning" : "success"}>
-              {project.initialized === false ? "待初始化" : "已就绪"}
+            <Badge variant={projectStatusVariant(project)}>
+              {inProgress ? <LoaderCircle className="h-3 w-3 animate-spin" aria-hidden /> : null}
+              {projectStatusLabel(project)}
             </Badge>
           </div>
           <h3 className="mt-3 text-lg font-semibold tracking-tight text-slate-950 transition group-hover:text-teal-700">
             {project.name}
           </h3>
           <p className="min-h-12 text-sm leading-6 text-slate-500">
-            {truncate(project.summary, 92) || "还没有项目摘要。"}
+            {truncate(project.summary, 92) || "准备好后，可在一个对话里读代码、启动沙盒和发起 SDLC。"}
           </p>
         </CardHeader>
         <CardContent>
           <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
-            <div className="truncate font-mono text-[11px] text-slate-500" title={rootPath}>
-              {rootPath}
+            <div className="truncate text-xs font-medium text-slate-600" title={project.repository?.url}>
+              {projectRepositoryLabel(project)}
+            </div>
+            <div className="mt-1 truncate font-mono text-[11px] text-slate-400">
+              revision {shortRevision(project.repository?.activeSnapshot?.revision)}
             </div>
           </div>
+          {operation ? (
+            <p className="mt-3 line-clamp-2 text-xs leading-5 text-slate-500" role={inProgress ? "status" : "alert"}>
+              {operation.message} · {operation.progress}%
+            </p>
+          ) : null}
           <div className="mt-4 flex items-center justify-between text-xs text-slate-400">
-            <span>{project.runCount ?? 0} 条工作流</span>
+            <span className="flex items-center gap-1.5">
+              <MessageSquareText className="h-3.5 w-3.5" aria-hidden />
+              Agent Session
+            </span>
             <span className="flex items-center gap-1 font-medium text-slate-600 transition group-hover:gap-2 group-hover:text-teal-700">
-              打开项目 <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+              打开对话 <ArrowRight className="h-3.5 w-3.5" aria-hidden />
             </span>
           </div>
-          {project.updatedAt || project.createdAt ? (
-            <div className="mt-2 text-[11px] text-slate-400">
-              更新于 {formatDate(project.updatedAt || project.createdAt)}
-            </div>
-          ) : null}
+          <div className="mt-2 text-[11px] text-slate-400">
+            更新于 {formatDate(project.updatedAt || project.createdAt)}
+          </div>
         </CardContent>
       </button>
     </Card>
@@ -214,55 +200,56 @@ function CreateProjectDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreated: (project: Project) => void;
+  onCreated: (result: RepositoryBindingResult) => void;
 }) {
   const queryClient = useQueryClient();
-  const [form, setForm] = useState<CreateProjectInput>({
-    name: "",
-    summary: "",
-    rootPath: "",
-    initialize: false,
-    agentClient: "codex",
-  });
+  const [form, setForm] = useState<BindRemoteRepositoryInput>(EMPTY_PROJECT);
   const [error, setError] = useState<string>();
   const createControllerRef = useRef<AbortController>();
+  const parsedRepository = useMemo(
+    () => parseRemoteRepositoryUrl(form.repositoryUrl),
+    [form.repositoryUrl],
+  );
+  const credentialsQuery = useQuery({
+    queryKey: ["repository-credentials", parsedRepository?.host],
+    queryFn: ({ signal }) => api.listRepositoryCredentials(parsedRepository?.host, { signal }),
+    enabled: open && Boolean(parsedRepository?.host),
+    staleTime: 30_000,
+    retry: false,
+  });
+
   useEffect(() => () => {
-    createControllerRef.current?.abort(new DOMException("项目创建界面已卸载", "AbortError"));
+    createControllerRef.current?.abort(new DOMException("仓库导入界面已卸载", "AbortError"));
   }, []);
+
   const mutation = useMutation({
-    mutationFn: async (input: CreateProjectInput) => {
+    mutationFn: async (input: BindRemoteRepositoryInput) => {
       const controller = new AbortController();
       createControllerRef.current = controller;
       try {
-        const project = await api.createProject(input, { signal: controller.signal });
+        const result = await api.bindRemoteRepository(input, { signal: controller.signal });
         controller.signal.throwIfAborted();
-        return project;
+        return result;
       } finally {
         if (createControllerRef.current === controller) createControllerRef.current = undefined;
       }
     },
-    onSuccess: async (project) => {
+    onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
-      setForm({
-        name: "",
-        summary: "",
-        rootPath: "",
-        initialize: false,
-        agentClient: "codex",
-      });
+      setForm(EMPTY_PROJECT);
       setError(undefined);
       onOpenChange(false);
-      onCreated(project);
+      onCreated(result);
     },
     onError: (mutationError) => {
       if (mutationError instanceof Error && mutationError.name === "AbortError") return;
-      setError(mutationError instanceof Error ? mutationError.message : "创建项目失败");
+      setError(mutationError instanceof Error ? mutationError.message : "导入仓库失败");
     },
   });
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen && mutation.isPending) {
-      createControllerRef.current?.abort(new DOMException("用户取消项目创建", "AbortError"));
+      createControllerRef.current?.abort(new DOMException("用户关闭仓库导入请求", "AbortError"));
       mutation.reset();
     }
     onOpenChange(nextOpen);
@@ -271,15 +258,14 @@ function CreateProjectDialog({
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setError(undefined);
-    if (!form.name.trim() || !form.rootPath.trim()) {
-      setError("请填写项目名称和本地目录。 ");
+    if (!parsedRepository) {
+      setError("请填写不含账号、查询参数或锚点的 Git HTTPS 仓库地址。");
       return;
     }
     mutation.mutate({
-      ...form,
-      name: form.name.trim(),
-      summary: form.summary.trim(),
-      rootPath: form.rootPath.trim(),
+      repositoryUrl: parsedRepository.url,
+      ...(form.requestedRef?.trim() ? { requestedRef: form.requestedRef.trim() } : {}),
+      ...(form.credentialProfileId ? { credentialProfileId: form.credentialProfileId } : {}),
     });
   };
 
@@ -287,105 +273,91 @@ function CreateProjectDialog({
     <Dialog
       open={open}
       onOpenChange={handleOpenChange}
-      title="创建本地项目"
-      description="连接已有目录，或选择在该目录中初始化现有 AI SDLC 模板。"
+      title="绑定 Git 仓库"
+      description="选择仓库和授权即可。平台会固定源码版本，随后直接进入 Agent 对话。"
     >
       <form onSubmit={submit} className="overflow-y-auto p-6">
         <div className="space-y-5">
-          <Field label="项目名称" required>
+          <Field label="Git HTTPS 仓库地址" required>
             <Input
               autoFocus
-              placeholder="例如：Acme 客户门户"
-              value={form.name}
-              onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-            />
-          </Field>
-          <Field label="项目目标">
-            <Textarea
-              className="min-h-24"
-              placeholder="这个项目服务谁，要解决什么问题？"
-              value={form.summary}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, summary: event.target.value }))
-              }
-            />
-          </Field>
-          <Field label="本地代码目录" hint="绝对路径" required>
-            <Input
               className="font-mono text-xs"
-              placeholder="/Users/you/workspace/my-product"
-              value={form.rootPath}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, rootPath: event.target.value }))
-              }
-            />
-          </Field>
-          <label
-            className="flex w-full cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-left transition hover:border-slate-300 focus-within:ring-2 focus-within:ring-teal-500 focus-within:ring-offset-2"
-          >
-            <input
-              type="checkbox"
-              checked={form.initialize}
-              className="mt-0.5 h-4 w-4 shrink-0 accent-teal-600"
+              inputMode="url"
+              placeholder="https://git.example.com/team/product.git"
+              value={form.repositoryUrl}
               onChange={(event) => setForm((current) => ({
                 ...current,
-                initialize: event.target.checked,
+                repositoryUrl: event.target.value,
+                credentialProfileId: undefined,
               }))}
             />
-            <span>
-              <span className="block text-sm font-semibold text-slate-800">初始化 AI SDLC</span>
-              <span className="mt-1 block text-xs leading-5 text-slate-500">
-                仅在目录尚未安装时启用。已有配置会被直接读取，不会改变原有初始化行为。
-              </span>
-            </span>
-          </label>
-          {form.initialize ? (
-            <fieldset className="space-y-2">
-              <legend className="text-sm font-medium text-slate-700">智能体客户端</legend>
-              <p className="text-xs leading-5 text-slate-500">
-                选择初始化时生成的原生入口；标准角色定义与六阶段工作流保持一致。
+            {form.repositoryUrl && !parsedRepository ? (
+              <p className="mt-1.5 text-xs text-rose-600">
+                MVP 只接受安全的 HTTPS 地址；凭据请通过下方 Profile 选择。
               </p>
-              <div className="grid gap-2 sm:grid-cols-3">
-                {AGENT_CLIENT_OPTIONS.map((option) => {
-                  const selected = (form.agentClient ?? "codex") === option.id;
-                  return (
-                    <label
-                      key={option.id}
-                      className={cn(
-                        "cursor-pointer rounded-xl border p-3 text-left transition focus-within:ring-2 focus-within:ring-teal-500 focus-within:ring-offset-2",
-                        selected
-                          ? "border-teal-500 bg-teal-50 text-teal-950"
-                          : "border-slate-200 bg-white text-slate-700 hover:border-slate-300",
-                      )}
-                    >
-                      <input
-                        type="radio"
-                        name="agent-client"
-                        value={option.id}
-                        checked={selected}
-                        className="sr-only"
-                        onChange={() => setForm((current) => ({
-                          ...current,
-                          agentClient: option.id,
-                        }))}
-                      />
-                      <span className="block text-sm font-semibold">{option.label}</span>
-                      <span className="mt-1 block text-[11px] leading-4 text-slate-500">
-                        {option.description}
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            </fieldset>
-          ) : null}
+            ) : null}
+          </Field>
+
+          <Field label="仓库授权" hint="公共仓库可留空">
+            <select
+              aria-label="仓库凭据 Profile"
+              className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 pr-8 text-sm text-slate-800 outline-none focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 disabled:bg-slate-50"
+              value={form.credentialProfileId ?? ""}
+              disabled={!parsedRepository || credentialsQuery.isLoading}
+              onChange={(event) => setForm((current) => ({
+                ...current,
+                credentialProfileId: event.target.value || undefined,
+              }))}
+            >
+              <option value="">公开仓库，不使用授权</option>
+              {(credentialsQuery.data ?? []).filter((profile) => profile.available).map((profile) => (
+                <option key={profile.id} value={profile.id}>{profile.label}</option>
+              ))}
+            </select>
+            {credentialsQuery.isError ? (
+              <p className="mt-1.5 text-xs text-amber-700">
+                暂时无法读取授权 Profile；仍可绑定公开仓库。
+              </p>
+            ) : null}
+          </Field>
+
+          <details className="group rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-slate-700">
+              高级设置
+              <ChevronDown className="h-4 w-4 transition group-open:rotate-180" aria-hidden />
+            </summary>
+            <div className="mt-4 border-t border-slate-200 pt-4">
+              <Field label="分支、Tag 或 Commit" hint="留空使用远程默认分支">
+                <Input
+                  className="font-mono text-xs"
+                  placeholder="HEAD"
+                  value={form.requestedRef ?? ""}
+                  onChange={(event) => setForm((current) => ({
+                    ...current,
+                    requestedRef: event.target.value,
+                  }))}
+                />
+              </Field>
+            </div>
+          </details>
+
+          <div className="rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-xs leading-5 text-sky-800">
+            <div className="flex items-center gap-2 font-semibold">
+              <KeyRound className="h-3.5 w-3.5" aria-hidden />
+              浏览器不会接收 Git 密钥
+            </div>
+            <p className="mt-1">
+              私有仓库只能引用服务端已配置的授权 Profile。浏览器不会得到 Token，绑定也不会推送代码或创建 PR。
+            </p>
+          </div>
+
           {error ? (
             <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-700">
               {error}
             </div>
           ) : null}
           <p className="text-xs leading-5 text-slate-500">
-            若取消或断线恰逢文件或数据库提交，已提交结果不会被反向删除；请刷新项目列表确认状态后再重试。
+            绑定后会直接打开工作台。仓库准备期间可以留在对话页等待。
           </p>
         </div>
         <div className="mt-7 flex justify-end gap-3 border-t border-slate-100 pt-5">
@@ -393,7 +365,7 @@ function CreateProjectDialog({
             取消
           </Button>
           <Button type="submit" variant="primary" loading={mutation.isPending}>
-            创建并打开
+            绑定并打开对话
             <ArrowRight className="h-4 w-4" aria-hidden />
           </Button>
         </div>

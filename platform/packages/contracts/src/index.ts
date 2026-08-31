@@ -43,17 +43,794 @@ export type UpdateTicketStatusInput = z.infer<typeof updateTicketStatusSchema>;
 export const agentClientSchema = z.enum(["codex", "claude", "copilot"]);
 export type AgentClient = z.infer<typeof agentClientSchema>;
 
-export const createProjectSchema = z.object({
-  name: z.string().trim().min(1).max(160).regex(/^[^\r\n]+$/u, "项目名称不能换行"),
-  summary: z.string().trim().max(2_000).default("由 AI SDLC 平台管理的项目"),
+const projectNameSchema = z.string().trim().min(1).max(160)
+  .regex(/^[^\r\n]+$/u, "项目名称不能换行");
+const projectSummarySchema = z.string().trim().max(2_000)
+  .default("由 AI SDLC 平台管理的项目");
+
+export const gitRevisionSchema = z.string()
+  .regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u, "Git revision 必须是完整的 SHA-1 或 SHA-256 object id");
+export type GitRevision = z.infer<typeof gitRevisionSchema>;
+
+export const repositoryRefSchema = z.string()
+  .trim()
+  .min(1)
+  .max(255)
+  .superRefine((value, context) => {
+    const invalid = value !== "HEAD" && (
+      /^[.-]/u.test(value)
+      || value.endsWith("/")
+      || value.endsWith(".")
+      || value.includes("..")
+      || value.includes("@{")
+      || value === "@"
+      || value.includes("//")
+      || /[\u0000-\u0020\u007f~^:?*\\\[]/u.test(value)
+      || value.split("/").some((component) => (
+        component === ""
+        || component.startsWith(".")
+        || component.endsWith(".")
+        || component.endsWith(".lock")
+      ))
+    );
+    if (invalid) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Git ref 格式不安全",
+      });
+    }
+  });
+export type RepositoryRef = z.infer<typeof repositoryRefSchema>;
+
+export const repositoryUrlSchema = z.string()
+  .trim()
+  .min(1)
+  .max(2_048)
+  .superRefine((value, context) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(value);
+    } catch {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "仓库地址不是有效 URL" });
+      return;
+    }
+    if (parsed.protocol !== "https:") {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "仓库地址只允许 HTTPS" });
+    }
+    if (parsed.username || parsed.password) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "仓库地址不能包含用户名或凭据" });
+    }
+    if (parsed.search || parsed.hash) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "仓库地址不能包含 query 或 fragment" });
+    }
+    if (!parsed.hostname || /[\u0000-\u001f\u007f]/u.test(value)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "仓库地址 host 无效" });
+    }
+  });
+export type RepositoryUrl = z.infer<typeof repositoryUrlSchema>;
+
+export const credentialProfileIdSchema = z.string()
+  .trim()
+  .min(1)
+  .max(80)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u, "Credential Profile ID 格式无效");
+export type CredentialProfileId = z.infer<typeof credentialProfileIdSchema>;
+
+export const legacyCreateProjectSchema = z.object({
+  sourceKind: z.literal("legacy-local").optional(),
+  name: projectNameSchema,
+  summary: projectSummarySchema,
   rootPath: z.string().trim().min(1),
   initialize: z.boolean().default(false),
   agentClient: agentClientSchema.default("codex")
-});
+}).strict();
+export type LegacyCreateProjectInput = z.infer<typeof legacyCreateProjectSchema>;
+
+export const remoteGitCreateProjectSchema = z.object({
+  sourceKind: z.literal("remote-git"),
+  name: projectNameSchema,
+  summary: projectSummarySchema,
+  repositoryUrl: repositoryUrlSchema,
+  requestedRef: repositoryRefSchema.default("HEAD"),
+  credentialProfileId: credentialProfileIdSchema.nullable().default(null),
+}).strict();
+export type RemoteGitCreateProjectInput = z.infer<typeof remoteGitCreateProjectSchema>;
+
+/**
+ * Chat-first repository binding deliberately omits project name, summary and
+ * every runtime detail. The service derives identity from the validated URL
+ * and resolves credentials through a server-owned profile.
+ */
+export const bindRemoteRepositorySchema = z.object({
+  repositoryUrl: repositoryUrlSchema,
+  requestedRef: repositoryRefSchema.default("HEAD"),
+  credentialProfileId: credentialProfileIdSchema.nullable().default(null),
+}).strict();
+export type BindRemoteRepositoryInput = z.infer<typeof bindRemoteRepositorySchema>;
+
+export const createProjectSchema = z.union([
+  remoteGitCreateProjectSchema,
+  legacyCreateProjectSchema,
+]);
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 
 export const workTypeSchema = z.enum(["feature", "change", "bug", "technical"]);
 export type WorkType = z.infer<typeof workTypeSchema>;
+
+export const workItemAdapterIdSchema = z.string()
+  .trim()
+  .min(1)
+  .max(80)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u, "Work Item Adapter ID 格式无效");
+export type WorkItemAdapterId = z.infer<typeof workItemAdapterIdSchema>;
+
+export const workItemReferenceSchema = z.string()
+  .trim()
+  .min(1)
+  .max(500)
+  .regex(/^[^\u0000-\u001f\u007f]+$/u, "Work Item reference 不能包含控制字符");
+export type WorkItemReference = z.infer<typeof workItemReferenceSchema>;
+
+const workItemUrlSchema = z.string().trim().url().max(2_048).refine((value) => {
+  try {
+    const parsed = new URL(value);
+    return ["http:", "https:"].includes(parsed.protocol)
+      && parsed.username === ""
+      && parsed.password === "";
+  } catch {
+    return false;
+  }
+}, "Work Item URL 必须是无内嵌凭据的 HTTP(S) URL");
+
+export const workItemAdapterSummarySchema = z.object({
+  id: workItemAdapterIdSchema,
+  label: z.string().trim().min(1).max(120)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  kind: z.literal("mcp-stdio"),
+  configured: z.boolean(),
+  message: z.string().trim().min(1).max(500)
+    .regex(/^[^\u0000]*$/u)
+    .nullable(),
+}).strict();
+export type WorkItemAdapterSummaryDto = z.infer<typeof workItemAdapterSummarySchema>;
+
+export const resolveWorkItemSchema = z.object({
+  adapterId: workItemAdapterIdSchema,
+  reference: workItemReferenceSchema,
+}).strict();
+export type ResolveWorkItemInput = z.infer<typeof resolveWorkItemSchema>;
+
+export const workItemProvenanceSchema = z.object({
+  kind: z.literal("mcp"),
+  adapterId: workItemAdapterIdSchema,
+  adapterLabel: z.string().trim().min(1).max(120)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  reference: workItemReferenceSchema,
+  externalId: z.string().trim().min(1).max(500)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  url: workItemUrlSchema.nullable(),
+  fetchedAt: z.string().datetime(),
+  fingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
+}).strict();
+export type WorkItemProvenance = z.infer<typeof workItemProvenanceSchema>;
+
+const workItemDraftListItemSchema = z.string()
+  .trim()
+  .min(1)
+  .max(2_000)
+  .regex(/^[^\u0000]*$/u);
+
+export const workItemDraftSchema = z.object({
+  source: workItemProvenanceSchema,
+  title: z.string().trim().min(1).max(200)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  description: z.string().trim().max(10_000)
+    .regex(/^[^\u0000]*$/u),
+  suggestedWorkType: workTypeSchema,
+  acceptanceCriteria: z.array(workItemDraftListItemSchema).max(100)
+    .refine((items) => new Set(items).size === items.length, "acceptanceCriteria 不能重复"),
+  labels: z.array(z.string().trim().min(1).max(200)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u)).max(100)
+    .refine((items) => new Set(items).size === items.length, "labels 不能重复"),
+}).strict();
+export type WorkItemDraftDto = z.infer<typeof workItemDraftSchema>;
+
+export const askProviderIdSchema = z.enum([
+  "openai",
+  "lmstudio",
+  "ollama",
+  "custom",
+]);
+export type AskProviderId = z.infer<typeof askProviderIdSchema>;
+
+export const askProviderProtocolSchema = z.enum([
+  "openai-responses",
+  "openai-chat",
+  "ollama-chat",
+]);
+export type AskProviderProtocol = z.infer<typeof askProviderProtocolSchema>;
+
+export const safeRepositoryRelativePathSchema = z.string()
+  .trim()
+  .min(1)
+  .max(4_096)
+  .regex(/^[^\u0000-\u001f\u007f\\]+$/u)
+  .refine(
+    (sourcePath) => !sourcePath.startsWith("/")
+      && !/^[A-Za-z]:/u.test(sourcePath)
+      && sourcePath.split("/").every(
+        (component) => component !== "" && component !== "." && component !== "..",
+      ),
+    "路径必须是安全的仓库相对路径",
+  );
+
+export const repoAliasSchema = z.string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u, "Repo alias 只能使用小写字母、数字和单个连字符");
+export type RepoAlias = z.infer<typeof repoAliasSchema>;
+
+export const sandboxBlueprintIdSchema = z.string()
+  .trim()
+  .min(1)
+  .max(80)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u, "Sandbox Blueprint ID 格式无效");
+export type SandboxBlueprintId = z.infer<typeof sandboxBlueprintIdSchema>;
+
+export const sandboxBlueprintVersionSchema = z.string()
+  .trim()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:+-]*$/u, "Sandbox Blueprint version 格式无效");
+export type SandboxBlueprintVersion = z.infer<typeof sandboxBlueprintVersionSchema>;
+
+export const mcpServerIdSchema = z.string()
+  .trim()
+  .min(1)
+  .max(80)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u, "MCP Server ID 格式无效");
+export type McpServerId = z.infer<typeof mcpServerIdSchema>;
+
+export const agentProviderCapabilitiesSchema = z.object({
+  chat: z.boolean(),
+  deepWiki: z.boolean(),
+  toolCalling: z.boolean(),
+}).strict().superRefine((capabilities, context) => {
+  if (capabilities.toolCalling && !capabilities.chat) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["toolCalling"],
+      message: "支持工具调用的 Provider 必须同时支持对话",
+    });
+  }
+});
+export type AgentProviderCapabilitiesDto = z.infer<typeof agentProviderCapabilitiesSchema>;
+
+export const sandboxBlueprintSummarySchema = z.object({
+  id: sandboxBlueprintIdSchema,
+  label: z.string().trim().min(1).max(120)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  version: sandboxBlueprintVersionSchema,
+  description: z.string().trim().min(1).max(1_000)
+    .regex(/^[^\u0000]*$/u),
+  capabilities: z.object({
+    persistentWorkspace: z.boolean(),
+    testExecution: z.boolean(),
+    servicePorts: z.boolean(),
+    restrictedNetwork: z.boolean(),
+  }).strict(),
+  configured: z.boolean(),
+  installHint: z.string().trim().min(1).max(500)
+    .regex(/^[^\u0000]*$/u)
+    .nullable(),
+}).strict();
+export type SandboxBlueprintSummaryDto = z.infer<typeof sandboxBlueprintSummarySchema>;
+
+export const mcpToolPermissionClassSchema = z.enum([
+  "read",
+  "sandbox_write",
+  "external_write",
+  "destructive",
+  "release",
+]);
+export type McpToolPermissionClass = z.infer<typeof mcpToolPermissionClassSchema>;
+
+export const mcpInstallationSummarySchema = z.object({
+  id: mcpServerIdSchema,
+  label: z.string().trim().min(1).max(120)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  description: z.string().trim().min(1).max(1_000)
+    .regex(/^[^\u0000]*$/u),
+  kind: z.enum(["mcp-stdio", "mcp-http"]),
+  installed: z.boolean(),
+  authorization: z.enum(["ready", "missing", "not-required"]),
+  permissionClasses: z.array(mcpToolPermissionClassSchema).max(5)
+    .refine((items) => new Set(items).size === items.length, "MCP permissionClasses 不能重复"),
+  installHint: z.string().trim().min(1).max(500)
+    .regex(/^[^\u0000]*$/u)
+    .nullable(),
+}).strict();
+export type McpInstallationSummaryDto = z.infer<typeof mcpInstallationSummarySchema>;
+
+export const mcpActivationSchema = z.object({
+  projectId: z.string().uuid(),
+  mcpServerId: mcpServerIdSchema,
+  enabled: z.boolean(),
+  permissionClasses: z.array(mcpToolPermissionClassSchema).max(5)
+    .refine((items) => new Set(items).size === items.length, "MCP permissionClasses 不能重复"),
+  updatedAt: z.string().datetime(),
+}).strict();
+export type McpActivationDto = z.infer<typeof mcpActivationSchema>;
+
+export const projectAgentSettingsSchema = z.object({
+  projectId: z.string().uuid(),
+  repoAlias: repoAliasSchema,
+  defaultProviderId: askProviderIdSchema,
+  sandboxBlueprintId: sandboxBlueprintIdSchema,
+  sandboxBlueprintVersion: sandboxBlueprintVersionSchema,
+  enabledMcpServerIds: z.array(mcpServerIdSchema).max(64)
+    .refine((items) => new Set(items).size === items.length, "enabledMcpServerIds 不能重复"),
+  version: z.number().int().positive(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+export type ProjectAgentSettingsDto = z.infer<typeof projectAgentSettingsSchema>;
+
+export const updateProjectAgentSettingsSchema = z.object({
+  expectedVersion: z.number().int().positive(),
+  repoAlias: repoAliasSchema.optional(),
+  defaultProviderId: askProviderIdSchema.optional(),
+  sandboxBlueprintId: sandboxBlueprintIdSchema.optional(),
+  sandboxBlueprintVersion: sandboxBlueprintVersionSchema.optional(),
+  enabledMcpServerIds: z.array(mcpServerIdSchema).max(64)
+    .refine((items) => new Set(items).size === items.length, "enabledMcpServerIds 不能重复")
+    .optional(),
+}).strict().refine(
+  (input) => Object.keys(input).some((key) => key !== "expectedVersion"),
+  { message: "至少修改一项 Project Agent Setting" },
+);
+export type UpdateProjectAgentSettingsInput = z.infer<typeof updateProjectAgentSettingsSchema>;
+
+export const createAgentSessionSchema = z.object({
+  clientRequestId: z.string().uuid().optional(),
+  title: z.string().trim().min(1).max(200)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u)
+    .optional(),
+  providerId: askProviderIdSchema.optional(),
+  primaryProjectId: z.string().uuid().optional(),
+}).strict();
+export type CreateAgentSessionInput = z.infer<typeof createAgentSessionSchema>;
+
+export const agentSessionStatusSchema = z.enum(["active", "archived"]);
+export type AgentSessionStatus = z.infer<typeof agentSessionStatusSchema>;
+
+export const agentTurnStateSchema = z.enum([
+  "idle",
+  "running",
+  "waiting_human",
+  "interrupted",
+]);
+export type AgentTurnState = z.infer<typeof agentTurnStateSchema>;
+
+export const agentSessionRepositorySchema = z.object({
+  sessionId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  repoAlias: repoAliasSchema,
+  accessMode: z.enum(["write", "read"]),
+  sourceRevision: gitRevisionSchema,
+  createdAt: z.string().datetime(),
+}).strict();
+export type AgentSessionRepositoryDto = z.infer<typeof agentSessionRepositorySchema>;
+
+export const agentSessionRunSchema = z.object({
+  sessionId: z.string().uuid(),
+  triggerMessageId: z.string().uuid(),
+  workflowRunId: z.string().uuid(),
+  providerId: askProviderIdSchema,
+  createdAt: z.string().datetime(),
+}).strict();
+export type AgentSessionRunDto = z.infer<typeof agentSessionRunSchema>;
+
+export const agentSandboxStateSchema = z.enum([
+  "starting",
+  "ready",
+  "busy",
+  "stopped",
+  "failed",
+]);
+export type AgentSandboxState = z.infer<typeof agentSandboxStateSchema>;
+
+export const agentSandboxSchema = z.object({
+  id: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  sourceRevision: gitRevisionSchema,
+  blueprintId: sandboxBlueprintIdSchema,
+  blueprintVersion: sandboxBlueprintVersionSchema,
+  state: agentSandboxStateSchema,
+  expiresAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+export type AgentSandboxDto = z.infer<typeof agentSandboxSchema>;
+
+export const agentSessionSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string().trim().min(1).max(200)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  status: agentSessionStatusSchema,
+  turnState: agentTurnStateSchema,
+  currentProviderId: askProviderIdSchema,
+  lastMessageSequence: z.number().int().nonnegative(),
+  lastEventSequence: z.number().int().nonnegative(),
+  repositories: z.array(agentSessionRepositorySchema).max(16),
+  sandbox: agentSandboxSchema.nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict().superRefine((session, context) => {
+  if (session.repositories.filter(({ accessMode }) => accessMode === "write").length > 1) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["repositories"],
+      message: "一个 Agent Session 最多只能有一个可写主仓库",
+    });
+  }
+  if (new Set(session.repositories.map(({ projectId }) => projectId)).size !== session.repositories.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["repositories"],
+      message: "Agent Session 不能重复绑定同一项目",
+    });
+  }
+  if (new Set(session.repositories.map(({ repoAlias }) => repoAlias)).size !== session.repositories.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["repositories"],
+      message: "Agent Session 的 Repo alias 不能重复",
+    });
+  }
+});
+export type AgentSessionDto = z.infer<typeof agentSessionSchema>;
+
+export const sendAgentMessageSchema = z.object({
+  clientMessageId: z.string().uuid(),
+  expectedSequence: z.number().int().nonnegative().max(1_000_000_000),
+  content: z.string().trim().min(1).max(12_000),
+  providerId: askProviderIdSchema.optional(),
+}).strict();
+export type SendAgentMessageInput = z.infer<typeof sendAgentMessageSchema>;
+
+const agentModelIdSchema = z.string().trim().min(1).max(256)
+  .regex(/^[^\u0000-\u001f\u007f]+$/u, "Agent model ID 格式无效");
+
+export const agentMessageSchema = z.object({
+  id: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  sequence: z.number().int().positive(),
+  role: z.enum(["user", "assistant"]),
+  status: z.enum(["running", "completed", "failed", "cancelled"]),
+  content: z.string().trim().min(1).max(20_000),
+  providerId: askProviderIdSchema,
+  model: agentModelIdSchema.nullable(),
+  clientMessageId: z.string().uuid().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict().superRefine((message, context) => {
+  if (message.role === "user" && (!message.clientMessageId || message.model !== null)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Agent 用户消息必须包含 clientMessageId 且不能声明实际模型",
+    });
+  }
+  if (message.role === "assistant" && (
+    message.clientMessageId !== null
+    || message.model === null
+    || message.status !== "completed"
+  )) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Agent 助手消息必须记录实际模型、完成状态且不能携带 clientMessageId",
+    });
+  }
+});
+export type AgentMessageDto = z.infer<typeof agentMessageSchema>;
+
+export const agentEventKindSchema = z.enum([
+  "session.created",
+  "message.accepted",
+  "provider.started",
+  "tool.started",
+  "tool.completed",
+  "tool.failed",
+  "sandbox.starting",
+  "sandbox.ready",
+  "sandbox.failed",
+  "sdlc.run-created",
+  "sdlc.phase-started",
+  "sdlc.phase-completed",
+  "human-gate.required",
+  "human-gate.resolved",
+  "turn.completed",
+  "turn.failed",
+  "deepwiki.started",
+  "deepwiki.completed",
+  "deepwiki.failed",
+]);
+export type AgentEventKind = z.infer<typeof agentEventKindSchema>;
+
+export const agentEventSchema = z.object({
+  id: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  sequence: z.number().int().positive(),
+  kind: agentEventKindSchema,
+  status: z.enum(["started", "completed", "failed", "waiting"]),
+  summary: z.string().trim().min(1).max(2_000)
+    .regex(/^[^\u0000]*$/u),
+  messageId: z.string().uuid().nullable(),
+  toolCallId: z.string().uuid().nullable(),
+  projectId: z.string().uuid().nullable(),
+  workflowRunId: z.string().uuid().nullable(),
+  phaseId: phaseIdSchema.nullable(),
+  createdAt: z.string().datetime(),
+}).strict();
+export type AgentEventDto = z.infer<typeof agentEventSchema>;
+
+export const agentToolCallSchema = z.object({
+  id: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  messageId: z.string().uuid(),
+  mcpServerId: mcpServerIdSchema,
+  toolName: z.string().trim().min(1).max(200)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u),
+  permissionClass: mcpToolPermissionClassSchema,
+  approval: z.enum(["not-required", "required", "approved", "denied"]),
+  status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
+  argumentsSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  outputSha256: z.string().regex(/^[a-f0-9]{64}$/u).nullable(),
+  summary: z.string().trim().min(1).max(2_000)
+    .regex(/^[^\u0000]*$/u)
+    .nullable(),
+  errorMessage: z.string().trim().min(1).max(1_000)
+    .regex(/^[^\u0000]*$/u)
+    .nullable(),
+  startedAt: z.string().datetime().nullable(),
+  finishedAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+}).strict().superRefine((toolCall, context) => {
+  const externalSideEffect = ["external_write", "destructive", "release"]
+    .includes(toolCall.permissionClass);
+  if (externalSideEffect && toolCall.approval === "not-required") {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["approval"],
+      message: "外部写入、破坏性和发布工具必须经过 Human Gate",
+    });
+  }
+  if (
+    externalSideEffect
+    && ["running", "completed"].includes(toolCall.status)
+    && toolCall.approval !== "approved"
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["approval"],
+      message: "高风险 Tool Call 未批准前不能运行或完成",
+    });
+  }
+  if (toolCall.status === "completed" && (!toolCall.outputSha256 || !toolCall.finishedAt)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "已完成 Tool Call 必须包含输出哈希和完成时间",
+    });
+  }
+  if (toolCall.status === "failed" && (!toolCall.errorMessage || !toolCall.finishedAt)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "失败 Tool Call 必须包含安全错误和完成时间",
+    });
+  }
+});
+export type AgentToolCallDto = z.infer<typeof agentToolCallSchema>;
+
+export const agentHumanGateCategorySchema = z.enum([
+  "scope",
+  "architecture",
+  "security",
+  "ddl",
+  "secret",
+  "destructive",
+  "external_write",
+  "deployment",
+  "release",
+]);
+export type AgentHumanGateCategory = z.infer<typeof agentHumanGateCategorySchema>;
+
+export const agentHumanGateSchema = z.object({
+  id: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  messageId: z.string().uuid(),
+  category: agentHumanGateCategorySchema,
+  status: z.enum(["pending", "approved", "rejected", "cancelled"]),
+  question: z.string().trim().min(1).max(2_000)
+    .regex(/^[^\u0000]*$/u),
+  choices: z.array(z.object({
+    id: z.string().trim().min(1).max(80)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u),
+    label: z.string().trim().min(1).max(120)
+      .regex(/^[^\u0000-\u001f\u007f]+$/u),
+    description: z.string().trim().min(1).max(500)
+      .regex(/^[^\u0000]*$/u),
+    recommended: z.boolean(),
+  }).strict()).min(1).max(3)
+    .refine((items) => new Set(items.map(({ id }) => id)).size === items.length, "Human Gate choice ID 不能重复")
+    .refine((items) => items.filter(({ recommended }) => recommended).length <= 1, "最多一个推荐选项"),
+  selectedChoiceId: z.string().trim().min(1).max(80)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u)
+    .nullable(),
+  responseComment: z.string().trim().min(1).max(2_000)
+    .regex(/^[^\u0000]*$/u)
+    .nullable(),
+  createdAt: z.string().datetime(),
+  resolvedAt: z.string().datetime().nullable(),
+}).strict().superRefine((gate, context) => {
+  if (gate.status === "pending" && (
+    gate.selectedChoiceId !== null
+    || gate.responseComment !== null
+    || gate.resolvedAt !== null
+  )) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "待决定 Gate 不能包含决议" });
+  }
+  if (gate.status !== "pending" && gate.resolvedAt === null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "已处理 Gate 必须包含 resolvedAt" });
+  }
+  if (gate.status === "approved" && gate.selectedChoiceId === null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["selectedChoiceId"],
+      message: "批准 Human Gate 必须明确选择一个选项",
+    });
+  }
+  if (
+    gate.selectedChoiceId
+    && !gate.choices.some(({ id }) => id === gate.selectedChoiceId)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["selectedChoiceId"],
+      message: "selectedChoiceId 必须来自当前 Gate choices",
+    });
+  }
+});
+export type AgentHumanGateDto = z.infer<typeof agentHumanGateSchema>;
+
+export const generateDeepWikiSchema = z.object({
+  expectedRevision: gitRevisionSchema,
+  providerId: askProviderIdSchema.optional(),
+  clientRequestId: z.string().uuid().optional(),
+}).strict();
+export type GenerateDeepWikiInput = z.infer<typeof generateDeepWikiSchema>;
+
+export const deepWikiCitationSchema = z.object({
+  path: safeRepositoryRelativePathSchema,
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  summary: z.string().trim().min(1).max(1_000)
+    .regex(/^[^\u0000]*$/u),
+}).strict().refine(
+  ({ startLine, endLine }) => endLine >= startLine,
+  { path: ["endLine"], message: "DeepWiki 引用结束行不能早于起始行" },
+);
+export type DeepWikiCitationDto = z.infer<typeof deepWikiCitationSchema>;
+
+export const deepWikiPageSchema = z.object({
+  slug: z.string().trim().min(1).max(120)
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
+  title: z.string().trim().min(1).max(200)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  summary: z.string().trim().min(1).max(2_000)
+    .regex(/^[^\u0000]*$/u),
+  content: z.string().trim().min(1).max(100_000)
+    .regex(/^[^\u0000]*$/u),
+  citations: z.array(deepWikiCitationSchema).max(100),
+}).strict();
+export type DeepWikiPageDto = z.infer<typeof deepWikiPageSchema>;
+
+export const deepWikiGenerationStatusSchema = z.enum([
+  "queued",
+  "scanning",
+  "generating",
+  "validating",
+  "ready",
+  "failed",
+  "stale",
+]);
+export type DeepWikiGenerationStatus = z.infer<typeof deepWikiGenerationStatusSchema>;
+
+export const deepWikiGenerationSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  revision: gitRevisionSchema,
+  providerId: askProviderIdSchema,
+  model: agentModelIdSchema.nullable(),
+  promptVersion: z.string().trim().min(1).max(128)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:+-]*$/u),
+  status: deepWikiGenerationStatusSchema,
+  manifestHash: z.string().regex(/^[a-f0-9]{64}$/u).nullable(),
+  content: z.string().trim().min(1).max(500_000)
+    .regex(/^[^\u0000]*$/u)
+    .nullable(),
+  citations: z.array(deepWikiCitationSchema).max(500),
+  usage: z.object({
+    inputTokens: z.number().int().nonnegative().nullable(),
+    outputTokens: z.number().int().nonnegative().nullable(),
+  }).strict(),
+  errorMessage: z.string().trim().min(1).max(1_000)
+    .regex(/^[^\u0000]*$/u)
+    .nullable(),
+  generatedAt: z.string().datetime().nullable(),
+  staleAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict().superRefine((generation, context) => {
+  const published = generation.status === "ready" || generation.status === "stale";
+  if (published && (
+    generation.model === null
+    || generation.content === null
+    || generation.generatedAt === null
+    || generation.errorMessage !== null
+  )) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "已发布 DeepWiki 必须包含模型、清单哈希、页面和生成时间",
+    });
+  }
+  if (generation.status === "stale" && generation.staleAt === null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "过期 DeepWiki 必须包含 staleAt" });
+  }
+  if (generation.status === "ready" && generation.staleAt !== null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "ready DeepWiki 不能包含 staleAt" });
+  }
+  if (generation.status === "failed" && (
+    generation.errorMessage === null
+    || generation.generatedAt === null
+  )) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "失败 DeepWiki 必须包含安全错误和结束时间" });
+  }
+  if (!published && (generation.content !== null || generation.citations.length > 0)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "未发布 DeepWiki 不能暴露内容或引用" });
+  }
+});
+export type DeepWikiGenerationDto = z.infer<typeof deepWikiGenerationSchema>;
+
+/** Public retrieval revision (for example `git:<sha>:clean`), not a raw Git object id. */
+export const askRevisionSchema = z.string().trim().min(1).max(200)
+  .regex(/^[^\u0000-\u001f\u007f]+$/u, "Ask revision 格式无效");
+export type AskRevision = z.infer<typeof askRevisionSchema>;
+
+export const askHistoryMessageSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string().trim().min(1).max(12_000),
+}).strict();
+export type AskHistoryMessage = z.infer<typeof askHistoryMessageSchema>;
+
+export const askProjectSchema = z.object({
+  providerId: askProviderIdSchema,
+  question: z.string().trim().min(1).max(8_000),
+  history: z.array(askHistoryMessageSchema).max(12).default([]),
+  expectedRevision: askRevisionSchema.optional(),
+}).strict().superRefine(({ history }, context) => {
+  const total = history.reduce((sum, message) => sum + message.content.length, 0);
+  if (total > 48_000) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["history"],
+      message: "Ask 历史总长度不能超过 48000 字符",
+    });
+  }
+});
+export type AskProjectInput = z.infer<typeof askProjectSchema>;
 
 const changeContractTextSchema = z.string()
   .trim()
@@ -79,12 +856,65 @@ const sourceRunIdsSchema = z.array(z.string().uuid())
   .refine((ids) => new Set(ids).size === ids.length, "sourceRunIds 不能重复");
 
 /**
+ * A fixed, bounded manifest summary for an explicitly mentioned read-only
+ * repository. It intentionally contains no Project/workspace identifier, URL,
+ * absolute path, file body, or credential-shaped field.
+ */
+export const readOnlyRepositoryContextSchema = z.object({
+  repoAlias: repoAliasSchema,
+  sourceRevision: gitRevisionSchema,
+  manifestHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  summary: z.string().trim().min(1).max(6_000)
+    .regex(/^[^\u0000]*$/u, "只读仓库摘要不能包含空字符"),
+}).strict();
+export type ReadOnlyRepositoryContextDto = z.infer<typeof readOnlyRepositoryContextSchema>;
+
+export const readOnlyRepositoryContextsSchema = z.array(readOnlyRepositoryContextSchema)
+  .max(4, "一轮最多引用 4 个只读仓库")
+  .refine(
+    (contexts) => new Set(contexts.map(({ repoAlias }) => repoAlias)).size === contexts.length,
+    "只读仓库 alias 不能重复",
+  )
+  .refine(
+    (contexts) => contexts.reduce((total, { summary }) => total + summary.length, 0) <= 24_000,
+    "只读仓库摘要总长度不能超过 24000 字符",
+  );
+
+export const runExecutionModelSchema = z.enum(["legacy", "flexible"]);
+export type RunExecutionModel = z.infer<typeof runExecutionModelSchema>;
+
+export const runIntentSchema = z.object({
+  kind: z.enum(["full-flow", "single-stage", "quick-change"]),
+  summary: changeContractTextSchema.max(2_000),
+}).strict();
+export type RunIntent = z.infer<typeof runIntentSchema>;
+
+export const runContextReferencesSchema = z.object({
+  sourceRunIds: z.array(z.string().uuid()).max(50).default([]),
+  artifactIds: z.array(z.string().uuid()).max(200).default([]),
+  filePaths: z.array(safeRepositoryRelativePathSchema).max(200).default([]),
+  externalReferences: z.array(
+    z.string().trim().min(1).max(2_000)
+      .regex(/^[^\u0000]*$/u, "外部引用不能包含空字符"),
+  ).max(100).default([]),
+}).strict();
+export type RunContextReferences = z.infer<typeof runContextReferencesSchema>;
+
+export const runEnvironmentRequestSchema = z.object({
+  strategy: z.enum(["none", "reuse", "create"]),
+  keepAlive: z.boolean().default(false),
+}).strict();
+export type RunEnvironmentRequest = z.infer<typeof runEnvironmentRequestSchema>;
+
+/**
  * The immutable, run-scoped contract for one unit of work. Product/design/
  * architecture roles may be routed around, but this evidence is never skipped.
  */
 export const changeContractSchema = z.object({
   workType: workTypeSchema,
   sourceRunIds: sourceRunIdsSchema.optional(),
+  workItem: workItemProvenanceSchema.optional(),
+  readOnlyRepositories: readOnlyRepositoryContextsSchema.optional(),
   summary: changeContractTextSchema.max(2_000),
   currentBehavior: changeContractTextSchema.max(5_000),
   expectedBehavior: changeContractTextSchema.max(5_000),
@@ -115,6 +945,7 @@ const runTitleSchema = z.string()
 const legacyCreateRunSchema = z.object({
   title: runTitleSchema,
   objective: z.string().trim().min(1).max(10_000),
+  baseRevision: gitRevisionSchema.optional(),
   // Optional for backward compatibility. New clients should always submit it.
   changeContract: changeContractSchema.optional()
 }).strict();
@@ -128,9 +959,20 @@ const linkedCreateRunSchema = z.object({
     .min(1, "请填写期望行为")
     .max(2_000)
     .regex(/^[^\u0000]*$/u, "期望行为不能包含空字符"),
+  baseRevision: gitRevisionSchema.optional(),
 }).strict();
 
-export const createRunSchema = z.union([linkedCreateRunSchema, legacyCreateRunSchema]);
+const flexibleCreateRunFields = {
+  targetPhaseId: phaseIdSchema.optional(),
+  runIntent: runIntentSchema.optional(),
+  runContextReferences: runContextReferencesSchema.optional(),
+  runEnvironmentRequest: runEnvironmentRequestSchema.optional(),
+};
+
+export const createRunSchema = z.union([
+  linkedCreateRunSchema.extend(flexibleCreateRunFields),
+  legacyCreateRunSchema.extend(flexibleCreateRunFields),
+]);
 export type CreateRunInput = z.infer<typeof createRunSchema>;
 
 export const createArtifactRevisionSchema = z.object({
@@ -165,6 +1007,81 @@ export const codexModelSchema = z.string()
   .min(1)
   .max(128)
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/u, "Codex model 标识无效");
+
+export const agentSdlcRoleIdSchema = z.enum([
+  "pm-ba",
+  "designer",
+  "architect",
+  "software-engineer",
+  "tester",
+  "devops",
+]);
+export type AgentSdlcRoleId = z.infer<typeof agentSdlcRoleIdSchema>;
+
+export const advanceAgentRunSchema = z.object({
+  expectedPhaseId: phaseIdSchema,
+  providerId: askProviderIdSchema,
+}).strict();
+export type AdvanceAgentRunInput = z.infer<typeof advanceAgentRunSchema>;
+
+const agentRunExecutionSchema = z.object({
+  id: z.string().uuid(),
+  phaseRunId: z.string().uuid(),
+  status: z.enum(["queued", "running", "completed", "failed"]),
+  selectedArtifactIds: z.array(z.string().uuid()),
+  selectedOutputKeys: z.array(artifactKeySchema),
+  runnerMode: codexRunnerModeSchema.nullable(),
+  model: agentModelIdSchema.nullable(),
+  reasoningEffort: codexReasoningEffortSchema.nullable(),
+  command: z.string(),
+  exitCode: z.number().int().nullable(),
+  error: z.string().nullable(),
+  startedAt: z.string().datetime().nullable(),
+  finishedAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+}).strict();
+
+const agentRunProgressResultFields = {
+  runId: z.string().uuid(),
+  phaseId: phaseIdSchema,
+  roleId: agentSdlcRoleIdSchema,
+  artifactKeys: z.array(artifactKeySchema),
+  reason: z.string().trim().min(1).max(2_000),
+};
+
+export const agentRunAdvanceResultSchema = z.discriminatedUnion("state", [
+  z.object({
+    state: z.literal("started"),
+    runId: z.string().uuid(),
+    phaseId: phaseIdSchema,
+    roleId: agentSdlcRoleIdSchema,
+    execution: agentRunExecutionSchema.optional(),
+    selectedArtifactIds: z.array(z.string().uuid()),
+  }).strict(),
+  z.object({
+    state: z.literal("running"),
+    ...agentRunProgressResultFields,
+  }).strict(),
+  z.object({
+    state: z.literal("awaiting_review"),
+    ...agentRunProgressResultFields,
+  }).strict(),
+  z.object({
+    state: z.literal("blocked"),
+    ...agentRunProgressResultFields,
+  }).strict(),
+  z.object({
+    state: z.literal("failed"),
+    ...agentRunProgressResultFields,
+  }).strict(),
+  z.object({
+    state: z.literal("completed"),
+    runId: z.string().uuid(),
+    artifactKeys: z.array(artifactKeySchema),
+    reason: z.string().trim().min(1).max(2_000),
+  }).strict(),
+]);
+export type AgentRunAdvanceResultDto = z.infer<typeof agentRunAdvanceResultSchema>;
 
 export const e2ePackageManagerSchema = z.literal("npm");
 export type E2ePackageManager = z.infer<typeof e2ePackageManagerSchema>;
@@ -331,10 +1248,31 @@ export type ReviewPhaseInput = z.infer<typeof reviewPhaseSchema>;
 export const humanDecisionPhaseIdSchema = z.enum(["discovery", "design", "architecture"]);
 export type HumanDecisionPhaseId = z.infer<typeof humanDecisionPhaseIdSchema>;
 
+/**
+ * A decision must carry the choice itself. Bare acknowledgements cannot be
+ * replayed safely into a later role because they depend on UI-only context.
+ * Keep this predicate exported so persisted legacy captures can apply the
+ * same rule when selecting authoritative feedback.
+ */
+export function isGenericHumanDecisionResponse(value: string): boolean {
+  const compact = value
+    .trim()
+    .toLocaleLowerCase("en-US")
+    .replace(/[\s\p{P}\p{S}]+/gu, "");
+  return compact.length === 0
+    || /^(?:(?:同意|确认|可以|好的|yes|agree|approved|ok))+$/iu.test(compact);
+}
+
+export const humanDecisionResponseSchema = z.string().trim().min(3).max(5_000)
+  .refine(
+    (response) => !isGenericHumanDecisionResponse(response),
+    "decision response 必须包含具体决定，不能只有同意、确认、可以、好的、yes、agree、approved、ok 或标点",
+  );
+
 export const captureHumanDecisionsSchema = z.object({
   responses: z.array(z.object({
     id: z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u),
-    response: z.string().trim().min(3).max(5_000),
+    response: humanDecisionResponseSchema,
   }).strict()).min(1).max(50)
     .refine((responses) => new Set(responses.map(({ id }) => id)).size === responses.length, "decision ids 不能重复"),
   expectedArtifactIds: z.array(z.string().uuid()).min(1).max(100)
@@ -581,7 +1519,7 @@ export const assessDesignImpactSchema = z.discriminatedUnion("mode", [
 ]);
 export type AssessDesignImpactInput = z.infer<typeof assessDesignImpactSchema>;
 
-/** Explicit no-architecture-work decision for bugs/technical work without a baseline. */
+/** Explicit human no-architecture-impact decision without a reusable baseline. */
 export const assessArchitectureWaiverSchema = z.object({
   mode: z.literal("skip"),
   rationale: z.string().trim().min(10).max(2_000),
@@ -628,10 +1566,540 @@ export interface ProjectDto {
   summary: string;
   rootPath: string;
   configPath: string;
+  /** Internal/runtime compatibility discriminator. Public routes use PublicProjectDto. */
+  sourceKind?: "legacy-local" | "remote-git";
+  repositoryUrl?: string | null;
+  repositoryHost?: string | null;
+  requestedRef?: string | null;
+  currentRevision?: GitRevision | null;
+  definitionMode?: "repository" | "managed";
+  definitionVersion?: string | null;
   runCount: number;
   createdAt: string;
   updatedAt: string;
 }
+
+export const credentialProfileSummarySchema = z.object({
+  id: credentialProfileIdSchema,
+  label: z.string().trim().min(1).max(120)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  host: z.string().trim().min(1).max(300)
+    .regex(/^[^\u0000-\u0020\u007f\/@?#]+$/u, "Credential host 格式无效"),
+  available: z.boolean(),
+}).strict();
+export type CredentialProfileSummaryDto = z.infer<typeof credentialProfileSummarySchema>;
+
+export const repositoryOperationSchema = z.object({
+  id: z.string().uuid(),
+  kind: z.enum(["import", "sync"]),
+  state: z.enum(["queued", "running", "failed"]),
+  stage: z.enum([
+    "validating",
+    "fetching",
+    "resolving",
+    "materializing",
+    "indexing",
+    "publishing",
+  ]),
+  progress: z.number().int().min(0).max(100),
+  message: z.string().trim().min(1).max(1_000)
+    .regex(/^[^\u0000]*$/u),
+}).strict();
+export type RepositoryOperationDto = z.infer<typeof repositoryOperationSchema>;
+
+export const repositorySnapshotSchema = z.object({
+  revision: gitRevisionSchema,
+  resolvedRef: z.string().trim().min(1).max(255)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  indexedAt: z.string().datetime(),
+}).strict();
+export type RepositorySnapshotDto = z.infer<typeof repositorySnapshotSchema>;
+
+export const knowledgeLanguageSchema = z.object({
+  language: z.string().trim().min(1).max(80)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  files: z.number().int().nonnegative(),
+  bytes: z.number().int().nonnegative(),
+}).strict();
+export type KnowledgeLanguageDto = z.infer<typeof knowledgeLanguageSchema>;
+
+export const knowledgePathSignalSchema = z.object({
+  path: safeRepositoryRelativePathSchema,
+  kind: z.enum(["entry", "document", "test", "build", "key-path"]),
+  summary: z.string().trim().min(1).max(500)
+    .regex(/^[^\u0000]*$/u),
+}).strict();
+export type KnowledgePathSignalDto = z.infer<typeof knowledgePathSignalSchema>;
+
+export const knowledgeSummarySchema = z.object({
+  fileCount: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative(),
+  languages: z.array(knowledgeLanguageSchema).max(64),
+  entryPoints: z.array(knowledgePathSignalSchema).max(100),
+  documents: z.array(knowledgePathSignalSchema).max(100),
+  tests: z.array(knowledgePathSignalSchema).max(100),
+  builds: z.array(knowledgePathSignalSchema).max(100),
+  keyPaths: z.array(knowledgePathSignalSchema).max(100),
+  truncated: z.boolean(),
+}).strict();
+export type KnowledgeSummaryDto = z.infer<typeof knowledgeSummarySchema>;
+
+export const knowledgeSnapshotSchema = z.object({
+  id: z.string().uuid(),
+  status: z.enum(["indexing", "ready", "failed"]),
+  revision: gitRevisionSchema,
+  indexedAt: z.string().datetime().nullable(),
+  summary: knowledgeSummarySchema.nullable(),
+  errorMessage: z.string().trim().min(1).max(1_000)
+    .regex(/^[^\u0000]*$/u)
+    .nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict().superRefine((snapshot, context) => {
+  if (snapshot.status === "ready" && (!snapshot.indexedAt || !snapshot.summary)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "ready Knowledge Snapshot 必须包含 indexedAt 和 summary",
+    });
+  }
+  if (snapshot.status !== "ready" && snapshot.indexedAt) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["indexedAt"],
+      message: "未就绪 Knowledge Snapshot 不能声明 indexedAt",
+    });
+  }
+});
+export type KnowledgeSnapshotDto = z.infer<typeof knowledgeSnapshotSchema>;
+
+export const publicProjectSourceKindSchema = z.enum(["legacy-local", "remote-git"]);
+export type PublicProjectSourceKind = z.infer<typeof publicProjectSourceKindSchema>;
+
+export const publicProjectRepositorySchema = z.object({
+  url: repositoryUrlSchema,
+  host: z.string().trim().min(1).max(300)
+    .regex(/^[^\u0000-\u0020\u007f\/@?#]+$/u),
+  requestedRef: repositoryRefSchema.nullable(),
+  credentialProfile: credentialProfileSummarySchema.nullable(),
+  activeSnapshot: repositorySnapshotSchema.nullable(),
+  operation: repositoryOperationSchema.nullable(),
+}).strict();
+export type PublicProjectRepositoryDto = z.infer<typeof publicProjectRepositorySchema>;
+
+export const publicProjectSchema = z.object({
+  id: z.string().uuid(),
+  name: projectNameSchema,
+  summary: z.string().trim().max(2_000),
+  sourceKind: publicProjectSourceKindSchema,
+  repository: publicProjectRepositorySchema.nullable(),
+  knowledge: knowledgeSnapshotSchema.nullable(),
+  availableActions: z.object({
+    ask: z.boolean(),
+    createRun: z.boolean(),
+    sync: z.boolean(),
+  }).strict(),
+  runCount: z.number().int().nonnegative(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict().superRefine((project, context) => {
+  if (project.sourceKind === "remote-git" && !project.repository) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["repository"],
+      message: "远程项目必须包含仓库摘要",
+    });
+  }
+  if (project.sourceKind === "legacy-local" && project.repository) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["repository"],
+      message: "兼容本地项目不能伪造远程仓库摘要",
+    });
+  }
+});
+export type PublicProjectDto = z.infer<typeof publicProjectSchema>;
+
+export const askProviderAvailabilitySchema = z.enum([
+  "ready",
+  "not_configured",
+  "unreachable",
+  "authentication_failed",
+  "model_unavailable",
+  "protocol_error",
+]);
+export type AskProviderAvailability = z.infer<typeof askProviderAvailabilitySchema>;
+
+export const askProviderCapabilitiesSchema = z.object({
+  streaming: z.boolean(),
+  structuredOutput: z.boolean(),
+  toolCalling: z.boolean(),
+}).strict();
+export type AskProviderCapabilitiesDto = z.infer<typeof askProviderCapabilitiesSchema>;
+
+export const askProviderStatusSchema = z.object({
+  id: askProviderIdSchema,
+  label: z.string().trim().min(1).max(120),
+  configured: z.boolean(),
+  model: z.string().trim().min(1).max(256).nullable(),
+  protocol: askProviderProtocolSchema,
+  dataBoundary: z.enum(["remote", "local", "operator-configured"]),
+  endpointLabel: z.string().trim().min(1).max(512),
+  capabilities: askProviderCapabilitiesSchema,
+  message: z.string().trim().min(1).max(1_000),
+}).strict();
+export type AskProviderStatusDto = z.infer<typeof askProviderStatusSchema>;
+
+export const askProviderCheckSchema = z.object({
+  providerId: askProviderIdSchema,
+  state: askProviderAvailabilitySchema,
+  model: z.string().trim().min(1).max(256).nullable(),
+  message: z.string().trim().min(1).max(1_000),
+  checkedAt: z.string().datetime(),
+}).strict();
+export type AskProviderCheckDto = z.infer<typeof askProviderCheckSchema>;
+
+const providerConfigurationVersionSchema = z.number().int().positive();
+
+export const askProviderConfigurationCheckSchema = askProviderCheckSchema.extend({
+  version: providerConfigurationVersionSchema,
+  configVersion: providerConfigurationVersionSchema,
+}).strict();
+export type AskProviderConfigurationCheckDto = z.infer<
+  typeof askProviderConfigurationCheckSchema
+>;
+
+/**
+ * The browser may inspect Provider configuration state, but never receives the
+ * credential or the complete endpoint. `endpointLabel` is deliberately only a
+ * host-level label produced by the trusted API.
+ */
+export const askProviderConfigurationSchema = z.object({
+  providerId: askProviderIdSchema,
+  label: z.string().trim().min(1).max(120)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  enabled: z.boolean(),
+  configured: z.boolean(),
+  model: z.string().trim().min(1).max(256)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u)
+    .nullable(),
+  protocol: askProviderProtocolSchema,
+  dataBoundary: z.enum(["remote", "local", "operator-configured"]),
+  endpointLabel: z.string().trim().min(1).max(512),
+  hasEndpoint: z.boolean(),
+  hasCredential: z.boolean(),
+  structuredOutput: z.boolean(),
+  toolCalling: z.boolean(),
+  allowInsecureHttp: z.boolean(),
+  version: providerConfigurationVersionSchema,
+  configVersion: providerConfigurationVersionSchema,
+  lastCheck: askProviderConfigurationCheckSchema.nullable(),
+  createdAt: z.string().datetime().nullable(),
+  updatedAt: z.string().datetime().nullable(),
+}).strict().superRefine((configuration, context) => {
+  if (configuration.version < configuration.configVersion) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["version"],
+      message: "Provider 记录版本不能早于配置版本",
+    });
+  }
+  if (
+    configuration.lastCheck
+    && configuration.lastCheck.providerId !== configuration.providerId
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["lastCheck", "providerId"],
+      message: "Provider 检查结果与配置不一致",
+    });
+  }
+  if (
+    configuration.lastCheck
+    && configuration.lastCheck.configVersion !== configuration.configVersion
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["lastCheck", "configVersion"],
+      message: "Provider 检查结果不是当前配置版本",
+    });
+  }
+  if (
+    configuration.lastCheck
+    && configuration.lastCheck.version > configuration.version
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["lastCheck", "version"],
+      message: "Provider 检查结果不能来自未来记录版本",
+    });
+  }
+  if (
+    configuration.enabled
+    && (!configuration.configured || configuration.lastCheck?.state !== "ready")
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["enabled"],
+      message: "Provider 只有在当前配置检查通过后才能启用",
+    });
+  }
+});
+export type AskProviderConfigurationDto = z.infer<typeof askProviderConfigurationSchema>;
+
+const providerEndpointValueSchema = z.string().trim().min(1).max(4_096)
+  .regex(/^[^\u0000-\u001f\u007f]+$/u, "Provider endpoint 包含无效字符");
+const providerCredentialValueSchema = z.string().min(1).max(16_384)
+  .regex(/^[^\u0000-\u001f\u007f]+$/u, "Provider credential 格式无效");
+
+export const providerEndpointActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("keep") }).strict(),
+  z.object({ action: z.literal("replace"), value: providerEndpointValueSchema }).strict(),
+  z.object({ action: z.literal("clear") }).strict(),
+]);
+export type ProviderEndpointAction = z.infer<typeof providerEndpointActionSchema>;
+
+export const providerCredentialActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("keep") }).strict(),
+  z.object({ action: z.literal("replace"), value: providerCredentialValueSchema }).strict(),
+  z.object({ action: z.literal("clear") }).strict(),
+]);
+export type ProviderCredentialAction = z.infer<typeof providerCredentialActionSchema>;
+
+export const updateAskProviderConfigurationSchema = z.object({
+  expectedVersion: providerConfigurationVersionSchema,
+  label: z.string().trim().min(1).max(120)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  protocol: askProviderProtocolSchema,
+  model: z.string().trim().min(1).max(256)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u)
+    .nullable(),
+  endpoint: providerEndpointActionSchema,
+  credential: providerCredentialActionSchema,
+  structuredOutput: z.boolean(),
+  toolCalling: z.boolean(),
+  allowInsecureHttp: z.boolean(),
+}).strict();
+export type UpdateAskProviderConfigurationInput = z.infer<
+  typeof updateAskProviderConfigurationSchema
+>;
+
+export const checkAskProviderConfigurationSchema = z.object({
+  expectedVersion: providerConfigurationVersionSchema,
+}).strict();
+export type CheckAskProviderConfigurationInput = z.infer<
+  typeof checkAskProviderConfigurationSchema
+>;
+
+export const setAskProviderEnabledSchema = z.object({
+  expectedVersion: providerConfigurationVersionSchema,
+  enabled: z.boolean(),
+}).strict();
+export type SetAskProviderEnabledInput = z.infer<typeof setAskProviderEnabledSchema>;
+
+export const askCitationSchema = z.object({
+  sourceId: z.string().max(80).regex(/^S[1-9][0-9]*$/u),
+  path: z.string().trim().min(1).max(4_096)
+    .regex(/^[^\u0000-\u001f\u007f\\]+$/u),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  revision: askRevisionSchema,
+  excerpt: z.string().max(32_768),
+  summary: z.string().trim().min(1).max(1_000),
+}).strict().refine(
+  ({ startLine, endLine }) => endLine >= startLine,
+  { path: ["endLine"], message: "Ask 引用结束行不能早于起始行" },
+).refine(
+  ({ path: sourcePath }) => !sourcePath.startsWith("/")
+    && !/^[A-Za-z]:/u.test(sourcePath)
+    && sourcePath.split("/").every((component) => component !== "" && component !== "." && component !== ".."),
+  { path: ["path"], message: "Ask 引用路径必须是安全的项目相对路径" },
+);
+export type AskCitationDto = z.infer<typeof askCitationSchema>;
+
+export const askWorkItemDraftSchema = z.object({
+  title: z.string().trim().min(1).max(200)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  objective: z.string().trim().min(1).max(5_000)
+    .regex(/^[^\u0000]*$/u),
+  acceptanceCriteria: z.array(
+    z.string().trim().min(1).max(1_000).regex(/^[^\u0000]*$/u),
+  ).max(20),
+}).strict();
+export type AskWorkItemDraftDto = z.infer<typeof askWorkItemDraftSchema>;
+
+const nullableAskTokenCountSchema = z.number().int().nonnegative().nullable();
+
+export const askAnswerSchema = z.object({
+  answer: z.string().trim().min(1).max(20_000),
+  citations: z.array(askCitationSchema).max(20),
+  invalidCitationIds: z.array(z.string().max(80).regex(/^S[1-9][0-9]*$/u)).max(50),
+  uncertainties: z.array(z.string().trim().min(1).max(1_000)).max(24),
+  suggestedQuestions: z.array(z.string().trim().min(1).max(500)).max(8),
+  workItemDraft: askWorkItemDraftSchema.nullable(),
+  provider: z.object({
+    id: askProviderIdSchema,
+    label: z.string().trim().min(1).max(120),
+    model: z.string().trim().min(1).max(256),
+  }).strict(),
+  revision: askRevisionSchema,
+  dirty: z.boolean(),
+  usage: z.object({
+    inputTokens: nullableAskTokenCountSchema,
+    outputTokens: nullableAskTokenCountSchema,
+  }).strict(),
+  durationMs: z.number().int().nonnegative(),
+  answeredAt: z.string().datetime(),
+}).strict().superRefine(({ citations, revision }, context) => {
+  for (const [index, citation] of citations.entries()) {
+    if (citation.revision !== revision) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["citations", index, "revision"],
+        message: "Ask 引用 revision 必须与回答一致",
+      });
+    }
+  }
+});
+export type AskAnswerDto = z.infer<typeof askAnswerSchema>;
+
+export const createAskThreadSchema = z.object({
+  providerId: askProviderIdSchema,
+  revision: askRevisionSchema.optional(),
+  title: z.string().trim().min(1).max(200)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u)
+    .optional(),
+}).strict();
+export type CreateAskThreadInput = z.infer<typeof createAskThreadSchema>;
+
+export const sendAskThreadMessageSchema = z.object({
+  question: z.string().trim().min(1).max(8_000),
+  expectedRevision: askRevisionSchema,
+}).strict();
+export type SendAskThreadMessageInput = z.infer<typeof sendAskThreadMessageSchema>;
+
+export const askThreadMessageSchema = z.object({
+  id: z.string().uuid(),
+  sequence: z.number().int().positive(),
+  role: z.enum(["user", "assistant"]),
+  content: z.string().trim().min(1).max(20_000),
+  answer: askAnswerSchema.nullable(),
+  createdAt: z.string().datetime(),
+}).strict().superRefine((message, context) => {
+  if (message.role === "user" && message.answer !== null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["answer"],
+      message: "用户消息不能携带模型回答",
+    });
+  }
+  if (message.role === "assistant" && message.answer === null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["answer"],
+      message: "助手消息必须携带已验证回答",
+    });
+  }
+});
+export type AskThreadMessageDto = z.infer<typeof askThreadMessageSchema>;
+
+export const askThreadSummarySchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  providerId: askProviderIdSchema,
+  revision: askRevisionSchema,
+  sourceRevision: gitRevisionSchema,
+  title: z.string().trim().min(1).max(200)
+    .regex(/^[^\u0000-\u001f\u007f]+$/u),
+  status: z.enum(["active", "archived"]),
+  messageCount: z.number().int().nonnegative(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+export type AskThreadSummaryDto = z.infer<typeof askThreadSummarySchema>;
+
+export const askThreadSchema = askThreadSummarySchema.extend({
+  messages: z.array(askThreadMessageSchema).max(200),
+}).strict();
+export type AskThreadDto = z.infer<typeof askThreadSchema>;
+
+export const changesetFileStatusSchema = z.enum([
+  "added",
+  "modified",
+  "deleted",
+  "renamed",
+  "copied",
+  "type_changed",
+  "unmerged",
+]);
+export type ChangesetFileStatus = z.infer<typeof changesetFileStatusSchema>;
+
+export const changesetFileSchema = z.object({
+  path: safeRepositoryRelativePathSchema,
+  status: changesetFileStatusSchema,
+  oldPath: safeRepositoryRelativePathSchema.nullable(),
+  binary: z.boolean(),
+}).strict().superRefine((file, context) => {
+  const requiresOldPath = file.status === "renamed" || file.status === "copied";
+  if (requiresOldPath !== (file.oldPath !== null)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["oldPath"],
+      message: requiresOldPath
+        ? "rename/copy 必须包含 oldPath"
+        : "只有 rename/copy 可以包含 oldPath",
+    });
+  }
+});
+export type ChangesetFileDto = z.infer<typeof changesetFileSchema>;
+
+export const changesetSchema = z.object({
+  runId: z.string().uuid(),
+  baseRevision: gitRevisionSchema,
+  headRevision: gitRevisionSchema.nullable(),
+  dirty: z.boolean(),
+  files: z.array(changesetFileSchema).max(20_000),
+  patchBytes: z.number().int().nonnegative(),
+  patchSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  generatedAt: z.string().datetime(),
+  downloadAvailable: z.boolean(),
+}).strict().superRefine((changeset, context) => {
+  if (!changeset.dirty && (
+    changeset.files.length > 0
+    || changeset.patchBytes !== 0
+    || changeset.downloadAvailable
+  )) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "干净 Changeset 不能声明变更文件、patch 或下载",
+    });
+  }
+  if (changeset.dirty && changeset.files.length === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["files"],
+      message: "脏 Changeset 必须包含变更文件",
+    });
+  }
+  if (changeset.downloadAvailable !== (changeset.patchBytes > 0)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["downloadAvailable"],
+      message: "Changeset 下载状态必须与 patch bytes 一致",
+    });
+  }
+  if (
+    changeset.patchBytes === 0
+    && changeset.patchSha256 !== "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["patchSha256"],
+      message: "空 patch 必须使用空内容 SHA-256",
+    });
+  }
+});
+export type ChangesetDto = z.infer<typeof changesetSchema>;
 
 export type E2eReadinessState =
   | "ready"
@@ -862,6 +2330,81 @@ export interface WorkflowRunDto {
   objective: string;
   changeContract?: ChangeContractDto | null;
   status: "active" | "completed";
+  /** Exact remote Git object id pinned when this Run was created. */
+  baseRevision?: GitRevision | null;
+  /** Immutable platform Control Pack version selected for this Run. */
+  definitionVersion?: string | null;
+  /** Legacy Runs preserve the original ordered-flow semantics. */
+  executionModel?: RunExecutionModel | null;
+  /** Direct entry point for flexible Runs; the canonical phase order is unchanged. */
+  targetPhaseId?: PhaseId | null;
+  runIntent?: RunIntent | null;
+  runContextReferences?: RunContextReferences | null;
+  runEnvironmentRequest?: RunEnvironmentRequest | null;
+  resultReceiptVersion?: number | null;
+  /** Public lifecycle only; server filesystem paths are never part of this DTO. */
+  workspaceState?: "provisioning" | "ready" | "busy" | "failed" | "destroyed" | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type RunResultOutcome = "pending" | "running" | "blocked" | "failed" | "completed";
+
+export interface RunResultArtifactDto {
+  phaseId: PhaseId;
+  artifactId: string;
+  artifactKey: string;
+  filePath: string;
+  reviewStatus: ArtifactDto["reviewStatus"];
+  contentHash: string;
+  revision: number;
+}
+
+export interface RunResultExecutionDto {
+  phaseId: PhaseId;
+  executionId: string;
+  status: ExecutionDto["status"];
+  command: string;
+  exitCode: number | null;
+  durationMs: number | null;
+  runnerMode: CodexRunnerMode | null;
+  model: string | null;
+  error: string | null;
+}
+
+export interface RunResultReceiptDto {
+  runId: string;
+  resultReceiptVersion: number;
+  title: string;
+  objective: string;
+  status: WorkflowRunDto["status"];
+  outcome: RunResultOutcome;
+  targetPhaseId: PhaseId | null;
+  summary: string;
+  intent: RunIntent | null;
+  contextReferences: RunContextReferences | null;
+  files: {
+    created: string[];
+    modified: string[];
+    deleted: string[];
+  };
+  artifacts: RunResultArtifactDto[];
+  executions: RunResultExecutionDto[];
+  environment: {
+    request: RunEnvironmentRequest | null;
+    workspaceState: WorkflowRunDto["workspaceState"];
+  };
+  tests: {
+    totalExecutions: number;
+    passedExecutions: number;
+    failedExecutions: number;
+    pendingExecutions: number;
+  };
+  git: ChangesetDto | null;
+  externalOperations: string[];
+  permissionDecisions: string[];
+  risks: string[];
+  recommendations: string[];
   createdAt: string;
   updatedAt: string;
 }

@@ -68,3 +68,30 @@ test("linked intake mirrors the API source limit before submission", () => {
     expectedBehavior: "局部调整后保持已有行为正确。",
   }), ["原始任务（最多 20 个）"]);
 });
+
+test("an MCP intake keeps its immutable external evidence snapshot", () => {
+  const source = {
+    kind: "mcp" as const,
+    adapterId: "linear-readonly",
+    adapterLabel: "Linear（只读）",
+    reference: "ENG-128",
+    externalId: "ENG-128",
+    url: "https://linear.app/acme/issue/ENG-128",
+    fetchedAt: "2026-08-27T08:00:00.000Z",
+    fingerprint: "a".repeat(64),
+  };
+  const contract = materializeChangeContract({
+    ...EMPTY_CHANGE_CONTRACT_DRAFT,
+    workType: "bug",
+    workItem: source,
+    summary: "避免重复下单",
+    currentBehavior: "重试会创建两单",
+    expectedBehavior: "只创建一单",
+    inScope: "订单接口",
+    acceptanceCriteria: "重复请求返回同一订单",
+    regressionScope: "正常下单",
+  });
+
+  assert.deepEqual(contract.workItem, source);
+  assert.equal(contract.sourceRunIds, undefined);
+});

@@ -4,14 +4,20 @@ import { RELEASE_FLOW_STEPS } from "@/lib/release-workflow";
 import { TESTER_FLOW_STEPS } from "@/lib/tester-workflow";
 import { cn } from "@/lib/utils";
 
-export function EngineeringFlowGuide({ compact = false }: { compact?: boolean }) {
+export function EngineeringFlowGuide({
+  compact = false,
+  executorLabel = "Codex",
+}: {
+  compact?: boolean;
+  executorLabel?: string;
+}) {
   return (
     <section className="rounded-xl border border-teal-200 bg-teal-50/50 p-4" aria-label="软件工程四步流程">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-slate-950">软件工程其实只有四步</h3>
           <p className="mt-1 text-xs leading-5 text-slate-600">
-            Engineer 完成后，你只需看实现、测试和风险，再通过并解锁 Tester；七份记录由 Codex 维护，不要求你编辑 Markdown。
+            Engineer 完成后，你只需看实现、测试和风险，再通过并解锁 Tester；七份记录由 {executorLabel} 维护，不要求你编辑 Markdown。
           </p>
         </div>
         <Badge variant="info">写代码在第 2 步</Badge>

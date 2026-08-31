@@ -135,12 +135,14 @@ export function ExecuteDialog({
   phase,
   phases,
   hasChangeContract,
+  allowMissingUpstreamInputs = false,
   outputKeysByPhase,
   workType,
   hasEvidenceRefs,
   productBaseline,
   designBaseline,
   architectureBaseline,
+  figmaEnabled = true,
   definition,
   initialOutputKeys,
   verificationAction = "standard",
@@ -153,12 +155,15 @@ export function ExecuteDialog({
   phase: PhaseRun;
   phases: PhaseRun[];
   hasChangeContract: boolean;
+  allowMissingUpstreamInputs?: boolean;
   outputKeysByPhase: Partial<Record<string, string[]>>;
   workType?: ChangeContract["workType"];
   hasEvidenceRefs: boolean;
   productBaseline?: PhaseBaseline | null;
   designBaseline?: PhaseBaseline | null;
   architectureBaseline?: ArchitectureBaseline | null;
+  /** Cloud MVP does not expose the operator-local Figma MCP bridge. */
+  figmaEnabled?: boolean;
   definition: PhaseDefinition;
   initialOutputKeys?: string[];
   verificationAction?: VerificationE2eAction;
@@ -172,12 +177,16 @@ export function ExecuteDialog({
   const isImplementationPhase = phase.phaseId === "implementation";
   const isE2eAuthoring = phase.phaseId === "verification" && verificationAction === "author_e2e";
   const isE2eExecution = phase.phaseId === "verification" && verificationAction === "run_e2e";
-  const executableOutputKeys = definition.outputs.filter((key) => key !== "change-contract");
-  const effectiveInputKeys = effectiveRequiredInputKeys(
-    definition.inputs,
-    phases,
-    { hasChangeContract, outputKeysByPhase },
+  const executableOutputKeys = definition.outputs.filter((key) =>
+    key !== "change-contract" && (figmaEnabled || key !== "figma-handoff")
   );
+  const effectiveInputKeys = allowMissingUpstreamInputs
+    ? []
+    : effectiveRequiredInputKeys(
+      definition.inputs,
+      phases,
+      { hasChangeContract, outputKeysByPhase },
+    );
   const routedImpactPhaseId = phase.phaseId === "discovery" || phase.phaseId === "design"
     ? phase.phaseId
     : undefined;
@@ -324,7 +333,9 @@ export function ExecuteDialog({
     || (canAssessArchitectureImpact && architectureImpactChoice !== "full");
   const showsArchitectureImpactOnly = canAssessArchitectureImpact
     && architectureImpactChoice !== "full";
-  const figmaOutputSelected = !submitsRoutedImpactAssessment && isFigmaRequested(selectedOutputs);
+  const figmaOutputSelected = figmaEnabled
+    && !submitsRoutedImpactAssessment
+    && isFigmaRequested(selectedOutputs);
   const [model, setModel] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState<CodexReasoningEffort | "">("");
   const [figmaTargetMode, setFigmaTargetMode] = useState<FigmaTarget["mode"]>(
@@ -353,7 +364,7 @@ export function ExecuteDialog({
   const figmaQuery = useQuery({
     queryKey: figmaQueryKey,
     queryFn: () => api.getFigmaIntegration(runId),
-    enabled: open && isDesignPhase && figmaOutputSelected,
+    enabled: open && figmaEnabled && isDesignPhase && figmaOutputSelected,
     staleTime: 10_000,
     retry: 1,
   });
@@ -374,6 +385,7 @@ export function ExecuteDialog({
     queryFn: () => api.getFigmaPlans(runId),
     enabled:
       open
+      && figmaEnabled
       && isDesignPhase
       && figmaOutputSelected
       && runnerMode === "real"
@@ -452,6 +464,8 @@ export function ExecuteDialog({
       && selectedReasoningEffort === capabilities.defaultReasoningEffort,
   );
   const hasResolvedCodexConfiguration = Boolean(selectedModel && selectedReasoningEffort);
+  const realExecutionReady = runnerMode !== "real"
+    || capabilities?.realExecution.state === "ready";
   useEffect(() => {
     setFigmaPlanKey((current) =>
       reconcileFigmaPlanSelection(current, figmaPlans, figmaPlansConfirmed),
@@ -635,7 +649,7 @@ export function ExecuteDialog({
   const canUseSelectedCodexConfiguration =
     showsImpactAssessmentOnly
     || runnerMode !== "real"
-    || hasResolvedCodexConfiguration;
+    || (hasResolvedCodexConfiguration && realExecutionReady);
 
   const selectModel = (nextModel: string) => {
     setModel(nextModel);
@@ -650,16 +664,6 @@ export function ExecuteDialog({
 
   const selectArchitectureImpactChoice = (choice: ArchitectureImpactChoice) => {
     if (mutation.isPending) return;
-    if (
-      choice === "skip"
-      && (
-        (workType !== "bug" && workType !== "technical")
-        || !hasEvidenceRefs
-      )
-    ) {
-      setError("只有在 Change Contract 中带明确证据引用的 Bug 或技术任务可以声明无需架构工作。");
-      return;
-    }
     if ((choice === "reuse" || choice === "partial") && !architectureBaseline) {
       setError("当前项目还没有可复用的已批准架构基线；请选择跳过或完整重跑。");
       return;
@@ -966,13 +970,6 @@ export function ExecuteDialog({
                     const disabled = (
                       (option.value === "reuse" || option.value === "partial")
                       && !architectureBaseline
-                    ) || (
-                      option.value === "skip"
-                      && workType !== "bug"
-                      && workType !== "technical"
-                    ) || (
-                      option.value === "skip"
-                      && !hasEvidenceRefs
                     );
                     return (
                     <label
@@ -1000,11 +997,6 @@ export function ExecuteDialog({
                           <span className="mt-1 block text-[11px] leading-4 text-slate-500">
                             {option.description}
                           </span>
-                          {option.value === "skip" && disabled ? (
-                            <span className="mt-1 block text-[10px] font-semibold text-amber-700">
-                              仅限带证据引用的 Bug / 技术任务
-                            </span>
-                          ) : null}
                       </span>
                     </label>
                     );
@@ -1219,6 +1211,17 @@ export function ExecuteDialog({
               </>
             )}
           </div>
+          {runnerMode === "real"
+            && capabilities
+            && capabilities.realExecution.state !== "ready" ? (
+            <div
+              role="alert"
+              className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-xs leading-5 text-amber-900"
+            >
+              <strong className="block">真实执行还没有获准</strong>
+              <span>{capabilities.realExecution.message}</span>
+            </div>
+          ) : null}
         </section>
         ) : null}
 
@@ -1301,7 +1304,9 @@ export function ExecuteDialog({
             </div>
           ) : (
             <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-7 text-center text-xs leading-5 text-slate-500">
-              {effectiveInputKeys.length
+              {allowMissingUpstreamInputs
+                ? "Flexible Run 直接从本阶段开始；可选上下文会被采用，但不要求补齐前序阶段产物。"
+                : effectiveInputKeys.length
                 ? "暂时没有可用的上游产物。只有审核通过的产物才会出现在这里。"
                 : "这是第一个阶段，不需要选择上游产物。"}
             </div>
@@ -1327,7 +1332,9 @@ export function ExecuteDialog({
                 ? "先选择阶段处置方式；Partial 声明受影响输出，Full 直接选择本次 Codex 交付。"
                 : canAssessRoutedImpact && routedImpactChoice === "partial"
                   ? routedImpactPhaseId === "design"
-                    ? "Design Partial 必须包含设计规格；可按实际影响追加基线、HTML 原型或 Figma，未选产物保持只读。"
+                    ? figmaEnabled
+                      ? "Design Partial 必须包含设计规格；可按实际影响追加基线、HTML 原型或 Figma，未选产物保持只读。"
+                      : "Design Partial 必须包含设计规格；可按实际影响追加基线或 HTML 原型，未选产物保持只读。"
                     : "勾选本次允许 Codex 更新的精确 PRD / Stories 输出；未选择的基线产物保持只读。"
                   : runsRoutedFullExecution
                     ? "选择本次完整执行要生成的产物；Change Contract 是不可变上下文，不会成为可写输出。"
@@ -1353,7 +1360,9 @@ export function ExecuteDialog({
                 : hasExistingArtifacts
                 ? "已有阶段产物，可只选择需要调整的局部范围；未选择的产物会保持不变。"
                 : isDesignPhase
-                  ? "首次设计执行必须包含设计基线和设计规格，HTML 原型与 Figma 可按需追加。"
+                  ? figmaEnabled
+                    ? "首次设计执行必须包含设计基线和设计规格，HTML 原型与 Figma 可按需追加。"
+                    : "首次设计执行必须包含设计基线和设计规格，HTML 原型可按需追加。"
                   : "首次执行需要生成本阶段的全部注册产物。"}
             </p>
           </div>

@@ -69,11 +69,13 @@ const statusColumns: ReadonlyArray<{
 export function TicketBoard({
   runId,
   ticketId,
+  readOnly = false,
   onOpenTicket,
   onCloseTicket,
 }: {
   runId: string;
   ticketId?: string;
+  readOnly?: boolean;
   onOpenTicket: (id: string) => void;
   onCloseTicket: () => void;
 }) {
@@ -89,8 +91,12 @@ export function TicketBoard({
     enabled: Boolean(ticketId),
   });
   const statusMutation = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: TicketStatus }) =>
-      api.updateTicketStatus(runId, id, status),
+    mutationFn: ({ id, status }: { id: string; status: TicketStatus }) => {
+      if (readOnly) {
+        throw new Error("这条 Session Run 已完成；Ticket 状态仅供审计查看。");
+      }
+      return api.updateTicketStatus(runId, id, status);
+    },
     onMutate: async ({ id, status }) => {
       setStatusError(undefined);
       await queryClient.cancelQueries({ queryKey: ticketQueryKey(runId) });
@@ -137,6 +143,7 @@ export function TicketBoard({
   });
 
   const updateStatus = (id: string, status: TicketStatus) => {
+    if (readOnly) return;
     const ticket = ticketsQuery.data?.find((item) => item.id === id);
     if (ticket?.status === status || statusMutation.isPending) return;
     statusMutation.mutate({ id, status });
@@ -157,6 +164,7 @@ export function TicketBoard({
             <ListChecks className="h-5 w-5 text-teal-600" aria-hidden />
             <h2 className="text-lg font-semibold tracking-tight text-slate-950">用户故事 Tickets</h2>
             <Badge variant="muted">{tickets.length}</Badge>
+            {readOnly ? <Badge variant="outline">完成态只读</Badge> : null}
           </div>
           <p className="mt-1 text-sm leading-6 text-slate-500">
             每张卡片对应 PM / BA 产出的一条用户故事，可独立推进和跟踪。
@@ -214,6 +222,7 @@ export function TicketBoard({
                             statusMutation.isPending && statusMutation.variables?.id === ticket.id
                           }
                           mutationPending={statusMutation.isPending}
+                          readOnly={readOnly}
                           onOpen={() => onOpenTicket(ticket.id)}
                           onStatusChange={(status) => updateStatus(ticket.id, status)}
                         />
@@ -243,6 +252,7 @@ export function TicketBoard({
         error={ticketQuery.error}
         statusError={statusError}
         mutationPending={statusMutation.isPending}
+        readOnly={readOnly}
         onRetry={() => void ticketQuery.refetch()}
         onClose={onCloseTicket}
         onStatusChange={(status) => ticketId && updateStatus(ticketId, status)}
@@ -255,12 +265,14 @@ function TicketCard({
   ticket,
   pending,
   mutationPending,
+  readOnly,
   onOpen,
   onStatusChange,
 }: {
   ticket: TicketSummary;
   pending: boolean;
   mutationPending: boolean;
+  readOnly: boolean;
   onOpen: () => void;
   onStatusChange: (status: TicketStatus) => void;
 }) {
@@ -298,7 +310,9 @@ function TicketCard({
       </button>
       <div className="flex items-center justify-between gap-2 border-t border-slate-100 px-3 py-2">
         <label className="relative min-w-0 flex-1">
-          <span className="sr-only">更新 {ticket.identifier} 状态</span>
+          <span className="sr-only">
+            {readOnly ? "查看" : "更新"} {ticket.identifier} 状态{readOnly ? "（只读）" : ""}
+          </span>
           <span
             className={cn(
               "pointer-events-none absolute left-2.5 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full",
@@ -307,9 +321,10 @@ function TicketCard({
           />
           <select
             value={ticket.status}
-            disabled={mutationPending}
+            disabled={readOnly || mutationPending}
+            aria-label={`${readOnly ? "查看" : "更新"} ${ticket.identifier} 状态${readOnly ? "（只读）" : ""}`}
             onChange={(event) => onStatusChange(event.target.value as TicketStatus)}
-            className="h-8 w-full appearance-none rounded-lg border border-transparent bg-slate-50 pl-6 pr-7 text-[11px] font-medium text-slate-600 outline-none transition hover:border-slate-200 hover:bg-white focus:border-teal-400 focus:ring-2 focus:ring-teal-100 disabled:cursor-wait disabled:opacity-60"
+            className="h-8 w-full appearance-none rounded-lg border border-transparent bg-slate-50 pl-6 pr-7 text-[11px] font-medium text-slate-600 outline-none transition hover:border-slate-200 hover:bg-white focus:border-teal-400 focus:ring-2 focus:ring-teal-100 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {statusColumns.map((item) => (
               <option key={item.status} value={item.status}>
@@ -338,6 +353,7 @@ function TicketDetailDialog({
   error,
   statusError,
   mutationPending,
+  readOnly,
   onRetry,
   onClose,
   onStatusChange,
@@ -348,6 +364,7 @@ function TicketDetailDialog({
   error: unknown;
   statusError?: string;
   mutationPending: boolean;
+  readOnly: boolean;
   onRetry: () => void;
   onClose: () => void;
   onStatusChange: (status: TicketStatus) => void;
@@ -372,19 +389,20 @@ function TicketDetailDialog({
       ) : ticket ? (
         <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_300px]">
           <div className="scrollbar-thin min-h-[360px] overflow-y-auto border-b border-slate-200 bg-white p-5 sm:p-7 lg:max-h-[72vh] lg:border-b-0 lg:border-r">
-            <MarkdownPreview content={ticket.content} />
+            <MarkdownPreview content={ticket.content} mode="untrusted" />
           </div>
           <aside className="scrollbar-thin overflow-y-auto bg-slate-50/70 p-5 lg:max-h-[72vh]">
             <div className="rounded-xl border border-slate-200 bg-white p-4">
               <label className="block">
                 <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  当前状态
+                  当前状态{readOnly ? " · 只读" : ""}
                 </span>
                 <select
                   value={ticket.status}
-                  disabled={mutationPending}
+                  disabled={readOnly || mutationPending}
+                  aria-label={`Ticket 当前状态${readOnly ? "（只读）" : ""}`}
                   onChange={(event) => onStatusChange(event.target.value as TicketStatus)}
-                  className="mt-2 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100 disabled:cursor-wait disabled:opacity-60"
+                  className="mt-2 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {statusColumns.map((item) => (
                     <option key={item.status} value={item.status}>

@@ -1,0 +1,43 @@
+name: Bug report
+description: 报告一个可复现的问题；安全问题请使用私密漏洞报告。
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "请先删除 Token、密钥、私有源码、本机绝对路径和客户数据。"
+  - type: checkboxes
+    attributes:
+      label: 安全确认
+      options:
+        - label: 这不是需要私密处理的安全漏洞。
+          required: true
+        - label: 我已在默认分支的最新代码上复现。
+          required: true
+  - type: textarea
+    attributes:
+      label: 问题说明
+      description: 你正在做什么，哪里不符合预期？
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 复现步骤
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 预期结果与实际结果
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 环境
+      description: commit、OS、Node/Docker 版本、部署方式和相关的非敏感配置。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 已脱敏证据
+      description: 日志、截图或最小仓库；不要粘贴秘密和私有数据。

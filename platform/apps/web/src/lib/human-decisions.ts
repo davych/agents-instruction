@@ -11,6 +11,23 @@ export interface HumanDecisionPreset {
   value: string;
 }
 
+export function visibleHumanReviewComment(value: string): string {
+  return value
+    .replace(
+      /<!--\s*ai-sdlc:human-decisions:v1\s*-->\s*```json[\s\S]*?```/giu,
+      "",
+    )
+    .replace(
+      /<!--\s*ai-sdlc:human-decisions:v1\s+[A-Za-z0-9_-]+\s*-->/gu,
+      "",
+    )
+    .replace(
+      "Human decisions captured; update the formal phase artifacts and remove only the blockers these answers actually resolve.",
+      "已记录人工决定；请由当前角色更新正式产物，并只关闭这些答案实际解决的事项。",
+    )
+    .trim();
+}
+
 export const HUMAN_DECISION_PHASE_LABELS: Record<HumanDecisionPhaseId, string> = {
   discovery: "Product",
   design: "Design",
@@ -90,6 +107,31 @@ export function nonBlockingHumanDecisionItems(gate?: PhaseHumanDecisionGate) {
   return gate?.items.filter(
     (item) => item.kind === "decision" && !item.blocking,
   ) ?? [];
+}
+
+/**
+ * A Session may safely rerun the current role without inventing a human
+ * decision only when every remaining blocker is work owned by that same
+ * phase. Decisions and upstream dependencies must continue to stop here.
+ */
+export function isCurrentRoleRepairGate(
+  gate?: PhaseHumanDecisionGate,
+): boolean {
+  if (!gate || gate.blockingCount === 0) return false;
+  const blockers = gate.items.filter(({ blocking }) => blocking);
+  return blockers.length === gate.blockingCount
+    && blockers.every((item) => (
+      item.kind === "work" && item.actionPhaseId === gate.phaseId
+    ));
+}
+
+export function isGenericHumanDecisionResponse(value: string): boolean {
+  const compact = value
+    .trim()
+    .toLocaleLowerCase("en-US")
+    .replace(/[\s\p{P}\p{S}]+/gu, "");
+  return compact.length === 0
+    || /^(?:(?:同意|确认|可以|好的|yes|agree|approved|ok))+$/iu.test(compact);
 }
 
 export function isDeferredDesignHandoffCleanupGate(

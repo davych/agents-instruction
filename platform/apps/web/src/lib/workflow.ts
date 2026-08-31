@@ -166,6 +166,27 @@ export const STATUS_LABELS: Record<PhaseStatus, string> = {
   failed: "执行失败",
 };
 
+const PROVIDER_EXECUTOR_LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  lmstudio: "LM Studio",
+  ollama: "Ollama",
+  custom: "Custom Provider",
+};
+
+/**
+ * A running phase must name the executor proven by its persisted execution,
+ * not by the current route. This keeps standalone Codex Runs truthful while a
+ * Session-linked Provider-native Run is opened in the shared audit UI.
+ */
+export function phaseStatusLabel(status: PhaseStatus, command?: string): string {
+  if (status !== "running") return STATUS_LABELS[status];
+  if (!command) return "执行中";
+  const providerExecution = /^provider-native:([a-z][a-z0-9-]*)$/u.exec(command);
+  if (!providerExecution) return "Codex 执行中";
+  const providerLabel = PROVIDER_EXECUTOR_LABELS[providerExecution[1] ?? ""] ?? "Provider";
+  return `${providerLabel} 执行中`;
+}
+
 export function getPhaseName(phase: PhaseDefinition) {
   return phase.name || PHASE_NAMES[phase.id] || phase.id;
 }

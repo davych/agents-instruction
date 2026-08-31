@@ -13,7 +13,7 @@ test("execution rows persist the resolved model and reasoning effort", async () 
   const client = {
     async query(sql: string, values?: unknown[]) {
       queries.push({ sql, values });
-      if (sql.includes("SELECT * FROM phase_runs")) {
+      if (sql.includes("FROM phase_runs pr")) {
         return { rows: [{ id: phaseRunId, status: "ready" }] };
       }
       if (sql.includes("INSERT INTO executions")) {

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   PHASE_ROUTE_VERSION,
@@ -27,14 +28,17 @@ import {
   type FigmaIntegrationStatusDto,
   type FigmaPlanCapabilitiesDto,
   type FigmaTarget,
+  type GitRevision,
   type HumanDecisionPhaseId,
   type PhaseId,
   type PhaseBaselineDto,
   type PhaseResolutionDto,
   type PhaseRunDto,
   type ProductBaselineDto,
+  type ReviewDto,
   type ReviewVerificationE2eScriptsInput,
   type ReviewPhaseInput,
+  type RunResultReceiptDto,
   type VerificationE2eFlowDto,
   type WorkflowDefinition
 } from "@ai-sdlc/contracts";
@@ -45,7 +49,9 @@ import type {
   CurrentArtifactSnapshot,
   PhaseBaselineRecord,
   PgWorkflowStore,
+  RunPersistenceSnapshot,
   RunBundle,
+  RuntimeProject,
   SelectionArtifact,
 } from "../db/store.js";
 import { AppError } from "../domain/errors.js";
@@ -58,7 +64,12 @@ import {
 import {
   assessPhaseHumanDecisionGate,
   assertPhaseHumanDecisionGateReady,
+  buildHumanDecisionReplay,
+  completeProductDecisionMaterializationPolicy,
   humanDecisionSummary,
+  parseHumanDecisionCapture,
+  productDecisionMaterializationFeedback,
+  projectProductDecisionMaterializationGate,
   serializeHumanDecisionCapture,
 } from "../domain/human-decisions.js";
 import { assertImplementationReady } from "../domain/implementation-readiness.js";
@@ -102,9 +113,20 @@ import {
 } from "../domain/workflow.js";
 import { CodexTerminalRunner, type ResolvedFigmaTarget } from "./codex-runner.js";
 import {
+  ProviderPhaseExecutor,
+  type ProviderPhaseExecutionContext,
+} from "./agent/provider-phase-executor.js";
+import { redactLikelySecrets } from "./agent/rooted-agent-tool-host.js";
+import {
+  type CloudProjectService,
+  type PreparedRunWorkspace,
+  computeControlPackVersion,
+} from "./cloud-project-service.js";
+import {
   CodexExecutionCapabilities,
   type ResolvedCodexExecutionConfig,
 } from "./codex-execution-capabilities.js";
+import { AskProviderError } from "./llm/types.js";
 import {
   assertRuntimePath,
   prepareArtifactRevision,
@@ -130,6 +152,11 @@ import { validateReleaseEvidence } from "./release-evidence-validator.js";
 import type { FigmaMcpIntegration } from "./figma-mcp-integration.js";
 import { initializeCodexProject } from "./project-initializer.js";
 import { ProjectPathPolicy } from "./project-paths.js";
+import {
+  resolveRunProjectKnowledge,
+  type ProjectKnowledgeResolverLike,
+} from "./project-knowledge.js";
+import { createRunChangeset, type GeneratedRunChangeset } from "./run-changeset.js";
 import type {
   VerificationE2eCoordinator,
   VerificationE2eScriptReviewAuthority,
@@ -139,7 +166,10 @@ import {
   type VerificationGitState,
 } from "./verification-git-state.js";
 import { validateVerificationEvidenceProvenance } from "./verification-evidence-provenance.js";
-import { withVerificationWorkspaceProtected } from "./verification-workspace.js";
+import {
+  VERIFICATION_RUNTIME_EVIDENCE_PATHS,
+  withVerificationWorkspaceProtected,
+} from "./verification-workspace.js";
 
 interface VerificationE2eDefinitionContext {
   definition: LoadedDefinition;
@@ -156,10 +186,69 @@ interface VerificationE2eExecutionContext extends VerificationE2eDefinitionConte
   executionConfig: ResolvedCodexExecutionConfig | null;
 }
 
+type RunReceiptPhaseState = {
+  phaseId: PhaseId;
+  status: PhaseRunDto["status"];
+  executions: readonly Pick<
+    ExecutionDto,
+    "status" | "error" | "createdAt" | "startedAt"
+  >[];
+};
+
+export function deriveRunResultState(input: {
+  runStatus: string;
+  targetPhaseId?: PhaseId | null;
+  phases: readonly RunReceiptPhaseState[];
+}): {
+  outcome: RunResultReceiptDto["outcome"];
+  currentPhaseId: PhaseId;
+  unresolvedExecutionErrors: string[];
+} {
+  const currentPhase = input.phases.find(({ status }) => status !== "approved")
+    ?? input.phases.at(-1);
+  const currentPhaseId = currentPhase?.phaseId ?? input.targetPhaseId ?? "discovery";
+  const latestExecution = currentPhase
+    ? latestReceiptExecution(currentPhase.executions)
+    : undefined;
+  const outcome: RunResultReceiptDto["outcome"] = input.runStatus === "completed"
+    ? "completed"
+    : currentPhase?.status === "failed"
+      ? "failed"
+      : currentPhase?.status === "running"
+        || latestExecution?.status === "queued"
+        || latestExecution?.status === "running"
+        ? "running"
+        : currentPhase?.status === "awaiting_review"
+          || currentPhase?.status === "changes_requested"
+          ? "blocked"
+          : "pending";
+  const unresolvedExecutionErrors = outcome === "failed" && latestExecution?.error?.trim()
+    ? [latestExecution.error.trim()]
+    : [];
+  return { outcome, currentPhaseId, unresolvedExecutionErrors };
+}
+
+function latestReceiptExecution(
+  executions: RunReceiptPhaseState["executions"],
+): RunReceiptPhaseState["executions"][number] | undefined {
+  return executions.reduce<RunReceiptPhaseState["executions"][number] | undefined>(
+    (latest, candidate) => {
+      if (!latest) return candidate;
+      const latestAt = Date.parse(latest.createdAt || latest.startedAt || "");
+      const candidateAt = Date.parse(candidate.createdAt || candidate.startedAt || "");
+      if (!Number.isFinite(candidateAt)) return latest;
+      return !Number.isFinite(latestAt) || candidateAt > latestAt ? candidate : latest;
+    },
+    undefined,
+  );
+}
+
 export class WorkflowService {
   private readonly tasks = new Set<Promise<void>>();
   private readonly artifactRevisionLocks = new Map<string, Promise<void>>();
   private readonly activeWorkspaceMutations = new Set<string>();
+  private readonly quarantinedWorkspaceMutations = new Set<string>();
+  private activePhaseExecutions = 0;
   private readonly e2eReadinessCache = new Map<string, {
     descriptorHash: string;
     readiness: E2eWorkspaceReadinessDto;
@@ -182,16 +271,86 @@ export class WorkflowService {
       | "author"
       | "latestAuthoring"
       | "review"
+      | "prepareReview"
       | "execute"
     >,
+    private readonly cloudProjects?: CloudProjectService,
+    private readonly projectKnowledge?: ProjectKnowledgeResolverLike,
+    private readonly maxConcurrentPhaseExecutions = 1,
+    private readonly providerPhaseExecutor?: ProviderPhaseExecutor,
   ) {}
 
   async listProjects() {
-    return this.store.listProjects();
+    return this.cloudProjects
+      ? this.cloudProjects.listProjects()
+      : this.store.listProjects();
+  }
+
+  async pruneCloudWorkspaces(input: {
+    dryRun: boolean;
+    olderThanHours: number;
+    limit: number;
+  }) {
+    return this.requireCloudProjects().pruneUnusedWorkspaces(input);
+  }
+
+  phaseExecutionCapacity() {
+    return {
+      active: this.activePhaseExecutions,
+      maximum: Math.max(1, Math.floor(this.maxConcurrentPhaseExecutions)),
+      quarantinedWorkspaces: this.quarantinedWorkspaceMutations.size,
+    };
+  }
+
+  async assertCloudProjectAccess(projectId: string): Promise<void> {
+    if (!this.cloudProjects) return;
+    const project = await this.store.getProject(projectId);
+    assertRemoteCloudProject(project);
+  }
+
+  async assertCloudRunAccess(runId: string): Promise<void> {
+    if (!this.cloudProjects) return;
+    const bundle = await this.store.getRun(runId);
+    assertRemoteCloudProject(bundle.project);
+  }
+
+  async assertCloudArtifactAccess(artifactId: string): Promise<void> {
+    if (!this.cloudProjects) return;
+    assertRemoteCloudProject({
+      sourceKind: await this.store.projectSourceKindForArtifact(artifactId),
+    });
+  }
+
+  async assertCloudExecutionAccess(executionId: string): Promise<void> {
+    if (!this.cloudProjects) return;
+    assertRemoteCloudProject({
+      sourceKind: await this.store.projectSourceKindForExecution(executionId),
+    });
+  }
+
+  async assertCloudAskThreadAccess(threadId: string): Promise<void> {
+    if (!this.cloudProjects) return;
+    assertRemoteCloudProject({
+      sourceKind: await this.store.projectSourceKindForAskThread(threadId),
+    });
+  }
+
+  async assertCloudAgentSessionAccess(sessionId: string): Promise<void> {
+    if (!this.cloudProjects) return;
+    assertRemoteCloudProject({
+      sourceKind: await this.store.projectSourceKindForAgentSession(sessionId),
+    });
   }
 
   async createProject(input: CreateProjectInput, signal?: AbortSignal) {
     assertProjectCreationActive(signal);
+    if (input.sourceKind === "remote-git") {
+      const created = await this.requireCloudProjects().createRemoteProject(input, signal);
+      return {
+        project: created.project,
+        definition: publicDefinition(created.definition),
+      };
+    }
     const summary = input.summary || "由 AI SDLC 平台管理的项目";
     let rootPath = await this.paths.resolveProjectPath(input.rootPath, input.initialize);
     assertProjectCreationActive(signal);
@@ -214,19 +373,46 @@ export class WorkflowService {
       rootPath,
       configPath: definition.configPath
     });
-    return { project, definition: publicDefinition(definition) };
+    return {
+      project: this.cloudProjects
+        ? await this.cloudProjects.presentProject(project)
+        : project,
+      definition: publicDefinition(definition),
+    };
   }
 
   async getProject(projectId: string) {
     const project = await this.store.getProject(projectId);
     await this.assertProjectPath(project.rootPath);
-    const definition = await loadDefinition(project.rootPath);
-    return { project, definition: publicDefinition(definition) };
+    const definition = await loadRuntimeDefinition(project);
+    return {
+      project: this.cloudProjects
+        ? await this.cloudProjects.presentProject(project)
+        : project,
+      definition: publicDefinition(definition),
+    };
+  }
+
+  listRepositoryCredentials(host?: string) {
+    return this.requireCloudProjects().credentialSummaries(host);
+  }
+
+  async syncProjectRepository(
+    projectId: string,
+    expectedRevision?: GitRevision,
+    signal?: AbortSignal,
+  ) {
+    return this.requireCloudProjects().syncProject(projectId, expectedRevision, signal);
+  }
+
+  async getProjectKnowledge(projectId: string) {
+    return this.requireCloudProjects().getKnowledge(projectId);
   }
 
   async getE2eWorkspace(projectId: string): Promise<E2eWorkspaceDto | null> {
     const project = await this.store.getProject(projectId);
     await this.assertProjectPath(project.rootPath);
+    if (project.sourceKind === "remote-git") return null;
     return this.requireVerificationE2e().optionalWorkspace(project);
   }
 
@@ -236,6 +422,7 @@ export class WorkflowService {
   ): Promise<E2eWorkspaceDto> {
     const project = await this.store.getProject(projectId);
     await this.assertProjectPath(project.rootPath);
+    assertOperatorLocalFeatureAllowed(project, "E2E Workspace");
     const releaseWorkspaces = this.acquireWorkspaceMutations([
       project.rootPath,
       path.resolve(input.rootPath),
@@ -255,6 +442,7 @@ export class WorkflowService {
   }> {
     const project = await this.store.getProject(projectId);
     await this.assertProjectPath(project.rootPath);
+    assertOperatorLocalFeatureAllowed(project, "E2E Workspace");
     const coordinator = this.requireVerificationE2e();
     const workspace = await coordinator.workspace(project);
     const releaseWorkspaces = this.acquireWorkspaceMutations([
@@ -277,10 +465,40 @@ export class WorkflowService {
     return this.store.listRuns(projectId);
   }
 
-  async createRun(projectId: string, input: CreateRunInput) {
-    const project = await this.store.getProject(projectId);
+  async createRun(
+    projectId: string,
+    input: CreateRunInput,
+    preparedAgentWorkspace?: PreparedRunWorkspace,
+    agentSessionRun?: { sessionId: string; triggerMessageId: string },
+  ) {
+    const registeredProject = await this.store.getProject(projectId);
+    if (
+      preparedAgentWorkspace
+      && (
+        preparedAgentWorkspace.workspace.projectId !== projectId
+        || (input.baseRevision && preparedAgentWorkspace.baseRevision !== input.baseRevision)
+      )
+    ) {
+      throw new AppError(
+        "Agent Sandbox 与目标项目或固定 revision 不一致",
+        409,
+        "AGENT_RUN_WORKSPACE_MISMATCH",
+      );
+    }
+    const ownsPreparedWorkspace = !preparedAgentWorkspace;
+    let prepared: PreparedRunWorkspace | null = preparedAgentWorkspace ?? null;
+    let materializedChangeContractPath: string | undefined;
+    let cleanupAllowed = true;
+    try {
+      prepared = prepared ?? (registeredProject.sourceKind === "remote-git"
+        ? await this.requireCloudProjects().prepareRunWorkspace(
+          registeredProject,
+          input.baseRevision,
+        )
+        : null);
+    const project = prepared?.project ?? registeredProject;
     await this.assertProjectPath(project.rootPath);
-    const definition = await loadDefinition(project.rootPath);
+    const definition = await loadRuntimeDefinition(project);
     const runId = randomUUID();
     const resolved = resolveTaskArtifactPaths(definition, { id: runId, title: input.title });
     const designSpec = resolved.artifacts.find((artifact) => artifact.id === "design-spec");
@@ -315,6 +533,18 @@ export class WorkflowService {
     const changeContractArtifact = resolved.artifacts.find(
       (artifact) => artifact.id === CHANGE_CONTRACT_ARTIFACT_KEY,
     );
+    if (input.runContextReferences?.sourceRunIds.length) {
+      await this.requireProjectSourceRuns(projectId, input.runContextReferences.sourceRunIds);
+    }
+    const executionModel = (
+      input.targetPhaseId
+      || input.runIntent
+      || input.runContextReferences
+      || input.runEnvironmentRequest
+    ) ? "flexible" : "legacy";
+    const targetPhaseId = executionModel === "flexible"
+      ? input.targetPhaseId ?? "discovery"
+      : undefined;
     const artifactPaths: Record<string, string> = Object.fromEntries(
       resolved.artifacts
         .filter((artifact) =>
@@ -323,8 +553,6 @@ export class WorkflowService {
         )
         .map((artifact) => [artifact.id, artifact.relativePath]),
     );
-    let materializedChangeContractPath: string | undefined;
-    try {
       let persistedChangeContractArtifact;
       if (changeContractArtifact) {
         const content = renderChangeContract(changeContract);
@@ -344,15 +572,87 @@ export class WorkflowService {
           contentHash: createHash("sha256").update(content).digest("hex"),
         };
       }
-      return await this.store.createRun(projectId, input.title, runObjective, {
-        runId,
-        artifactPaths,
-        changeContract,
-        changeContractArtifact: persistedChangeContractArtifact,
-      });
+      let created;
+      try {
+        created = await this.store.createRun(projectId, input.title, runObjective, {
+          runId,
+          artifactPaths,
+          changeContract,
+          changeContractArtifact: persistedChangeContractArtifact,
+          workspaceId: prepared?.workspace.id,
+          baseRevision: prepared?.baseRevision,
+          definitionVersion: prepared?.definitionVersion,
+          executionModel,
+          targetPhaseId,
+          runIntent: input.runIntent,
+          runContextReferences: input.runContextReferences,
+          runEnvironmentRequest: input.runEnvironmentRequest,
+          resultReceiptVersion: executionModel === "flexible" ? 1 : undefined,
+          agentSessionRun,
+        });
+      } catch (persistenceError) {
+        if (
+          !(persistenceError instanceof AppError)
+          || persistenceError.code !== "RUN_COMMIT_OUTCOME_UNKNOWN"
+        ) {
+          // The Store rolled back a failure that happened before COMMIT was
+          // attempted, so materialized state is safe to remove.
+          throw persistenceError;
+        }
+        let confirmed: RunPersistenceSnapshot | null;
+        try {
+          confirmed = await this.store.findRunPersistence(runId);
+        } catch {
+          confirmed = null;
+        }
+        if (!confirmed) {
+          // An immediate absent read can race a backend that is still finishing
+          // COMMIT. It is not proof of rollback. Preserve the file/Workspace
+          // and let later reconciliation or safe pruning decide.
+          cleanupAllowed = false;
+          if (prepared && ownsPreparedWorkspace) {
+            this.requireCloudProjects().commitPreparedRun(prepared.workspace);
+          }
+          throw new AppError(
+            "Run 创建结果暂时无法确认；平台已保留 Workspace，稍后可按 Run ID 恢复或由安全清理任务回收",
+            503,
+            "RUN_CREATE_OUTCOME_UNKNOWN",
+            { runId },
+          );
+        }
+
+        cleanupAllowed = false;
+        assertConfirmedRunPersistence(confirmed, {
+          runId,
+          projectId,
+          title: input.title,
+          objective: runObjective,
+          changeContract,
+          artifactPaths,
+          workspaceId: prepared?.workspace.id ?? null,
+          baseRevision: prepared?.baseRevision ?? null,
+          definitionVersion: prepared?.definitionVersion ?? null,
+          agentSessionRun: agentSessionRun ?? null,
+        });
+        if (prepared && ownsPreparedWorkspace) {
+          this.requireCloudProjects().commitPreparedRun(prepared.workspace);
+        }
+        return confirmed.run;
+      }
+      if (prepared && ownsPreparedWorkspace) {
+        this.requireCloudProjects().commitPreparedRun(prepared.workspace);
+      }
+      return created;
     } catch (error) {
-      if (materializedChangeContractPath) {
+      if (cleanupAllowed && materializedChangeContractPath) {
         await rm(materializedChangeContractPath, { force: true }).catch(() => undefined);
+      }
+      if (cleanupAllowed && prepared && ownsPreparedWorkspace) {
+        const failedPrepared = prepared;
+        prepared = null;
+        await this.requireCloudProjects()
+          .discardPreparedRun(failedPrepared.workspace)
+          .catch(() => undefined);
       }
       throw error;
     }
@@ -376,20 +676,137 @@ export class WorkflowService {
   async getRun(runId: string) {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
-    const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+    const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
     attachAvailableArtifacts(bundle, definition);
     const [productBaseline, designBaseline, architectureBaseline] = await Promise.all([
       this.phaseBaselineCandidate(bundle, definition, "discovery"),
       this.phaseBaselineCandidate(bundle, definition, "design"),
       this.architectureBaselineCandidate(bundle, definition),
     ]);
-    const { artifactPaths: _internalArtifactPaths, ...publicBundle } = bundle;
+    const {
+      artifactPaths: _internalArtifactPaths,
+      workspace: _internalWorkspace,
+      agentSessionRun: internalAgentSessionRun,
+      ...publicBundle
+    } = bundle;
     return {
       ...publicBundle,
+      agentSession: internalAgentSessionRun
+        ? { sessionId: internalAgentSessionRun.sessionId }
+        : null,
+      project: this.cloudProjects
+        ? await this.cloudProjects.presentProject(bundle.project)
+        : bundle.project,
       definition: publicDefinition(definition),
       productBaseline,
       designBaseline,
       architectureBaseline,
+    };
+  }
+
+  async getRunResult(runId: string): Promise<RunResultReceiptDto> {
+    const bundle = await this.store.getRun(runId);
+    await this.assertProjectPath(bundle.project.rootPath);
+    const cachedChangeset = await this.store.getRunChangeset(runId);
+    const artifacts = bundle.phases.flatMap((phase) => phase.artifacts.map((artifact) => ({
+      phaseId: phase.phaseId,
+      artifactId: artifact.id,
+      artifactKey: artifact.artifactKey,
+      filePath: artifact.filePath,
+      reviewStatus: artifact.reviewStatus,
+      contentHash: artifact.contentHash,
+      revision: artifact.revision,
+    })));
+    const executions = bundle.phases.flatMap((phase) => phase.executions.map((execution) => {
+      const startedAt = execution.startedAt ? Date.parse(execution.startedAt) : Number.NaN;
+      const finishedAt = execution.finishedAt ? Date.parse(execution.finishedAt) : Number.NaN;
+      return {
+        phaseId: phase.phaseId,
+        executionId: execution.id,
+        status: execution.status,
+        command: redactLikelySecrets(execution.command).text,
+        exitCode: execution.exitCode,
+        durationMs: Number.isFinite(startedAt) && Number.isFinite(finishedAt)
+          ? Math.max(0, finishedAt - startedAt)
+          : null,
+        runnerMode: execution.runnerMode,
+        model: execution.model,
+        error: execution.error ? redactLikelySecrets(execution.error).text : null,
+      };
+    }));
+    const resultState = deriveRunResultState({
+      runStatus: bundle.run.status,
+      targetPhaseId: bundle.run.targetPhaseId,
+      phases: bundle.phases,
+    });
+    const { outcome } = resultState;
+    const targetLabel = resultState.currentPhaseId;
+    const summary = outcome === "completed"
+      ? `Run 已完成，目标阶段为 ${targetLabel}。`
+      : outcome === "failed"
+        ? `Run 执行失败，请检查 ${targetLabel} 阶段的最新执行记录。`
+        : outcome === "running"
+          ? `Run 正在执行 ${targetLabel} 阶段。`
+          : outcome === "blocked"
+            ? `Run 正等待 ${targetLabel} 阶段的复核或修订。`
+            : `Run 已从 ${targetLabel} 阶段就绪。`;
+    const changedFiles = cachedChangeset?.changeset.files ?? [];
+    const verificationExecutions = executions.filter(({ phaseId }) => phaseId === "verification");
+    const passedExecutions = verificationExecutions.filter((execution) =>
+      execution.status === "completed" && execution.exitCode === 0
+    ).length;
+    const failedExecutions = verificationExecutions.filter((execution) =>
+      execution.status === "failed" || (execution.exitCode !== null && execution.exitCode !== 0)
+    ).length;
+    const risks = Array.from(new Set([
+      ...(bundle.run.changeContract?.riskFlags ?? []),
+      ...resultState.unresolvedExecutionErrors.map((error) => redactLikelySecrets(error).text),
+    ]));
+    const recommendations = outcome === "failed"
+      ? ["修复失败执行后，从目标阶段重试。"]
+      : outcome === "blocked"
+        ? ["完成当前阶段复核，并记录继续或返工决定。"]
+        : outcome === "completed"
+          ? ["复核产物、测试与 Git 变更后再进入发布操作。"]
+          : ["继续执行目标阶段，并在完成后检查本收据。"];
+
+    return {
+      runId: bundle.run.id,
+      resultReceiptVersion: bundle.run.resultReceiptVersion ?? 1,
+      title: bundle.run.title,
+      objective: bundle.run.objective,
+      status: bundle.run.status,
+      outcome,
+      targetPhaseId: bundle.run.targetPhaseId ?? null,
+      summary,
+      intent: bundle.run.runIntent ?? null,
+      contextReferences: bundle.run.runContextReferences ?? null,
+      files: {
+        created: changedFiles.filter(({ status }) => status === "added").map(({ path }) => path),
+        modified: changedFiles
+          .filter(({ status }) => !["added", "deleted"].includes(status))
+          .map(({ path }) => path),
+        deleted: changedFiles.filter(({ status }) => status === "deleted").map(({ path }) => path),
+      },
+      artifacts,
+      executions,
+      environment: {
+        request: bundle.run.runEnvironmentRequest ?? null,
+        workspaceState: bundle.run.workspaceState ?? null,
+      },
+      tests: {
+        totalExecutions: verificationExecutions.length,
+        passedExecutions,
+        failedExecutions,
+        pendingExecutions: verificationExecutions.length - passedExecutions - failedExecutions,
+      },
+      git: cachedChangeset?.changeset ?? null,
+      externalOperations: [],
+      permissionDecisions: [],
+      risks,
+      recommendations,
+      createdAt: bundle.run.createdAt,
+      updatedAt: bundle.run.updatedAt,
     };
   }
 
@@ -408,13 +825,19 @@ export class WorkflowService {
           artifacts.find(({ artifactKey }) => artifactKey === "design-spec"),
         )
         : [];
-      return assessPhaseHumanDecisionGate({
+      const gate = assessPhaseHumanDecisionGate({
         phaseId,
         phaseStatus: phase.status,
         artifacts,
         reviews: phase.reviews,
         requiredDeferredValidationIds,
+        enforceUserStoriesQuality: providerNativeStoryQualityRequired(phase),
       });
+      if (phaseId !== "discovery") return gate;
+      const materialization = await this.productDecisionMaterializationPolicy(phase.reviews);
+      return materialization
+        ? projectProductDecisionMaterializationGate(gate)
+        : gate;
     }));
     return humanDecisionSummary(gates);
   }
@@ -426,9 +849,11 @@ export class WorkflowService {
   ) {
     const initial = await this.store.getRun(runId);
     await this.assertProjectPath(initial.project.rootPath);
+    this.assertCompletedAgentSessionRunMutable(initial);
     const releaseWorkspace = this.acquireWorkspaceMutation(initial.project.rootPath);
     try {
       const current = await this.store.getRun(runId);
+      this.assertCompletedAgentSessionRunMutable(current);
       const phase = current.phases.find((candidate) => candidate.phaseId === phaseId);
       if (!phase) throw new AppError("阶段运行不存在", 404, "PHASE_NOT_FOUND");
       if (!["ready", "awaiting_review", "approved", "changes_requested"].includes(phase.status)) {
@@ -439,14 +864,25 @@ export class WorkflowService {
         );
       }
       const artifacts = await this.store.currentArtifactSnapshotsForPhase(runId, phaseId);
+      if (
+        phaseId === "discovery"
+        && await this.productDecisionMaterializationPolicy(phase.reviews)
+      ) {
+        throw new AppError(
+          "Discovery 的完整人工决定批次已经关闭；当前待办属于 PM / BA 物化工作，请在同一 Session/Run 重跑当前角色，不要再次提交人工答案",
+          409,
+          "PRODUCT_DECISION_MATERIALIZATION_REQUIRED",
+        );
+      }
       const gate = assessPhaseHumanDecisionGate({
         phaseId,
         phaseStatus: phase.status,
         artifacts,
         reviews: phase.reviews,
+        enforceUserStoriesQuality: providerNativeStoryQualityRequired(phase),
       });
       const actionableIds = new Set(gate.items
-        .filter((item) => item.blocking && item.actionPhaseId === phaseId)
+        .filter((item) => item.blocking && item.kind === "decision" && item.actionPhaseId === phaseId)
         .map(({ id }) => id));
       const invalidIds = input.responses
         .map(({ id }) => id)
@@ -457,6 +893,16 @@ export class WorkflowService {
           409,
           "HUMAN_DECISION_STALE",
           { invalidIds, actionableIds: [...actionableIds] },
+        );
+      }
+      const responseIds = new Set(input.responses.map(({ id }) => id));
+      const missingIds = [...actionableIds].filter((id) => !responseIds.has(id));
+      if (missingIds.length > 0) {
+        throw new AppError(
+          `请一次完成当前角色的全部决定；仍缺少 ${missingIds.length} 项`,
+          409,
+          "HUMAN_DECISION_BATCH_INCOMPLETE",
+          { missingIds, actionableIds: [...actionableIds] },
         );
       }
       const review = await this.store.reviewPhase(
@@ -476,12 +922,49 @@ export class WorkflowService {
     }
   }
 
+  private async productDecisionMaterializationPolicy(
+    reviews: readonly ReviewDto[],
+  ) {
+    const latest = [...reviews].sort(
+      (left, right) => right.createdAt.localeCompare(left.createdAt),
+    )[0];
+    const capture = latest ? parseHumanDecisionCapture(latest.comment) : null;
+    if (
+      !latest
+      || latest.decision !== "request_changes"
+      || capture?.phaseId !== "discovery"
+      || latest.artifactIds.length === 0
+    ) return null;
+    const reviewedArtifacts = await Promise.all(
+      latest.artifactIds.map((artifactId) => this.store.getArtifact(artifactId)),
+    );
+    if (reviewedArtifacts.some(({ content }) => typeof content !== "string")) {
+      throw new AppError(
+        "无法读取 Discovery 人工决定绑定的历史产物快照",
+        409,
+        "HUMAN_DECISION_ARTIFACT_SNAPSHOT_MISSING",
+      );
+    }
+    return completeProductDecisionMaterializationPolicy(
+      reviews,
+      reviewedArtifacts.map((artifact) => ({
+        id: artifact.id,
+        artifactKey: artifact.artifactKey,
+        content: artifact.content!,
+      })),
+    );
+  }
+
   async assessArchitectureImpact(runId: string, input: AssessArchitectureImpactInput) {
-    const bundle = await this.store.getRun(runId);
-    await this.assertProjectPath(bundle.project.rootPath);
-    const releaseWorkspace = this.acquireWorkspaceMutation(bundle.project.rootPath);
+    const initial = await this.store.getRun(runId);
+    await this.assertProjectPath(initial.project.rootPath);
+    this.assertCompletedAgentSessionRunMutable(initial);
+    const releaseWorkspace = this.acquireWorkspaceMutation(initial.project.rootPath);
+    const createdPaths: string[] = [];
     try {
-      const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+      const bundle = await this.store.getRun(runId);
+      this.assertCompletedAgentSessionRunMutable(bundle);
+      const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
       const phaseDefinition = definition.phases.find((phase) => phase.id === "architecture");
       const currentPhase = bundle.phases.find((phase) => phase.phaseId === "architecture");
       if (!phaseDefinition || !currentPhase) {
@@ -546,11 +1029,13 @@ export class WorkflowService {
       }
 
       await this.validateArchitectureBaselineWorkspace(
-        bundle.project.rootPath,
         eligible.record,
+        bundle.project,
       );
+      const architectureSourceRoot = baselineSourceRoot(eligible.record, bundle.project);
       await validateArchitectureRulebookReview({
-        projectRoot: bundle.project.rootPath,
+        projectRoot: architectureSourceRoot,
+        controlRoot: path.dirname(bundle.project.configPath),
         stage: "final",
         artifacts: eligible.record.artifacts,
         documentedOptionIds: architectureOptionIds(
@@ -560,6 +1045,35 @@ export class WorkflowService {
         ),
         architectureSelection: eligible.selection,
       });
+
+      for (const artifact of eligible.record.artifacts) {
+        const target = definition.artifacts.find(
+          (candidate) => candidate.id === artifact.artifactKey,
+        );
+        if (!target) {
+          throw new AppError(
+            `当前 Definition 缺少架构产物 ${artifact.artifactKey}`,
+            409,
+            "ARCHITECTURE_BASELINE_INCOMPLETE",
+          );
+        }
+        const sourcePath = path.resolve(architectureSourceRoot, artifact.filePath);
+        await assertRuntimePath(architectureSourceRoot, sourcePath);
+        await assertRuntimePath(bundle.project.rootPath, target.absolutePath);
+        if (
+          path.resolve(architectureSourceRoot) === path.resolve(bundle.project.rootPath)
+          && sourcePath === target.absolutePath
+        ) continue;
+        await mkdir(path.dirname(target.absolutePath), { recursive: true });
+        await cp(sourcePath, target.absolutePath, {
+          recursive: true,
+          errorOnExist: true,
+          force: false,
+          dereference: false,
+          preserveTimestamps: true,
+        });
+        createdPaths.push(target.absolutePath);
+      }
 
       const impact: ArchitectureImpactDto = {
         mode: input.mode,
@@ -579,18 +1093,26 @@ export class WorkflowService {
         requiredArtifactKeys: phaseDefinition.outputs,
       });
       return { review };
+    } catch (error) {
+      for (const target of createdPaths) {
+        await rm(target, { recursive: true, force: true }).catch(() => undefined);
+      }
+      throw error;
     } finally {
       releaseWorkspace();
     }
   }
 
   async assessProductImpact(runId: string, input: AssessProductImpactInput) {
-    const bundle = await this.store.getRun(runId);
-    await this.assertProjectPath(bundle.project.rootPath);
-    const releaseWorkspace = this.acquireWorkspaceMutation(bundle.project.rootPath);
+    const initial = await this.store.getRun(runId);
+    await this.assertProjectPath(initial.project.rootPath);
+    this.assertCompletedAgentSessionRunMutable(initial);
+    const releaseWorkspace = this.acquireWorkspaceMutation(initial.project.rootPath);
     const createdPaths: string[] = [];
     try {
-      const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+      const bundle = await this.store.getRun(runId);
+      this.assertCompletedAgentSessionRunMutable(bundle);
+      const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
       const phase = bundle.phases.find((candidate) => candidate.phaseId === "discovery");
       const phaseDefinition = definition.phases.find(
         (candidate) => candidate.id === "discovery",
@@ -650,7 +1172,10 @@ export class WorkflowService {
         const relevant = baseline.artifacts.filter((artifact) =>
           routableProductOutputs.includes(artifact.artifactKey)
         );
-        await this.validateArtifactWorkspaceSnapshots(bundle.project.rootPath, relevant);
+        await this.validateArtifactWorkspaceSnapshots(
+          baselineSourceRoot(baseline, bundle.project),
+          relevant,
+        );
         if (input.mode === "partial") {
           const allowed = new Set(routableProductOutputs);
           const invalid = input.affectedOutputKeys.filter((key) => !allowed.has(key));
@@ -666,14 +1191,21 @@ export class WorkflowService {
       const sourceArtifacts = baseline?.artifacts.filter((artifact) =>
         routableProductOutputs.includes(artifact.artifactKey)
       ) ?? [];
+      const productSourceRoot = baseline
+        ? baselineSourceRoot(baseline, bundle.project)
+        : bundle.project.rootPath;
       for (const artifact of sourceArtifacts) {
         const target = definition.artifacts.find(
           (candidate) => candidate.id === artifact.artifactKey,
         );
-        if (!target || target.relativePath === artifact.filePath) continue;
-        const sourcePath = path.resolve(bundle.project.rootPath, artifact.filePath);
-        await assertRuntimePath(bundle.project.rootPath, sourcePath);
+        if (!target) continue;
+        const sourcePath = path.resolve(productSourceRoot, artifact.filePath);
+        await assertRuntimePath(productSourceRoot, sourcePath);
         await assertRuntimePath(bundle.project.rootPath, target.absolutePath);
+        if (
+          path.resolve(productSourceRoot) === path.resolve(bundle.project.rootPath)
+          && sourcePath === target.absolutePath
+        ) continue;
         await mkdir(path.dirname(target.absolutePath), { recursive: true });
         await cp(sourcePath, target.absolutePath, {
           recursive: true,
@@ -718,12 +1250,15 @@ export class WorkflowService {
   }
 
   async assessDesignImpact(runId: string, input: AssessDesignImpactInput) {
-    const bundle = await this.store.getRun(runId);
-    await this.assertProjectPath(bundle.project.rootPath);
-    const releaseWorkspace = this.acquireWorkspaceMutation(bundle.project.rootPath);
+    const initial = await this.store.getRun(runId);
+    await this.assertProjectPath(initial.project.rootPath);
+    this.assertCompletedAgentSessionRunMutable(initial);
+    const releaseWorkspace = this.acquireWorkspaceMutation(initial.project.rootPath);
     const createdPaths: string[] = [];
     try {
-      const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+      const bundle = await this.store.getRun(runId);
+      this.assertCompletedAgentSessionRunMutable(bundle);
+      const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
       const phase = bundle.phases.find((candidate) => candidate.phaseId === "design");
       const phaseDefinition = definition.phases.find(
         (candidate) => candidate.id === "design",
@@ -776,7 +1311,8 @@ export class WorkflowService {
         const sourceArtifacts = baseline.artifacts.filter((artifact) =>
           routableDesignOutputs.includes(artifact.artifactKey)
         );
-        await this.validateArtifactWorkspaceSnapshots(bundle.project.rootPath, sourceArtifacts);
+        const designSourceRoot = baselineSourceRoot(baseline, bundle.project);
+        await this.validateArtifactWorkspaceSnapshots(designSourceRoot, sourceArtifacts);
         if (input.mode === "partial") {
           const allowed = new Set(routableDesignOutputs);
           const invalid = input.affectedOutputKeys.filter((key) => !allowed.has(key));
@@ -790,10 +1326,14 @@ export class WorkflowService {
         }
         for (const artifact of sourceArtifacts) {
           const target = definition.artifacts.find((candidate) => candidate.id === artifact.artifactKey);
-          if (!target || target.relativePath === artifact.filePath) continue;
-          const sourcePath = path.resolve(bundle.project.rootPath, artifact.filePath);
-          await assertRuntimePath(bundle.project.rootPath, sourcePath);
+          if (!target) continue;
+          const sourcePath = path.resolve(designSourceRoot, artifact.filePath);
+          await assertRuntimePath(designSourceRoot, sourcePath);
           await assertRuntimePath(bundle.project.rootPath, target.absolutePath);
+          if (
+            path.resolve(designSourceRoot) === path.resolve(bundle.project.rootPath)
+            && sourcePath === target.absolutePath
+          ) continue;
           await mkdir(path.dirname(target.absolutePath), { recursive: true });
           await cp(sourcePath, target.absolutePath, {
             recursive: true,
@@ -842,30 +1382,30 @@ export class WorkflowService {
   }
 
   async waiveArchitecture(runId: string, input: AssessArchitectureWaiverInput) {
-    const bundle = await this.store.getRun(runId);
-    await this.assertProjectPath(bundle.project.rootPath);
-    const releaseWorkspace = this.acquireWorkspaceMutation(bundle.project.rootPath);
+    const initial = await this.store.getRun(runId);
+    await this.assertProjectPath(initial.project.rootPath);
+    this.assertCompletedAgentSessionRunMutable(initial);
+    const releaseWorkspace = this.acquireWorkspaceMutation(initial.project.rootPath);
     try {
+      const bundle = await this.store.getRun(runId);
+      this.assertCompletedAgentSessionRunMutable(bundle);
       const contract = bundle.run.changeContract;
-      if (
-        !contract
-        || !["bug", "technical"].includes(contract.workType)
-        || contract.evidenceRefs.length === 0
-      ) {
+      if (!contract) {
         throw new AppError(
-          "只有带明确证据引用的局部 Bug 或无行为变化的技术任务可以声明无架构工作",
+          "当前 Run 没有 Change Contract，不能声明无架构工作",
           409,
-          "ARCHITECTURE_WAIVER_NOT_ALLOWED",
+          "CHANGE_CONTRACT_REQUIRED",
         );
       }
       const phase = bundle.phases.find((candidate) => candidate.phaseId === "architecture");
+      const startedWaiver = Boolean(phase && [
+        "awaiting_review", "changes_requested", "failed",
+      ].includes(phase.status));
       if (
         !phase
-        || phase.status !== "ready"
-        || phase.artifacts.length > 0
-        || phase.executions.length > 0
-        || phase.reviews.length > 0
+        || (phase.status !== "ready" && !startedWaiver)
         || phase.resolution
+        || phase.architectureImpact
       ) {
         throw new AppError(
           "Architecture Impact Check 当前不可用",
@@ -873,7 +1413,7 @@ export class WorkflowService {
           "PHASE_RESOLUTION_NOT_AVAILABLE",
         );
       }
-      const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+      const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
       const selected = await this.store.selectionArtifacts(runId, input.selectedArtifactIds);
       const requiredInputs = effectiveRequiredInputKeys("architecture", definition.phases.find(
         (candidate) => candidate.id === "architecture",
@@ -907,6 +1447,7 @@ export class WorkflowService {
         resolution,
         expectedBaselineArtifactIds: [],
         targetArtifactPaths: {},
+        allowStartedArchitectureSkip: startedWaiver,
       });
       return { review };
     } finally {
@@ -917,12 +1458,14 @@ export class WorkflowService {
   async getVerificationE2eFlow(runId: string): Promise<VerificationE2eFlowDto> {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
+    assertOperatorLocalFeatureAllowed(bundle.project, "Linked E2E");
     return this.verificationE2eFlow(bundle);
   }
 
   async preflightVerificationE2e(runId: string): Promise<VerificationE2eFlowDto> {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
+    assertOperatorLocalFeatureAllowed(bundle.project, "Linked E2E");
     const coordinator = this.requireVerificationE2e();
     const verificationPhase = bundle.phases.find(({ phaseId }) => phaseId === "verification");
     if (
@@ -953,6 +1496,8 @@ export class WorkflowService {
   ): Promise<ExecutionDto> {
     const initial = await this.store.getRun(runId);
     await this.assertProjectPath(initial.project.rootPath);
+    this.assertDirectExecutionAllowed(initial);
+    assertOperatorLocalFeatureAllowed(initial.project, "Linked E2E");
     const coordinator = this.requireVerificationE2e();
     const workspace = await coordinator.workspace(initial.project);
     const releaseWorkspaces = this.acquireWorkspaceMutations([
@@ -1005,6 +1550,8 @@ export class WorkflowService {
   ): Promise<VerificationE2eFlowDto> {
     const initial = await this.store.getRun(runId);
     await this.assertProjectPath(initial.project.rootPath);
+    this.assertCompletedAgentSessionRunMutable(initial);
+    assertOperatorLocalFeatureAllowed(initial.project, "Linked E2E");
     const coordinator = this.requireVerificationE2e();
     const workspace = await coordinator.workspace(initial.project);
     const releaseWorkspaces = this.acquireWorkspaceMutations([
@@ -1013,32 +1560,36 @@ export class WorkflowService {
     ]);
     try {
       const current = await this.store.getRun(runId);
+      this.assertCompletedAgentSessionRunMutable(current);
       const { reportArtifact } = await this.verificationE2eDefinitionContext(current);
       const pendingAuthoring = await coordinator.latestAuthoring(current.project, runId);
       if (!pendingAuthoring) {
         throw new AppError("尚未生成可审核的 E2E 脚本", 409, "E2E_AUTHORING_REQUIRED");
       }
       assertTrustedE2eAuthoringExecution(current, pendingAuthoring);
-      const reviewed = await coordinator.review(
-        current.project,
-        runId,
-        input,
-        reportArtifact.relativePath,
-      );
-      const refreshed = await this.store.getRun(runId);
-      const verificationPhase = requiredRunPhase(refreshed, "verification");
-      const nextSequence = verificationPhase.events
-        .filter(({ executionId }) => executionId === reviewed.executionId)
-        .reduce((maximum, { sequence }) => Math.max(maximum, sequence), 0) + 1;
-      const reviewedAt = reviewed.reviewedAt ?? new Date().toISOString();
-      await this.store.appendEvent(reviewed.executionId, nextSequence, "e2e.script.reviewed", {
-        decision: input.decision,
-        authorExecutionId: reviewed.executionId,
-        patchHash: reviewed.patchHash,
-        productRevisionToken: reviewed.productRevisionToken,
-        e2eRevisionToken: reviewed.e2eRevisionToken,
-        commentHash: createHash("sha256").update(input.comment).digest("hex"),
-        reviewedAt,
+      await this.store.commitVerificationE2eScriptReview(runId, async () => {
+        const prepared = await coordinator.prepareReview(
+          current.project,
+          runId,
+          input,
+          reportArtifact.relativePath,
+        );
+        await prepared.commit();
+        const reviewedAt = prepared.authoring.reviewedAt ?? new Date().toISOString();
+        return {
+          result: prepared.authoring,
+          executionId: prepared.authoring.executionId,
+          payload: {
+            decision: input.decision,
+            authorExecutionId: prepared.authoring.executionId,
+            patchHash: prepared.authoring.patchHash,
+            productRevisionToken: prepared.authoring.productRevisionToken,
+            e2eRevisionToken: prepared.authoring.e2eRevisionToken,
+            commentHash: createHash("sha256").update(input.comment).digest("hex"),
+            reviewedAt,
+          },
+          rollback: prepared.rollback,
+        };
       });
       return this.verificationE2eFlow(await this.store.getRun(runId));
     } finally {
@@ -1052,6 +1603,8 @@ export class WorkflowService {
   ): Promise<ExecutionDto> {
     const initial = await this.store.getRun(runId);
     await this.assertProjectPath(initial.project.rootPath);
+    this.assertDirectExecutionAllowed(initial);
+    assertOperatorLocalFeatureAllowed(initial.project, "Linked E2E");
     const coordinator = this.requireVerificationE2e();
     const workspace = await coordinator.workspace(initial.project);
     const releaseWorkspaces = this.acquireWorkspaceMutations([
@@ -1097,7 +1650,22 @@ export class WorkflowService {
     }
   }
 
-  async executePhase(runId: string, phaseId: PhaseId, input: ExecutePhaseInput) {
+  async executePhase(
+    runId: string,
+    phaseId: PhaseId,
+    input: ExecutePhaseInput,
+    providerContext?: ProviderPhaseExecutionContext,
+  ) {
+    const initial = await this.store.getRun(runId);
+    await this.assertProjectPath(initial.project.rootPath);
+    if (!providerContext) this.assertDirectExecutionAllowed(initial);
+    if (providerContext && input.verificationAction !== undefined) {
+      throw new AppError(
+        "Provider-native 阶段执行暂不支持 Codex 专用的 E2E author/run 动作",
+        409,
+        "PROVIDER_PHASE_E2E_UNSUPPORTED",
+      );
+    }
     if (phaseId !== "verification" && input.verificationAction !== undefined) {
       throw new AppError(
         "verificationAction 只能由 Verification 阶段使用",
@@ -1122,12 +1690,46 @@ export class WorkflowService {
     if (new Set(input.selectedArtifactIds).size !== input.selectedArtifactIds.length) {
       throw new AppError("selectedArtifactIds 不能重复", 400, "DUPLICATE_ARTIFACT_SELECTION");
     }
-    const bundle = await this.store.getRun(runId);
-    await this.assertProjectPath(bundle.project.rootPath);
-    const releaseWorkspace = this.acquireWorkspaceMutation(bundle.project.rootPath);
+    if (!providerContext) this.runner.assertProjectExecutionAvailable(initial.project);
+    if (providerContext && input.figmaTarget) {
+      throw new AppError(
+        "Provider-native 阶段执行暂不支持依赖桌面授权的 Figma 写入",
+        409,
+        "PROVIDER_PHASE_FIGMA_UNSUPPORTED",
+      );
+    }
+    if (initial.project.sourceKind === "remote-git" && input.figmaTarget) {
+      assertOperatorLocalFeatureAllowed(initial.project, "Desktop Figma MCP");
+    }
+    const releaseWorkspace = this.acquireWorkspaceMutation(initial.project.rootPath);
+    let releaseExecutionSlot: () => void = () => undefined;
     try {
-    const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
-    if (this.runner.mode() === "real") {
+    releaseExecutionSlot = this.acquirePhaseExecutionSlot(Boolean(providerContext));
+    // The first read only discovers and validates the workspace to lock. A
+    // decision capture or ordinary Review may commit after that read but before
+    // this process acquires the in-memory workspace mutation lock. Re-read the
+    // complete Run under the lock so phase state, reviews, artifact heads,
+    // revision feedback, and the decision-materialization policy form one
+    // consistent execution snapshot.
+    const bundle = await this.store.getRun(runId);
+    if (
+      bundle.run.id !== initial.run.id
+      || bundle.project.id !== initial.project.id
+      || path.resolve(bundle.project.rootPath) !== path.resolve(initial.project.rootPath)
+    ) {
+      throw new AppError(
+        "Run 的项目工作区在执行准备期间发生变化，请刷新后重试",
+        409,
+        "RUN_WORKSPACE_CHANGED",
+      );
+    }
+    await this.assertProjectPath(bundle.project.rootPath);
+    if (!providerContext) {
+      this.assertDirectExecutionAllowed(bundle);
+      this.runner.assertProjectExecutionAvailable(bundle.project);
+    }
+    const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
+    if (providerContext || this.runner.mode() === "real") {
       await assertDefinitionAgentFiles(bundle.project.rootPath, definition);
     }
     const phaseDefinition = definition.phases.find((phase) => phase.id === phaseId);
@@ -1147,7 +1749,7 @@ export class WorkflowService {
       && ["skip", "direct", "reuse"].includes(currentPhase.resolution.mode)
     ) {
       throw new AppError(
-        `阶段已通过 ${currentPhase.resolution.mode} 处置，无需运行 Codex`,
+        `阶段已通过 ${currentPhase.resolution.mode} 处置，无需再次执行`,
         409,
         "PHASE_RESOLUTION_IMMUTABLE",
       );
@@ -1189,6 +1791,14 @@ export class WorkflowService {
     }
     let figmaTarget: ResolvedFigmaTarget | undefined;
     if (selectedOutputKeys.includes("figma-handoff")) {
+      if (providerContext) {
+        throw new AppError(
+          "Provider-native 阶段执行暂不支持依赖桌面授权的 Figma 写入",
+          409,
+          "PROVIDER_PHASE_FIGMA_UNSUPPORTED",
+        );
+      }
+      assertOperatorLocalFeatureAllowed(bundle.project, "Desktop Figma MCP");
       const requestedFigmaTarget = requireFigmaTarget(input.figmaTarget);
       if (this.runner.mode() !== "real") {
         throw new AppError(
@@ -1211,20 +1821,34 @@ export class WorkflowService {
         "FIGMA_TARGET_WITHOUT_OUTPUT"
       );
     }
-    if (this.runner.mode() === "real" && !this.codexCapabilities) {
+    if (!providerContext && this.runner.mode() === "real" && !this.codexCapabilities) {
       throw new AppError("Codex 执行能力服务未配置", 503, "CODEX_CAPABILITIES_UNAVAILABLE");
     }
-    const executionConfig = this.runner.mode() === "real"
+    if (providerContext && !this.providerPhaseExecutor) {
+      throw new AppError(
+        "Provider-native 阶段执行服务未配置",
+        503,
+        "PROVIDER_PHASE_EXECUTOR_UNAVAILABLE",
+      );
+    }
+    const executionConfig = !providerContext && this.runner.mode() === "real"
       ? await this.codexCapabilities!.resolve(bundle.project.rootPath, input)
       : null;
+    const providerModel = providerContext
+      ? this.providerPhaseExecutor!.configuredModel(providerContext.providerId)
+      : null;
     const selected = await this.store.selectionArtifacts(runId, input.selectedArtifactIds);
-    const requiredInputs = effectiveRequiredInputKeys(
-      phaseId,
-      phaseDefinition.inputs,
-      bundle.phases,
-      Boolean(bundle.run.changeContract),
-      outputKeysByPhase(definition),
-    );
+    const isFlexibleDirectEntry = bundle.run.executionModel === "flexible"
+      && bundle.run.targetPhaseId === phaseId;
+    const requiredInputs = isFlexibleDirectEntry
+      ? []
+      : effectiveRequiredInputKeys(
+        phaseId,
+        phaseDefinition.inputs,
+        bundle.phases,
+        Boolean(bundle.run.changeContract),
+        outputKeysByPhase(definition),
+      );
     validateArtifactSelection(
       phaseId,
       requiredSelectionKeys(phaseId, requiredInputs),
@@ -1258,9 +1882,9 @@ export class WorkflowService {
     );
     // Every selected input is an approved immutable snapshot. Validate the
     // physical workspace for all routes, including Full→Full chains, before
-    // Codex can consume it.
+    // Any selected execution runtime can consume it.
     await this.validateArtifactWorkspaceSnapshots(bundle.project.rootPath, selected);
-    if (phaseId === "implementation") {
+    if (phaseId === "implementation" && !isFlexibleDirectEntry) {
       assertImplementationReady({
         changeContractCriteria: bundle.run.changeContract?.acceptanceCriteria,
         selectedArtifacts: selected,
@@ -1298,26 +1922,46 @@ export class WorkflowService {
           selectedArtifactKeys: selectedOutputKeys,
         })
       : undefined;
+    const humanDecisionReplay = buildHumanDecisionReplay(
+      currentPhase.reviews,
+      currentArtifacts,
+    );
+    const productDecisionMaterialization = phaseId === "discovery"
+      ? await this.productDecisionMaterializationPolicy(currentPhase.reviews)
+      : null;
     const revisionFeedback = [
+      ...(productDecisionMaterialization
+        ? [productDecisionMaterializationFeedback(productDecisionMaterialization)]
+        : []),
+      ...humanDecisionReplay.revisionFeedback,
       ...(testerCrystallizationFeedback ? [testerCrystallizationFeedback] : []),
       ...(engineeringRepairFeedback ? [engineeringRepairFeedback] : []),
       ...currentPhase.reviews
-        .filter((review) => review.decision === "request_changes")
+        .filter((review) => (
+          review.decision === "request_changes"
+          && parseHumanDecisionCapture(review.comment) === null
+        ))
         .slice(0, 5)
         .map((review) => review.comment),
     ];
+    const projectKnowledge = await resolveRunProjectKnowledge({
+      project: bundle.project,
+      run: bundle.run,
+    }, this.projectKnowledge);
     const execution = await this.store.createExecution(
       runId,
       phaseId,
       input.selectedArtifactIds,
       selectedOutputKeys,
-      this.runner.mode(),
-      executionConfig?.model ?? null,
-      executionConfig?.reasoningEffort ?? null,
-      this.runner.commandLabel(executionConfig ?? undefined)
+      providerContext ? "real" : this.runner.mode(),
+      providerContext ? null : executionConfig?.model ?? null,
+      providerContext ? null : executionConfig?.reasoningEffort ?? null,
+      providerContext
+        ? `provider-native:${providerContext.providerId}`
+        : this.runner.commandLabel(executionConfig ?? undefined)
     );
 
-    const task = this.performExecution({
+    const executionTask = this.performExecution({
       executionId: execution.id,
       project: bundle.project,
       run: bundle.run,
@@ -1326,14 +1970,42 @@ export class WorkflowService {
       selectedArtifacts: selected,
       currentArtifacts,
       revisionFeedback,
+      answeredUserStoriesBlockerFingerprints:
+        humanDecisionReplay.answeredUserStoriesBlockerFingerprints,
+      answeredUserStoriesBlockerScopes:
+        humanDecisionReplay.answeredUserStoriesBlockerScopes,
+      productDecisionMaterializationRequired:
+        productDecisionMaterialization !== null,
       selectedOutputKeys,
       requireEverySelectedOutputUpdated: Boolean(architectureSelection || partialResolution),
       architectureSelection,
       phaseResolution: currentPhase.resolution,
-      model: executionConfig?.model ?? null,
-      reasoningEffort: executionConfig?.reasoningEffort ?? null,
-      figmaTarget
-    }).finally(releaseWorkspace);
+      // Provider configuration is only a requested model. The execution row
+      // remains null until the provider reports the actual model and the
+      // guarded execution completes successfully.
+      model: providerModel ?? executionConfig?.model ?? null,
+      reasoningEffort: providerContext ? null : executionConfig?.reasoningEffort ?? null,
+      figmaTarget,
+      projectKnowledge,
+    }, providerContext);
+    const task = executionTask.then(
+      () => {
+        releaseExecutionSlot();
+        releaseWorkspace();
+      },
+      (error: unknown) => {
+        releaseExecutionSlot();
+        if (error instanceof AppError && error.code === "DOCKER_WORKER_CLEANUP_FAILED") {
+          // Keep this workspace locked for the lifetime of the API process. The
+          // next startup preflight removes same-deployment Workers before DB
+          // recovery makes the workspace available again.
+          this.quarantinedWorkspaceMutations.add(bundle.project.rootPath);
+        } else {
+          releaseWorkspace();
+        }
+        throw error;
+      },
+    );
     this.tasks.add(task);
     void task.then(
       () => this.tasks.delete(task),
@@ -1341,6 +2013,7 @@ export class WorkflowService {
     );
     return execution;
     } catch (error) {
+      releaseExecutionSlot();
       releaseWorkspace();
       throw error;
     }
@@ -1354,7 +2027,7 @@ export class WorkflowService {
     const current = await this.store.getRun(runId);
     const definition = taskDefinition(
       current,
-      await loadDefinition(current.project.rootPath),
+      await loadRuntimeDefinition(current.project),
     );
     const phaseDefinition = definition.phases.find((phase) => phase.id === phaseId);
     if (!phaseDefinition) throw new AppError("阶段不在工作流定义中", 404, "PHASE_NOT_FOUND");
@@ -1376,6 +2049,7 @@ export class WorkflowService {
         artifacts: decisionArtifacts,
         reviews: currentPhase.reviews,
         requiredDeferredValidationIds,
+        enforceUserStoriesQuality: providerNativeStoryQualityRequired(currentPhase),
       }));
     }
     const adoptedArchitecture = current.phases.find(
@@ -1486,6 +2160,7 @@ export class WorkflowService {
           validateArchitectureSelectionComment(input.comment, options.content ?? "");
           await this.validateArchitectureRulebookGate(
             current.project.rootPath,
+            path.dirname(current.project.configPath),
             runId,
             "checkpoint",
           );
@@ -1509,6 +2184,7 @@ export class WorkflowService {
         if (approvalKeys.every((key) => currentKeys.has(key))) {
           await this.validateArchitectureRulebookGate(
             current.project.rootPath,
+            path.dirname(current.project.configPath),
             runId,
             "final",
             architectureSelection,
@@ -1605,7 +2281,7 @@ export class WorkflowService {
   private async verificationE2eDefinitionContext(
     bundle: RunBundle,
   ): Promise<VerificationE2eDefinitionContext> {
-    const definition = taskDefinition(bundle, await loadDefinition(bundle.project.rootPath));
+    const definition = taskDefinition(bundle, await loadRuntimeDefinition(bundle.project));
     const phaseDefinition = definition.phases.find(({ id }) => id === "verification");
     const phase = bundle.phases.find(({ phaseId }) => phaseId === "verification");
     if (!phaseDefinition || !phase) {
@@ -2138,6 +2814,12 @@ export class WorkflowService {
     }
     const workspace = await this.store.artifactWorkspace(artifactId);
     await this.assertProjectPath(workspace.rootPath);
+    // PostgreSQL always supplies getRun, so production rejects before preparing
+    // any workspace write. The feature check preserves older in-process store
+    // doubles; the transaction-level store guard remains the final authority.
+    if (typeof this.store.getRun === "function") {
+      this.assertCompletedAgentSessionRunMutable(await this.store.getRun(workspace.workflowRunId));
+    }
     const releaseWorkspace = this.acquireWorkspaceMutation(workspace.rootPath);
     try {
     const initial = await this.store.getArtifact(artifactId);
@@ -2238,12 +2920,14 @@ export class WorkflowService {
   async getFigmaIntegration(runId: string, options: { force?: boolean } = {}) {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
+    assertOperatorLocalFeatureAllowed(bundle.project, "Desktop Figma MCP");
     return this.figmaIntegration?.status(bundle.project.rootPath, options);
   }
 
   async getFigmaPlans(runId: string, options: { force?: boolean } = {}) {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
+    assertOperatorLocalFeatureAllowed(bundle.project, "Desktop Figma MCP");
     return this.resolveFigmaPlans(bundle.project.rootPath, options);
   }
 
@@ -2253,18 +2937,27 @@ export class WorkflowService {
     if (!this.codexCapabilities) {
       throw new AppError("Codex 执行能力服务未配置", 503, "CODEX_CAPABILITIES_UNAVAILABLE");
     }
-    return this.codexCapabilities.status(bundle.project.rootPath);
+    return {
+      ...await this.codexCapabilities.status(bundle.project.rootPath),
+      realExecution: this.runner.projectExecutionAvailability(bundle.project),
+    };
   }
 
   async listTickets(runId: string) {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
+    if (bundle.agentSessionRun && bundle.run.status === "completed") {
+      return this.store.listTickets(runId);
+    }
     return this.ensureTicketsFromLatestArtifact(runId);
   }
 
   async getTicket(runId: string, ticketId: string) {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
+    if (bundle.agentSessionRun && bundle.run.status === "completed") {
+      return this.store.getTicket(runId, ticketId);
+    }
     await this.ensureTicketsFromLatestArtifact(runId);
     return this.store.getTicket(runId, ticketId);
   }
@@ -2272,12 +2965,46 @@ export class WorkflowService {
   async updateTicketStatus(runId: string, ticketId: string, status: Parameters<PgWorkflowStore["updateTicketStatus"]>[2]) {
     const bundle = await this.store.getRun(runId);
     await this.assertProjectPath(bundle.project.rootPath);
+    this.assertCompletedAgentSessionRunMutable(bundle);
     await this.ensureTicketsFromLatestArtifact(runId);
     return this.store.updateTicketStatus(runId, ticketId, status);
   }
 
   async getExecutionEvents(executionId: string) {
     return this.store.eventsForExecution(executionId);
+  }
+
+  async generateRunChangeset(runId: string): Promise<GeneratedRunChangeset> {
+    const bundle = await this.store.getRun(runId);
+    await this.assertProjectPath(bundle.project.rootPath);
+    if (bundle.project.sourceKind !== "remote-git" || !bundle.run.baseRevision) {
+      throw new AppError(
+        "只有固定远程 Git revision 的 Cloud Run 可以生成 Patch",
+        409,
+        "CHANGESET_REMOTE_RUN_REQUIRED",
+      );
+    }
+    const releaseWorkspace = this.acquireWorkspaceMutation(bundle.project.rootPath);
+    try {
+      const generated = await createRunChangeset({
+        runId,
+        workspaceRoot: bundle.project.rootPath,
+        baseRevision: bundle.run.baseRevision,
+      controlRoot: path.dirname(bundle.project.configPath),
+      excludedPaths: [
+        ...VERIFICATION_RUNTIME_EVIDENCE_PATHS,
+        ".agents",
+        ".codex",
+        ".claude",
+        "AGENTS.md",
+        "CLAUDE.md",
+      ],
+      });
+      await this.store.saveRunChangeset(generated);
+      return generated;
+    } finally {
+      releaseWorkspace();
+    }
   }
 
   private requireVerificationE2e(): NonNullable<WorkflowService["verificationE2e"]> {
@@ -2315,7 +3042,21 @@ export class WorkflowService {
   }
 
   async waitForIdle(): Promise<void> {
-    await Promise.allSettled([...this.tasks]);
+    await Promise.allSettled([
+      ...this.tasks,
+      ...(this.cloudProjects ? [this.cloudProjects.waitForIdle()] : []),
+    ]);
+  }
+
+  private requireCloudProjects(): CloudProjectService {
+    if (!this.cloudProjects) {
+      throw new AppError(
+        "Cloud Remote Git 服务尚未配置",
+        503,
+        "CLOUD_PROJECTS_UNAVAILABLE",
+      );
+    }
+    return this.cloudProjects;
   }
 
   private async withArtifactRevisionLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
@@ -2336,6 +3077,13 @@ export class WorkflowService {
   }
 
   private acquireWorkspaceMutation(projectRoot: string): () => void {
+    if (this.quarantinedWorkspaceMutations.has(projectRoot)) {
+      throw new AppError(
+        "该 Run Workspace 因 Worker 停止状态不明已被隔离；请重启服务完成回收后再继续",
+        503,
+        "PROJECT_WORKSPACE_QUARANTINED",
+      );
+    }
     if (this.activeWorkspaceMutations.has(projectRoot)) {
       throw new AppError(
         "该项目工作区正在执行或保存另一项产物变更，请稍后重试",
@@ -2349,6 +3097,25 @@ export class WorkflowService {
       if (released) return;
       released = true;
       this.activeWorkspaceMutations.delete(projectRoot);
+    };
+  }
+
+  private acquirePhaseExecutionSlot(forceReal = false): () => void {
+    if (!forceReal && this.runner.mode() !== "real") return () => undefined;
+    const maximum = Math.max(1, Math.floor(this.maxConcurrentPhaseExecutions));
+    if (this.activePhaseExecutions >= maximum) {
+      throw new AppError(
+        `真实阶段执行已达到并发上限 ${maximum}，请等待当前任务完成后重试`,
+        429,
+        "PHASE_EXECUTION_CAPACITY_REACHED",
+      );
+    }
+    this.activePhaseExecutions += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.activePhaseExecutions -= 1;
     };
   }
 
@@ -2479,7 +3246,10 @@ export class WorkflowService {
       const keys = new Set(artifacts.map((artifact) => artifact.artifactKey));
       if (!requiredKeys.every((key) => keys.has(key))) continue;
       try {
-        await this.validateArtifactWorkspaceSnapshots(bundle.project.rootPath, artifacts);
+        await this.validateArtifactWorkspaceSnapshots(
+          baselineSourceRoot(candidate, bundle.project),
+          artifacts,
+        );
       } catch {
         // A structurally valid historical baseline whose files no longer match
         // its approved snapshots is not reusable. Continue to an older eligible
@@ -2654,10 +3424,13 @@ export class WorkflowService {
   }
 
   private async validateArchitectureBaselineWorkspace(
-    projectRoot: string,
     baseline: ArchitectureBaselineRecord,
+    currentProject: RuntimeProject,
   ): Promise<void> {
-    await this.validateArtifactWorkspaceSnapshots(projectRoot, baseline.artifacts);
+    await this.validateArtifactWorkspaceSnapshots(
+      baselineSourceRoot(baseline, currentProject),
+      baseline.artifacts,
+    );
   }
 
   private async validateCurrentArchitectureWorkspace(
@@ -2710,6 +3483,28 @@ export class WorkflowService {
     }
   }
 
+  private assertDirectExecutionAllowed(bundle: RunBundle): void {
+    const association = bundle.agentSessionRun;
+    if (!association) return;
+    throw new AppError(
+      "这条 Run 属于 Agent Session；请回到对应 Session 使用继续操作，以继承所选 Provider 和对话上下文",
+      409,
+      "AGENT_SESSION_RUN_REQUIRES_SESSION_ADVANCE",
+      { sessionId: association.sessionId },
+    );
+  }
+
+  private assertCompletedAgentSessionRunMutable(bundle: RunBundle): void {
+    const association = bundle.agentSessionRun;
+    if (!association || bundle.run.status !== "completed") return;
+    throw new AppError(
+      "这条 Agent Session Run 已完成；产物、审核和决定历史保持只读",
+      409,
+      "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE",
+      { sessionId: association.sessionId },
+    );
+  }
+
   private async architectureSelectionEvidence(
     phase: PhaseRunDto,
   ): Promise<ArchitectureSelectionEvidence | undefined> {
@@ -2748,6 +3543,7 @@ export class WorkflowService {
 
   private async validateArchitectureRulebookGate(
     projectRoot: string,
+    controlRoot: string,
     runId: string,
     stage: "checkpoint" | "final",
     architectureSelection?: ArchitectureSelectionEvidence,
@@ -2756,10 +3552,11 @@ export class WorkflowService {
     if (stage === "final") {
       await this.validateArtifactWorkspaceSnapshots(projectRoot, artifacts);
     }
-    if (!await architectureRulebookValidationRequired(projectRoot)) return;
+    if (!await architectureRulebookValidationRequired(controlRoot)) return;
     const options = artifacts.find((artifact) => artifact.artifactKey === "architecture-options");
     await validateArchitectureRulebookReview({
       projectRoot,
+      controlRoot,
       stage,
       artifacts,
       documentedOptionIds: architectureOptionIds(options?.content ?? ""),
@@ -2767,7 +3564,10 @@ export class WorkflowService {
     });
   }
 
-  private async performExecution(request: Parameters<CodexTerminalRunner["run"]>[0]): Promise<void> {
+  private async performExecution(
+    request: Parameters<CodexTerminalRunner["run"]>[0],
+    providerContext?: ProviderPhaseExecutionContext,
+  ): Promise<void> {
     let sequence = 0;
     const event = async (eventType: string, payload: unknown) => {
       sequence += 1;
@@ -2783,7 +3583,9 @@ export class WorkflowService {
         selectedOutputPaths,
         2_000_000,
         async () => {
-          const result = await this.runner.run(request, event);
+          const result = providerContext
+            ? await this.providerPhaseExecutor!.run(request, providerContext, event)
+            : await this.runner.run(request, event);
           const storyArtifact = result.artifacts.find(
             (artifact) => artifact.artifactKey === "user-stories",
           );
@@ -2798,11 +3600,22 @@ export class WorkflowService {
             result.exitCode,
             result.artifacts,
             ticketSync,
+            "model" in result && typeof result.model === "string"
+              ? result.model
+              : undefined,
           );
+          await notifyProviderExecutionOutcome(providerContext, {
+            executionId: request.executionId,
+            runId: request.run.id,
+            phaseId: request.phase.id,
+            state: "awaiting_review",
+            artifactKeys: result.artifacts.map(({ artifactKey }) => artifactKey),
+            message: "本阶段产物已完整落盘并进入人工审核。",
+          });
         },
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = publicExecutionFailure(error, Boolean(providerContext));
       try {
         await event("runner.failed", { message });
       } finally {
@@ -2813,6 +3626,17 @@ export class WorkflowService {
             : null,
           message
         );
+      }
+      await notifyProviderExecutionOutcome(providerContext, {
+        executionId: request.executionId,
+        runId: request.run.id,
+        phaseId: request.phase.id,
+        state: "failed",
+        artifactKeys: [],
+        message,
+      });
+      if (error instanceof AppError && error.code === "DOCKER_WORKER_CLEANUP_FAILED") {
+        throw error;
       }
     }
   }
@@ -2825,6 +3649,20 @@ export class WorkflowService {
     const tickets = ticketRecords(artifact.filePath, artifact.content);
     await this.store.syncTickets(runId, artifact.id, tickets);
     return this.store.listTickets(runId);
+  }
+}
+
+async function notifyProviderExecutionOutcome(
+  context: ProviderPhaseExecutionContext | undefined,
+  outcome: Parameters<NonNullable<ProviderPhaseExecutionContext["onExecutionSettled"]>>[0],
+): Promise<void> {
+  if (!context?.onExecutionSettled) return;
+  try {
+    await context.outcomeReady;
+    await context.onExecutionSettled(outcome);
+  } catch {
+    // Session timeline feedback is an audit projection. It must never turn a
+    // durably completed/failed Workflow execution into a contradictory state.
   }
 }
 
@@ -3048,6 +3886,198 @@ function isTrustedLinkedE2eCompletedPayload(
   }
 }
 
+function publicExecutionFailure(error: unknown, providerNative = false): string {
+  if (error instanceof AskProviderError) {
+    const normalizedMessage = redactLikelySecrets(error.message).text
+      .replace(/[\u0000-\u001f\u007f]+/gu, " ")
+      .replace(/\s+/gu, " ")
+      .trim()
+      .slice(0, 800);
+    return `Provider 阶段执行失败（${error.code}）：${
+      normalizedMessage || "所选 Provider 没有完成本阶段请求"
+    }。原始 Provider 响应、服务端路径和凭据未写入 Run。`;
+  }
+  if (error instanceof AppError && error.code === "OUTPUT_ARTIFACTS_MISSING") {
+    const missingArtifactKeys = safeArtifactKeys(
+      (error.details as { missing?: unknown } | undefined)?.missing,
+      error.message,
+    );
+    const missingSummary = missingArtifactKeys.length > 0
+      ? `缺少必需产物：${missingArtifactKeys.join("、")}`
+      : "仍有必需产物未生成或为空";
+    return [
+      `阶段执行失败（OUTPUT_ARTIFACTS_MISSING）：${missingSummary}。`,
+      providerNative
+        ? "Provider 已在同一次执行中收到补齐提示，但仍未满足结束门禁；本轮不完整写入已全部回滚。"
+        : "Runner 结束时仍未满足产物门禁；本轮不完整写入已全部回滚。",
+      providerNative
+        ? "可在当前 Session 重试该角色；服务端路径、原始 Provider 响应和凭据不会写入 Run。"
+        : "可在当前阶段重试；服务端路径和原始 Runner 诊断不会写入 Run。",
+    ].join("");
+  }
+  if (error instanceof AppError && error.code === "OUTPUT_ARTIFACTS_INVALID") {
+    const invalidArtifactKeys = safeArtifactKeys(
+      (error.details as { invalid?: unknown } | undefined)?.invalid,
+      error.message,
+    );
+    const invalidSummary = invalidArtifactKeys.length > 0
+      ? `不可审核产物：${invalidArtifactKeys.join("、")}`
+      : "产物内容未达到当前角色的可审核结构";
+    const qualityIssueSummary = safeUserStoriesQualityIssueLabels(error.details);
+    return [
+      `阶段执行失败（OUTPUT_ARTIFACTS_INVALID）：${invalidSummary}。`,
+      ...(qualityIssueSummary.length > 0
+        ? [`质量检查：${qualityIssueSummary.join("；")}。`]
+        : []),
+      providerNative
+        ? "Provider 本次已尝试写入，并在同一次执行中收到质量修复提示，但写入结果仍未通过可审核质量检查；本轮不合格写入已全部回滚。"
+        : "Runner 本次已尝试写入，但写入结果仍未通过可审核质量检查；本轮不合格写入已全部回滚。",
+      providerNative
+        ? "可在当前 Session 重试该角色；服务端路径、产物正文、原始 Provider 响应和凭据不会写入 Run。"
+        : "可在当前阶段重试；服务端路径、产物正文和原始 Runner 诊断不会写入 Run。",
+    ].join("");
+  }
+  if (error instanceof AppError && error.code === "AGENT_TOOL_FAILURE_LIMIT") {
+    return [
+      "阶段执行失败（AGENT_TOOL_FAILURE_LIMIT）：Provider 连续 3 次工具调用未执行，平台已停止无效循环。",
+      "常见原因是工具参数不符合声明格式，或请求了不允许、不安全的路径或覆盖语义；可在高级审计查看每一步的安全摘要。",
+      "本轮所选阶段产物未进入审核，已选择产物路径上的未完成写入已回滚；请在当前 Session 重试该角色。若重试仍连续失败，请确认模型稳定支持严格 function calling，或在当前 Session 切换 Provider/模型。服务端路径、工具参数正文、原始 Provider 响应和凭据不会写入 Run。",
+    ].join("");
+  }
+  if (
+    error instanceof AppError
+    && [
+      "AGENT_PROVIDER_REQUIRED_TOOL_MISSING",
+      "AGENT_PROVIDER_REQUIRED_TOOL_MISMATCH",
+    ].includes(error.code)
+  ) {
+    const requiredTool = publicRequiredProviderToolLabel(error.details);
+    const finalizationAudit = publicProviderFinalizationAudit(error.details);
+    return [
+      requiredTool
+        ? `阶段执行失败（${error.code}）：产物自动修复需要模型调用“${requiredTool}”，但当前 Provider/模型在有限重试内没有返回该原生工具调用。平台已停止本轮，避免把文字说明误判为文件修改。`
+        : `阶段执行失败（${error.code}）：当前 Provider/模型没有遵守平台要求的原生工具调用约束，平台已停止本轮，避免把文字说明误判为文件修改。`,
+      finalizationAudit ? `最后一次质量门禁：${finalizationAudit}。` : "",
+      "本轮没有新产物进入审核，已选择产物路径上的未完成写入已回滚；此前持久化版本和审计记录仍保留。请在模型设置中确认严格 function calling 可用，或切换 Provider/模型后在当前 Session 重试当前角色。服务端路径、工具参数正文、原始 Provider 响应和凭据不会写入 Run。",
+    ].join("");
+  }
+  if (error instanceof AppError && error.code === "AGENT_RUNTIME_IDLE_TIMEOUT") {
+    return [
+      "阶段执行失败（AGENT_RUNTIME_IDLE_TIMEOUT）：执行期间连续一段时间没有收到新的模型响应或工具结果，平台已停止等待。",
+      "本轮没有新产物进入审核，已选择产物路径上的未完成写入已回滚；此前持久化版本和审计记录仍保留。其他获准源码或测试变更（如有）仍保留在 Diff 中，请在高级审计复核。请确认模型已经加载且服务没有排队，然后在当前 Session 重试当前角色，或切换 Provider/模型。服务端路径、原始 Provider 响应和凭据不会写入 Run。",
+    ].join("");
+  }
+  if (error instanceof AppError && error.code === "AGENT_RUNTIME_TIMEOUT") {
+    return [
+      "阶段执行失败（AGENT_RUNTIME_TIMEOUT）：本轮已达到平台绝对运行上限；即使模型持续返回进展，平台也会停止，避免工具循环无限运行。",
+      "本轮没有新产物进入审核，已选择产物路径上的未完成写入已回滚；此前持久化版本和审计记录仍保留。其他获准源码或测试变更（如有）仍保留在 Diff 中，请在高级审计复核最后完成的工具步骤。请在当前 Session 切换响应更快、稳定且支持严格工具调用的 Provider/模型后重试当前角色；若确需缩小范围，请显式创建更小的 Change Contract 和新 Run。服务端路径、原始 Provider 响应和凭据不会写入 Run。",
+    ].join("");
+  }
+  const code = error instanceof AppError && /^[A-Z][A-Z0-9_]{2,80}$/u.test(error.code)
+    ? error.code
+    : "RUNNER_INTERNAL_ERROR";
+  return `阶段执行失败（${code}）。请按当前阶段的下一步提示检查配置或重试；服务端路径和原始诊断不会写入 Run。`;
+}
+
+function publicRequiredProviderToolLabel(details: unknown): string | null {
+  const requiredToolName = details && typeof details === "object"
+    ? (details as { requiredToolName?: unknown }).requiredToolName
+    : null;
+  if (typeof requiredToolName !== "string") return null;
+  return ({
+    list_files: "查看目录",
+    read_file: "读取文件",
+    search_text: "搜索文本",
+    create_directory: "准备目录",
+    write_file: "写入文件",
+    apply_patch: "应用补丁",
+    run_check: "运行检查",
+    write_user_stories_blocker: "生成结构化 User Stories Blocker",
+    write_design_spec: "生成结构化 Design Spec",
+    write_architecture_checkpoint: "生成架构检查点",
+    write_engineering_evidence_pack: "批量写入工程证据",
+  } as Record<string, string>)[requiredToolName] ?? null;
+}
+
+function publicProviderFinalizationAudit(details: unknown): string | null {
+  if (!details || typeof details !== "object") return null;
+  const value = details as {
+    reasonCode?: unknown;
+    affectedArtifactKeys?: unknown;
+  };
+  const artifactLabels: Record<string, string> = {
+    prd: "PRD",
+    "user-stories": "User Stories",
+  };
+  const affected = Array.isArray(value.affectedArtifactKeys)
+    ? [...new Set(value.affectedArtifactKeys.flatMap((candidate) => (
+        typeof candidate === "string" && artifactLabels[candidate]
+          ? [artifactLabels[candidate]!]
+          : []
+      )))]
+    : [];
+  if (value.reasonCode === "PRODUCT_DECISION_MATERIALIZATION_REQUIRED") {
+    return `${affected.length > 0 ? affected.join(" / ") : "产品产物"}仍含未物化决定、开放问题或 Blocker`;
+  }
+  return affected.length > 0 ? `${affected.join(" / ")}仍未通过结构校验` : null;
+}
+
+function providerNativeStoryQualityRequired(phase: {
+  phaseId: PhaseId;
+  executions: ReadonlyArray<{ status: string; command: string }>;
+}): boolean {
+  return phase.phaseId === "discovery" && phase.executions.some((execution) => (
+    execution.status === "completed" && execution.command.startsWith("provider-native:")
+  ));
+}
+
+function safeArtifactKeys(value: unknown, safeMessageFallback?: string): string[] {
+  const candidates = Array.isArray(value) ? value : [];
+  const keys = candidates.flatMap((candidate) => {
+    if (typeof candidate !== "string") return [];
+    const match = /^([a-z][a-z0-9-]{0,99})(?:\s|\(|$)/u.exec(candidate.trim());
+    return match?.[1] ? [match[1]] : [];
+  });
+  if (keys.length === 0 && safeMessageFallback) {
+    for (const match of safeMessageFallback.matchAll(
+      /(?:artifact\s+key|产物(?:\s*key)?)[：:\s]+([a-z][a-z0-9-]{0,99})/giu,
+    )) {
+      if (match[1]) keys.push(match[1].toLowerCase());
+    }
+  }
+  return [...new Set(keys)].slice(0, 20);
+}
+
+function safeUserStoriesQualityIssueLabels(details: unknown): string[] {
+  const candidates = (details as { qualityIssues?: unknown } | undefined)?.qualityIssues;
+  if (!Array.isArray(candidates)) return [];
+  return [...new Set(candidates.flatMap((candidate) => {
+    if (typeof candidate !== "string") return [];
+    const label = userStoriesQualityIssueLabels[candidate];
+    return label ? [label] : [];
+  }))].slice(0, 6);
+}
+
+const userStoriesQualityIssueLabels: Readonly<Record<string, string>> = Object.freeze({
+  STORY_CANONICAL_FILE_REQUIRED: "没有识别到规范 Story 文件",
+  STORY_HEADING_INVALID: "Story 文件必须以稳定 US ID 的 H1 标题开头",
+  STORY_IDS_MUST_BE_UNIQUE: "Story ID 必须唯一",
+  STORY_TEMPLATE_TOKEN_PRESENT: "Story 仍含模板占位 token",
+  STORY_TWO_AC_SCENARIOS_REQUIRED: "至少一个 Story 需要两个不同 AC，且每个 AC 自带完整 Given/When/Then",
+  STORY_NONCANONICAL_CONTENT_REQUIRES_STORY: "已有非空 Story 分支说明，但仍需生成规范 story.md",
+  BLOCKER_ROOT_README_REQUIRED: "Blocker 必须位于唯一的根 README.md",
+  BLOCKER_SENTINEL_MUST_BE_UNIQUE: "Blocker v1 sentinel 必须且只能出现一次",
+  BLOCKER_STATUS_MUST_BE_EXACT: "Blocker Status 必须整行为 Blocked 或 Pending",
+  BLOCKER_MISSING_FACTS_REQUIRED: "Missing facts 需要实质 bullet",
+  BLOCKER_OPEN_QUESTIONS_REQUIRED: "Open questions 需要实质 bullet",
+  BLOCKER_HUMAN_OWNER_REQUIRED: "Human owner 需要实质 bullet",
+  BLOCKER_NEXT_STEP_REQUIRED: "Next step 需要实质 bullet",
+  BLOCKER_KNOWN_FACTS_INVALID: "Known facts 若存在必须唯一且有实质 bullet",
+  BLOCKER_OPEN_QUESTION_NOT_SPECIFIC: "Blocker 中每个开放问题都必须尚未回答、具体且可由人决定",
+  BLOCKER_ANSWER_NOT_MATERIALIZED: "已有具体人工答复，但 PM / BA 尚未落实到 PRD 与真实 Story",
+  BLOCKER_WORKFLOW_MECHANISM_FORBIDDEN: "Blocker 只能记录产品或业务事实，不能引用平台工作流机制",
+});
+
 function e2eReadinessBlockers(readiness: E2eWorkspaceReadinessDto): string[] {
   const items: Array<[string, E2eReadinessItemDto]> = [
     ["workspace", readiness.workspace],
@@ -3086,6 +4116,103 @@ function ticketRecords(artifactPath: string, content: string) {
     ...ticket,
     sourcePath: [basePath, ticket.sourcePath].filter(Boolean).join("/")
   }));
+}
+
+function assertRemoteCloudProject(project: { sourceKind?: "legacy-local" | "remote-git" }): void {
+  if (project.sourceKind !== "remote-git") {
+    throw new AppError("Cloud 中找不到这个远程项目", 404, "CLOUD_PROJECT_NOT_FOUND");
+  }
+}
+
+async function loadRuntimeDefinition(project: {
+  rootPath: string;
+  configPath: string;
+  sourceKind?: "legacy-local" | "remote-git";
+  definitionVersion?: string | null;
+}): Promise<LoadedDefinition> {
+  const controlRoot = path.dirname(project.configPath);
+  if (project.sourceKind === "remote-git") {
+    if (!project.definitionVersion) {
+      throw new AppError(
+        "Run 缺少固定的 Control Pack 版本",
+        500,
+        "CONTROL_PACK_VERSION_MISSING",
+      );
+    }
+    const actualVersion = await computeControlPackVersion(controlRoot);
+    if (actualVersion !== project.definitionVersion) {
+      throw new AppError(
+        "Control Pack 内容与 Run 固定版本不一致，拒绝继续执行",
+        409,
+        "CONTROL_PACK_VERSION_MISMATCH",
+      );
+    }
+  }
+  return loadDefinition({
+    sourceRoot: project.rootPath,
+    controlRoot,
+    configPath: project.configPath,
+  });
+}
+
+/**
+ * Production Store rows always carry the source Run workspace. The fallback is
+ * only for legacy-local stores and older test doubles; a Cloud Run must never
+ * silently read a baseline from the current Run workspace.
+ */
+function baselineSourceRoot(
+  baseline: { sourceRootPath?: string },
+  currentProject: Pick<RuntimeProject, "rootPath" | "sourceKind">,
+): string {
+  if (baseline.sourceRootPath) return baseline.sourceRootPath;
+  if (currentProject.sourceKind === "remote-git") {
+    throw new AppError(
+      "远程基线缺少来源 Run Workspace，拒绝跨任务读取",
+      500,
+      "BASELINE_SOURCE_WORKSPACE_MISSING",
+    );
+  }
+  return currentProject.rootPath;
+}
+
+function assertConfirmedRunPersistence(
+  confirmed: RunPersistenceSnapshot,
+  expected: {
+    runId: string;
+    projectId: string;
+    title: string;
+    objective: string;
+    changeContract: ChangeContractDto;
+    artifactPaths: Record<string, string>;
+    workspaceId: string | null;
+    baseRevision: GitRevision | null;
+    definitionVersion: string | null;
+    agentSessionRun: { sessionId: string; triggerMessageId: string } | null;
+  },
+): void {
+  const same = confirmed.run.id === expected.runId
+    && confirmed.run.projectId === expected.projectId
+    && confirmed.run.title === expected.title
+    && confirmed.run.objective === expected.objective
+    && confirmed.workspaceId === expected.workspaceId
+    && (confirmed.run.baseRevision ?? null) === expected.baseRevision
+    && (confirmed.run.definitionVersion ?? null) === expected.definitionVersion
+    && (
+      expected.agentSessionRun === null
+        ? confirmed.agentSessionRun === null
+        : confirmed.agentSessionRun?.sessionId === expected.agentSessionRun.sessionId
+          && confirmed.agentSessionRun.triggerMessageId === expected.agentSessionRun.triggerMessageId
+          && confirmed.agentSessionRun.workflowRunId === expected.runId
+    )
+    && isDeepStrictEqual(confirmed.run.changeContract ?? null, expected.changeContract)
+    && isDeepStrictEqual(confirmed.artifactPaths, expected.artifactPaths);
+  if (same) return;
+  throw new AppError(
+    "Run ID 已存在但持久化内容与本次请求不一致；平台已保留现场并停止清理",
+    409,
+    "RUN_CREATE_IDEMPOTENCY_CONFLICT",
+    { runId: expected.runId },
+  );
 }
 
 function publicDefinition(definition: LoadedDefinition): WorkflowDefinition {
@@ -3278,4 +4405,16 @@ function sameStringSet(left: string[], right: string[]): boolean {
   const rightSet = new Set(right);
   return leftSet.size === rightSet.size
     && [...leftSet].every((value) => rightSet.has(value));
+}
+
+function assertOperatorLocalFeatureAllowed(
+  project: Pick<RuntimeProject, "sourceKind">,
+  feature: string,
+): void {
+  if (project.sourceKind !== "remote-git") return;
+  throw new AppError(
+    `${feature} 依赖部署机器的本地授权或第二工作区，Cloud Run 不提供该能力`,
+    409,
+    "CLOUD_LOCAL_INTEGRATION_UNAVAILABLE",
+  );
 }

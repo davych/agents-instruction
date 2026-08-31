@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Boxes, ChevronRight, Github, Radio, Sparkles } from "lucide-react";
+import { Boxes, ChevronRight, Cloud, Settings2, Sparkles } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,10 +14,12 @@ export function AppShell({
   children,
   crumbs = [],
   onHome,
+  onOpenProviderSettings,
 }: {
   children: ReactNode;
   crumbs?: Crumb[];
   onHome: () => void;
+  onOpenProviderSettings: () => void;
 }) {
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-slate-50">
@@ -73,20 +75,20 @@ export function AppShell({
           )}
 
           <div className="flex items-center gap-2">
-            <Badge variant="outline" className="hidden gap-2 py-1.5 sm:inline-flex">
-              <Radio className="h-3 w-3 text-emerald-500" aria-hidden />
-              Local runtime
-            </Badge>
             <Button
+              type="button"
+              size="sm"
               variant="ghost"
-              size="icon"
-              className="hidden text-slate-400 sm:inline-flex"
-              aria-label="项目仓库"
-              title="项目仓库"
-              onClick={() => window.open("https://github.com", "_blank", "noopener,noreferrer")}
+              aria-label="打开模型设置"
+              onClick={onOpenProviderSettings}
             >
-              <Github className="h-[18px] w-[18px]" aria-hidden />
+              <Settings2 className="h-4 w-4" aria-hidden />
+              <span className="hidden sm:inline">模型设置</span>
             </Button>
+            <Badge variant="outline" className="hidden gap-2 py-1.5 sm:inline-flex">
+              <Cloud className="h-3 w-3 text-emerald-500" aria-hidden />
+              Cloud control plane
+            </Badge>
           </div>
         </div>
       </header>
