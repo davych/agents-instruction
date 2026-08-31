@@ -46,6 +46,9 @@ const askDetailsSchema = z.object({
   retryable: z.boolean().optional(),
   upstreamStatus: z.number().int().min(100).max(599).optional(),
 });
+const agentSessionRunDetailsSchema = z.object({
+  sessionId: z.string().uuid(),
+});
 
 type DetailsParser = (details: unknown) => unknown;
 
@@ -55,6 +58,8 @@ type DetailsParser = (details: unknown) => unknown;
  * output and Error objects cannot accidentally cross the HTTP boundary.
  */
 const publicDetailsByCode: Readonly<Record<string, DetailsParser>> = Object.freeze({
+  AGENT_SESSION_RUN_REQUIRES_SESSION_ADVANCE: schemaParser(agentSessionRunDetailsSchema),
+  AGENT_SESSION_RUN_COMPLETED_IMMUTABLE: schemaParser(agentSessionRunDetailsSchema),
   ENGINEERING_EVIDENCE_GATE_FAILED: schemaParser(engineeringEvidenceDetailsSchema),
   IMPLEMENTATION_NOT_READY: schemaParser(implementationReadinessDetailsSchema),
   ASK_PROVIDER_NOT_CONFIGURED: schemaParser(askDetailsSchema),

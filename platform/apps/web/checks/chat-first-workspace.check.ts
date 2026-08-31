@@ -107,8 +107,9 @@ test("CHAT-AC-05/06/07: Provider is configured as a capability and can change fo
   assert.match(workspace.text, /select|combobox|切换/u);
   assert.match(workspace.text, /sendAgentMessage|agentSession/u);
   assert.match(workspace.text, /toolCalling|工具调用|只能对话|不能启动/u);
-  assert.match(workspace.text, /项目聊天 Provider[\s\S]{0,160}不会传给阶段 Codex Worker/u);
-  assert.match(workspace.text, /阶段 Worker[\s\S]{0,80}独立的低权限运行密钥/u);
+  assert.match(workspace.text, /当前会话所选 Provider[\s\S]{0,160}API 的配置与内存边界/u);
+  assert.match(workspace.text, /Sandbox[\s\S]{0,100}受限工具定义与结果[\s\S]{0,80}不接收 Provider 凭据/u);
+  assert.doesNotMatch(workspace.text, /阶段 Codex Worker|阶段 Worker 使用独立/u);
   assert.doesNotMatch(workspace.text, /onChange[^\n]{0,300}(?:createAgentSession|clearConversation|clearSession)/u);
   assert.doesNotMatch(workspace.text, /API_KEY|apiKey|type=["']password["']/u);
 });
@@ -131,6 +132,27 @@ test("CHAT-AC-08/13/17: only read-only Work Item MCP is exposed and the real inl
   assert.doesNotMatch(workspace.text, /外部写入和其他副作用必须 approval/u);
   assert.doesNotMatch(workspace.text, /含外部写入/u);
   assert.doesNotMatch(workspace.text, /gate\.choices\.map/u);
+});
+
+test("CHAT-AC-17/ARCHITECT: inline Session review exposes revision-bound selection and repairs legacy checkpoints", async () => {
+  const workspace = await readWorkspace();
+
+  assert.match(workspace.text, /architectureOptionSummaries\(currentOptionsContent\)/u);
+  assert.match(workspace.text, /architectureSelectionFromReviews/u);
+  assert.match(workspace.text, /updateArchitectureSelectionMarker\(current, option\.id\)/u);
+  assert.match(workspace.text, /让 Architect 结构化补做并重跑/u);
+  assert.match(workspace.text, /通过当前规则簿语义校验/u);
+  assert.match(workspace.text, /记录 Option \{architectureSelectionId\} 并让 Architect 继续/u);
+  assert.match(workspace.text, /continueAfter: Boolean\(isArchitectureSelectionCheckpoint && hasValidArchitectureSelection\)/u);
+  assert.match(
+    workspace.text,
+    /\{!isArchitectureSelectionCheckpoint \? \([\s\S]{0,500}批准并继续/u,
+    "the ordinary approval action must be hidden at the architecture selection checkpoint",
+  );
+  assert.match(workspace.text, /这是轻量内容\/布局变更，不需要完整架构包/u);
+  assert.match(workspace.text, /记录无需架构并进入工程/u);
+  assert.match(workspace.text, /api\.waiveArchitecture/u);
+  assert.match(workspace.text, /不依赖 Provider 工具调用/u);
 });
 
 test("CHAT-AC-09: composer sends the client idempotency key and expected sequence and can resume persisted history", async () => {
@@ -220,13 +242,98 @@ test("CHAT-AC-11/12/14: awaiting review is handled inline without bypassing Arti
   assert.match(workspace.text, /要求修改/u);
   assert.match(workspace.text, /expectedArtifactIds/u);
   assert.match(workspace.text, /api\.reviewPhase/u);
-  assert.match(workspace.text, /api\.reviewPhase[\s\S]{0,1200}(?:onContinue|sendAgentMessage)/u);
-  assert.match(workspace.text, /继续当前 Run/u);
+  assert.match(workspace.text, /api\.reviewPhase[\s\S]{0,1200}onContinue/u);
+  assert.match(workspace.text, /api\.advanceAgentRun/u);
+  assert.match(workspace.text, /api\.getHumanDecisions/u);
+  assert.match(workspace.text, /expectedPhaseId/u);
+  assert.match(workspace.text, /result\.state === ["']failed["'][\s\S]{0,120}result\.state === ["']blocked["']/u);
+  assert.match(workspace.text, /throw new Error\(result\.reason/u);
+  assert.match(workspace.text, /仅批准产物/u);
+  assert.match(workspace.text, /不影响本次审核[\s\S]{0,120}切换 Provider/u);
   assert.match(workspace.text, /后端门禁没有被绕过/u);
+  assert.match(workspace.text, /decisionGate\.blockingCount > 0/u);
+  assert.match(workspace.text, /选择架构方案/u);
+  assert.match(workspace.text, /approvalBlocked/u);
+  assert.match(workspace.text, /决定与待办状态暂时无法载入[\s\S]{0,120}批准会保持关闭/u);
+  assert.match(workspace.text, /当前 Session Provider 尚未接入隔离检查 Runner/u);
+  assert.match(workspace.text, /Verification 会保持 Blocked，不能批准/u);
   assert.match(workspace.text, /高级审计/u);
 
+  assert.doesNotMatch(workspace.text, /sendAgentMessage\(latestSession/u);
+  assert.doesNotMatch(workspace.text, /content:\s*`继续当前 Run/u);
   assert.doesNotMatch(workspace.text, /reviewPhase\([^)]*["']approve["'][^)]*\)\s*;?\s*(?:void\s+)?onOpenRun/u);
   assert.doesNotMatch(workspace.text, /(?:autoApprove|bypassHumanDecision|skipArtifactReview)/u);
+});
+
+test("Session keeps Run status, audit and review controls visible at every viewport width", async () => {
+  const [workspace, visibility] = await Promise.all([
+    readWorkspace(),
+    source("lib/agent-failure-visibility.ts"),
+  ]);
+  const implementation = `${workspace.text}\n${visibility}`;
+
+  assert.match(implementation, /latestAgentSessionRunPointer\(session\)/u);
+  assert.match(visibility, /latestDurableRun[\s\S]{0,500}fallbackEvent/u);
+  assert.match(workspace.text, /<SessionRunStatusCard/u);
+  assert.match(workspace.text, /<RoleTimeline[\s\S]{0,80}compact/u);
+  assert.match(workspace.text, /六角色进度 · 查看每阶段状态与产物/u);
+  assert.match(workspace.text, /xl:hidden/u);
+  assert.match(workspace.text, /aria-label=["']当前 Run 状态["']/u);
+  assert.match(workspace.text, /Run ID/u);
+  assert.match(workspace.text, /重试读取/u);
+  for (const status of [
+    "loading",
+    "error",
+    "pending",
+    "locked",
+    "running",
+    "ready",
+    "awaiting_review",
+    "changes_requested",
+    "rejected",
+    "failed",
+    "approved",
+    "completed",
+  ]) assert.match(workspace.text, new RegExp(`${status}:`, "u"));
+  assert.match(workspace.text, /aria-live=["']assertive["']/u);
+  assert.match(
+    workspace.text,
+    /awaitingReviewKey \? reviewAnnouncement : ["']["'][\s\S]{0,180}failedExecutionKey \? failureAnnouncement : ["']["']/u,
+    "resolved review/running states must not retain an older failure announcement",
+  );
+  assert.match(workspace.text, /awaitingReviewKey[\s\S]{0,800}scrollIntoView/u);
+  assert.match(workspace.text, /failedExecutionKey[\s\S]{0,900}setFailureAnnouncement[\s\S]{0,500}scrollIntoView/u);
+  assert.match(workspace.text, /执行失败；Run、此前产物与审计记录仍保留/u);
+  assert.match(
+    workspace.text,
+    /runStatusSignature[\s\S]{0,900}sessionQuery\.refetch\(\)/u,
+    "CHAT-AC-29: an async Run state change refreshes the Session timeline projection",
+  );
+  assert.match(workspace.text, /phaseStatus:\s*PhaseRun\["status"\]\s*=\s*phase\?\.status/u);
+  assert.match(workspace.text, /awaitingReview \? <Eye/u);
+  assert.match(workspace.text, /artifactQuery\.refetch\(\)/u);
+  assert.match(workspace.text, /重新读取/u);
+  assert.match(workspace.text, /canStartCurrentPhase\s*=\s*Boolean\(!completed/u);
+  assert.match(
+    workspace.text,
+    /phase\.status === ["']failed["'] && currentArtifactHeads\(phase\.artifacts\)\.length > 0[\s\S]{0,180}<FailedPhaseArtifactsCard/u,
+    "CHAT-AC-29: failed Run artifacts remain inspectable inside the inherited Session",
+  );
+  assert.match(workspace.text, /查看失败后保留的产物/u);
+  assert.match(workspace.text, /只读 · 不能批准/u);
+  assert.match(workspace.text, /所选产物路径上未完成或未通过门禁的写入已回滚/u);
+  assert.match(
+    workspace.text,
+    /const decisionAwarePhase = Boolean\([\s\S]{0,180}\[["']awaiting_review["'], ["']failed["']\]\.includes\(phase\.status\)[\s\S]{0,180}\[["']discovery["'], ["']design["'], ["']architecture["']\]\.includes\(phase\.phaseId\)/u,
+    "CHAT-AC-29: failed product phases keep their decision/work/dependency gate visible",
+  );
+  assert.match(workspace.text, /const decisionsBlocking = Boolean\(decisionAwarePhase && decisionGate && decisionGate\.blockingCount > 0\)/u);
+  assert.match(workspace.text, /本次不能批准；仍有 \$\{decisionGate\.blockingCount\} 项结构化决定或待办/u);
+  assert.match(workspace.text, /decisionGate\.items\.filter\(\(\{ blocking \}\) => blocking\)\.slice\(0, 5\)/u);
+  assert.match(workspace.text, /humanDecisionKindLabel\(item\)/u);
+  assert.match(workspace.text, /decisionGate\.decisionCount[\s\S]{0,100}decisionGate\.workCount[\s\S]{0,100}decisionGate\.dependencyCount/u);
+  assert.match(workspace.text, /在高级审计查看/u);
+  assert.doesNotMatch(workspace.text, /<SessionRunStatusCard[^>]*className=["'][^"']*hidden/u);
 });
 
 test("CHAT-AC-15/16: DeepWiki generation is an explicit post-bind action with Provider and revision context", async () => {
@@ -301,7 +408,7 @@ test("failed event noise can be cleared without deleting Session or SDLC audit s
   assert.match(implementation, /tool\.failed/u);
   assert.match(implementation, /sandbox\.failed/u);
   assert.match(implementation, /key=\{session\.id\}/u);
-  assert.match(implementation, /const runId = \[\.\.\.\(session\?\.events/u);
+  assert.match(implementation, /latestAgentSessionRunPointer\(session\)/u);
   assert.match(implementation, /<RoleTimeline[\s\S]{0,120}session=\{session\}/u);
   assert.doesNotMatch(implementation, /deleteAgentSession|deleteWorkflowRun|deleteArtifact/u);
 });
@@ -313,7 +420,12 @@ test("the Chat-first product spec names only implemented entry points and securi
   assert.match(spec, /会话命令和 `@repo` 菜单入口尚未实现/u);
   assert.match(spec, /外部写入、DDL、Secret 操作、部署和发布工具在当前 MVP 尚未开放/u);
   assert.match(spec, /当前内联门禁只用于角色阶段产物审阅，而且不得自动批准/u);
-  assert.match(spec, /项目聊天 Provider[^\n]*不传给阶段 Codex Worker[^\n]*独立、低权限的运行密钥/u);
+  assert.match(
+    spec,
+    /项目 Provider 的凭据[^\n]*不进入[^\n]*Provider-native 文件工具[^\n]*独立 Codex Run[^\n]*低权限运行密钥/u,
+  );
+  assert.match(spec, /Chat-first 六阶段复用当前会话选中的 Provider 和有界历史/u);
+  assert.match(spec, /不向模型提供任意 Shell、命令、网络工具或外部副作用/u);
 
   assert.doesNotMatch(spec, /用户可在仓库设置、会话命令或[^\n]*@repo[^\n]*菜单中[^\n]*生成/u);
   assert.doesNotMatch(spec, /外部副作用产生 Human Gate/u);

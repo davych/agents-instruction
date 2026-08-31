@@ -3,9 +3,12 @@ import { fileURLToPath } from "node:url";
 
 import {
   CODEX_REASONING_EFFORTS,
+  advanceAgentRunSchema,
   agentEventSchema,
   agentHumanGateSchema,
   agentMessageSchema,
+  agentRunAdvanceResultSchema,
+  agentSessionRunSchema,
   agentSessionSchema,
   agentToolCallSchema,
   askProviderConfigurationCheckSchema,
@@ -51,9 +54,12 @@ import {
   type AgentEventDto,
   type AgentHumanGateDto,
   type AgentMessageDto,
+  type AgentRunAdvanceResultDto,
+  type AgentSessionRunDto,
   type AgentSessionDto,
   type AgentToolCallDto,
   type BindRemoteRepositoryInput,
+  type AdvanceAgentRunInput,
   type CreateAgentSessionInput,
   type DeepWikiGenerationDto,
   type GenerateDeepWikiInput,
@@ -78,6 +84,8 @@ import { AgentSessionService } from "./services/agent/agent-session-service.js";
 import { ConversationPlanner } from "./services/agent/conversation-planner.js";
 import { DeepWikiGenerationService } from "./services/agent/deepwiki-generation-service.js";
 import { AgentMcpToolRouter } from "./services/agent/mcp-tool-router.js";
+import { ProviderNativeAgentRuntime } from "./services/agent/provider-native-agent-runtime.js";
+import { ProviderPhaseExecutor } from "./services/agent/provider-phase-executor.js";
 import {
   McpCatalogService,
   ProjectAgentSettingsService,
@@ -128,6 +136,7 @@ export interface AgentSessionDetailDto {
   events: AgentEventDto[];
   toolCalls: AgentToolCallDto[];
   humanGates: AgentHumanGateDto[];
+  runs: AgentSessionRunDto[];
 }
 
 export interface RepositoryBindingServiceLike {
@@ -147,6 +156,11 @@ export interface AgentSessionServiceLike {
     input: SendAgentMessageInput,
     signal?: AbortSignal,
   ): Promise<AgentSessionDetailDto>;
+  advanceRun(
+    sessionId: string,
+    runId: string,
+    input: AdvanceAgentRunInput,
+  ): Promise<AgentRunAdvanceResultDto>;
 }
 
 export interface ProjectAgentSettingsServiceLike {
@@ -226,6 +240,10 @@ export interface AppOptions {
 
 const idParamsSchema = z.object({ id: z.string().uuid() });
 const agentSessionParamsSchema = z.object({ id: z.string().uuid() }).strict();
+const agentSessionRunParamsSchema = z.object({
+  id: z.string().uuid(),
+  runId: z.string().uuid(),
+}).strict();
 const mcpActivationParamsSchema = z.object({
   id: z.string().uuid(),
   serverId: mcpServerIdSchema,
@@ -268,6 +286,7 @@ const agentSessionDetailSchema = z.object({
   events: z.array(agentEventSchema),
   toolCalls: z.array(agentToolCallSchema),
   humanGates: z.array(agentHumanGateSchema),
+  runs: z.array(agentSessionRunSchema),
 }).strict();
 
 function requireChatFirstPort<T>(port: T | undefined, name: string): T {
@@ -370,6 +389,10 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       }),
       automationRunner: new E2eAutomationRunner(),
     });
+  const providerConfigurations = options.providerConfigurations;
+  const providers = providerConfigurations?.providers
+    ?? options.askProviders
+    ?? createAskProviderRegistryFromEnv({});
   const service = new WorkflowService(
     store,
     paths,
@@ -381,11 +404,12 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     cloudProjects,
     projectKnowledge,
     options.maxConcurrentPhases,
+    new ProviderPhaseExecutor(
+      new ProviderNativeAgentRuntime(providers),
+      runner,
+      providers,
+    ),
   );
-  const providerConfigurations = options.providerConfigurations;
-  const providers = providerConfigurations?.providers
-    ?? options.askProviders
-    ?? createAskProviderRegistryFromEnv({});
   const ask = new AskService(
     store,
     paths,
@@ -698,6 +722,19 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     );
   });
 
+  app.post("/api/agent-sessions/:id/runs/:runId/advance", async (request, reply) => {
+    const { id, runId } = agentSessionRunParamsSchema.parse(request.params);
+    emptyQuerySchema.parse(request.query ?? {});
+    const input = advanceAgentRunSchema.parse(request.body);
+    const progress = await requireChatFirstPort(
+      agentSessions,
+      "Agent Session 服务",
+    ).advanceRun(id, runId, input);
+    return reply.status(202).send(
+      parsePublicPortResult(agentRunAdvanceResultSchema, progress),
+    );
+  });
+
   app.get("/api/sandbox-blueprints", async (request) => {
     emptyQuerySchema.parse(request.query ?? {});
     const blueprints = await requireChatFirstPort(
@@ -961,6 +998,10 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   app.get("/api/runs/:id", async (request) => {
     const { id } = idParamsSchema.parse(request.params);
     return service.getRun(id);
+  });
+  app.get("/api/runs/:id/result", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return { result: await service.getRunResult(id) };
   });
   app.get("/api/runs/:id/changeset", async (request) => {
     const { id } = idParamsSchema.parse(request.params);

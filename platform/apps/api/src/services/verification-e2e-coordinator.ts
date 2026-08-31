@@ -103,6 +103,12 @@ export interface VerificationE2eScriptReviewAuthority {
   reviewedAt: string;
 }
 
+export interface PreparedVerificationE2eScriptReview {
+  authoring: E2eAuthoringDto;
+  commit(): Promise<void>;
+  rollback(): Promise<void>;
+}
+
 export class VerificationE2eCoordinator {
   private readonly workspaceService: E2eWorkspaceService;
   private readonly authorRunner: E2eTestAuthorRunner;
@@ -298,6 +304,17 @@ export class VerificationE2eCoordinator {
     input: ReviewVerificationE2eScriptsInput,
     testReportPath: string,
   ): Promise<E2eAuthoringDto> {
+    const prepared = await this.prepareReview(project, runId, input, testReportPath);
+    await prepared.commit();
+    return prepared.authoring;
+  }
+
+  async prepareReview(
+    project: ProjectDto,
+    runId: string,
+    input: ReviewVerificationE2eScriptsInput,
+    testReportPath: string,
+  ): Promise<PreparedVerificationE2eScriptReview> {
     const config = await this.workspaceService.load(project.rootPath);
     const record = await requireAuthoringRecord(config.e2eRoot, runId);
     if (record.patchHash !== input.expectedPatchHash) {
@@ -310,8 +327,21 @@ export class VerificationE2eCoordinator {
       reviewComment: input.comment,
       reviewedAt: new Date().toISOString(),
     };
-    await writeAuthoringRecord(config.e2eRoot, updated);
-    return authoringDto(config.e2eRoot, updated);
+    const authoring = await authoringDto(config.e2eRoot, updated);
+    let committed = false;
+    return {
+      authoring,
+      async commit() {
+        if (committed) return;
+        await writeAuthoringRecord(config.e2eRoot, updated);
+        committed = true;
+      },
+      async rollback() {
+        if (!committed) return;
+        await writeAuthoringRecord(config.e2eRoot, record);
+        committed = false;
+      },
+    };
   }
 
   async execute(input: {

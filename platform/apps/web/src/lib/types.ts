@@ -9,6 +9,33 @@ export type PhaseStatus =
   | "rejected"
   | "failed";
 
+export type WorkflowPhaseId =
+  | "discovery"
+  | "design"
+  | "architecture"
+  | "implementation"
+  | "verification"
+  | "release";
+
+export type RunExecutionModel = "legacy" | "flexible";
+
+export interface RunIntent {
+  kind: "full-flow" | "single-stage" | "quick-change";
+  summary: string;
+}
+
+export interface RunContextReferences {
+  sourceRunIds: string[];
+  artifactIds: string[];
+  filePaths: string[];
+  externalReferences: string[];
+}
+
+export interface RunEnvironmentRequest {
+  strategy: "none" | "reuse" | "create";
+  keepAlive: boolean;
+}
+
 export type ReviewDecision = "approve" | "request_changes";
 
 export type WorkType = "feature" | "change" | "bug" | "technical";
@@ -670,6 +697,14 @@ export interface AgentSessionRepository {
   createdAt: string;
 }
 
+export interface AgentSessionRun {
+  sessionId: string;
+  triggerMessageId: string;
+  workflowRunId: string;
+  providerId: AskProviderId;
+  createdAt: string;
+}
+
 export interface AgentSandbox {
   id: string;
   sessionId: string;
@@ -784,9 +819,67 @@ export interface AgentSession {
   events?: AgentEvent[];
   toolCalls?: AgentToolCall[];
   humanGates?: AgentHumanGate[];
+  runs?: AgentSessionRun[];
   createdAt: string;
   updatedAt: string;
 }
+
+export type AgentRunPhaseId =
+  | "discovery"
+  | "design"
+  | "architecture"
+  | "implementation"
+  | "verification"
+  | "release";
+
+export type AgentRunRoleId =
+  | "pm-ba"
+  | "designer"
+  | "architect"
+  | "software-engineer"
+  | "tester"
+  | "devops";
+
+export interface AgentRunExecution {
+  id: string;
+  phaseRunId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  selectedArtifactIds: string[];
+  selectedOutputKeys: string[];
+  runnerMode: "real" | "fake" | null;
+  model: string | null;
+  reasoningEffort: CodexReasoningEffort | null;
+  command: string;
+  exitCode: number | null;
+  error: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  createdAt: string;
+}
+
+export type AgentRunAdvanceResult =
+  | {
+      state: "started";
+      runId: string;
+      phaseId: AgentRunPhaseId;
+      roleId: AgentRunRoleId;
+      execution?: AgentRunExecution;
+      selectedArtifactIds: string[];
+    }
+  | {
+      state: "running" | "awaiting_review" | "blocked" | "failed";
+      runId: string;
+      phaseId: AgentRunPhaseId;
+      roleId: AgentRunRoleId;
+      artifactKeys: string[];
+      reason: string;
+    }
+  | {
+      state: "completed";
+      runId: string;
+      artifactKeys: string[];
+      reason: string;
+    };
 
 export interface SendAgentMessageInput {
   clientMessageId: string;
@@ -990,6 +1083,12 @@ export interface WorkflowRun {
   title: string;
   baseRevision?: string | null;
   definitionVersion?: string | null;
+  executionModel?: RunExecutionModel | null;
+  targetPhaseId?: WorkflowPhaseId | null;
+  runIntent?: RunIntent | null;
+  runContextReferences?: RunContextReferences | null;
+  runEnvironmentRequest?: RunEnvironmentRequest | null;
+  resultReceiptVersion?: number | null;
   workspaceState?: "provisioning" | "ready" | "busy" | "failed" | "destroyed" | null;
   objective?: string;
   changeContract?: ChangeContract | null;
@@ -1029,6 +1128,7 @@ export interface RunDetail {
   project: Project;
   definition: WorkflowDefinition;
   phases: PhaseRun[];
+  agentSession: { sessionId: string } | null;
   productBaseline?: PhaseBaseline | null;
   designBaseline?: PhaseBaseline | null;
   architectureBaseline?: ArchitectureBaseline | null;
@@ -1055,7 +1155,14 @@ export interface CreateLocalProjectInput {
 
 export type CreateProjectInput = CreateRemoteProjectInput | CreateLocalProjectInput;
 
-export type CreateRunInput =
+export interface FlexibleRunOptions {
+  targetPhaseId?: WorkflowPhaseId;
+  runIntent?: RunIntent;
+  runContextReferences?: RunContextReferences;
+  runEnvironmentRequest?: RunEnvironmentRequest;
+}
+
+export type CreateRunInput = (
   | {
       title: string;
       objective: string;
@@ -1068,7 +1175,8 @@ export type CreateRunInput =
       sourceRunIds: string[];
       expectedBehavior: string;
       baseRevision?: string;
-    };
+    }
+) & FlexibleRunOptions;
 
 export interface RunChangeset {
   runId: string;
@@ -1085,6 +1193,57 @@ export interface RunChangeset {
   patchSha256: string;
   generatedAt: string;
   downloadAvailable: boolean;
+}
+
+export interface RunResultReceipt {
+  runId: string;
+  resultReceiptVersion: number;
+  title: string;
+  objective: string;
+  status: "active" | "completed";
+  outcome: "pending" | "running" | "blocked" | "failed" | "completed";
+  targetPhaseId: WorkflowPhaseId | null;
+  summary: string;
+  intent: RunIntent | null;
+  contextReferences: RunContextReferences | null;
+  files: { created: string[]; modified: string[]; deleted: string[] };
+  artifacts: Array<{
+    phaseId: WorkflowPhaseId;
+    artifactId: string;
+    artifactKey: string;
+    filePath: string;
+    reviewStatus: Artifact["reviewStatus"];
+    contentHash: string;
+    revision: number;
+  }>;
+  executions: Array<{
+    phaseId: WorkflowPhaseId;
+    executionId: string;
+    status: Execution["status"];
+    command: string;
+    exitCode: number | null;
+    durationMs: number | null;
+    runnerMode: string | null;
+    model: string | null;
+    error: string | null;
+  }>;
+  environment: {
+    request: RunEnvironmentRequest | null;
+    workspaceState: WorkflowRun["workspaceState"];
+  };
+  tests: {
+    totalExecutions: number;
+    passedExecutions: number;
+    failedExecutions: number;
+    pendingExecutions: number;
+  };
+  git: RunChangeset | null;
+  externalOperations: string[];
+  permissionDecisions: string[];
+  risks: string[];
+  recommendations: string[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ApiErrorPayload {

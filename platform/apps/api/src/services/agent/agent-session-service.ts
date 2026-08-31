@@ -1,12 +1,18 @@
 import { createHash } from "node:crypto";
 
 import {
+  PHASE_IDS,
+  advanceAgentRunSchema,
   askProjectSchema,
   createAgentSessionSchema,
   readOnlyRepositoryContextsSchema,
   sendAgentMessageSchema,
+  type AdvanceAgentRunInput,
   type AgentMessageDto,
+  type AgentSessionRunDto,
   type AgentSessionDto,
+  type PhaseId,
+  type PhaseRunDto,
   type AskHistoryMessage,
   type AskProviderId,
   type CreateAgentSessionInput,
@@ -37,12 +43,13 @@ import type {
 } from "./mcp-tool-router.js";
 import type { ReadOnlyRepositoryContextResolverLike } from "./read-only-repository-context.js";
 import type { SandboxBlueprintRegistry } from "./sandbox-blueprint-registry.js";
+import type { ProviderPhaseExecutionOutcome } from "./provider-phase-executor.js";
 
 const maximumHistoryMessages = 12;
 
 export const AGENT_WORK_BOUNDARY_MESSAGE = [
   "当前 MVP 不开放 DDL、Secret、外部写入、push、创建 PR、合并、部署或发布；这些动作不会被伪装成可批准后执行的能力。",
-  "当前真正的人工门禁是每个阶段的 Artifact 审阅或既有 Workflow 决定；通过后才会按固定顺序推进下一角色。",
+  "当前真正的人工门禁是每个阶段的 Artifact 审阅或既有 Workflow 决定；明确目标时只执行该阶段，未明确时仍从 PM / BA 开始按固定顺序推进。",
 ].join("\n");
 
 export interface AgentSessionDetail {
@@ -51,6 +58,7 @@ export interface AgentSessionDetail {
   events: AgentSessionRecord["events"];
   toolCalls: AgentSessionRecord["toolCalls"];
   humanGates: AgentSessionRecord["humanGates"];
+  runs: AgentSessionRunDto[];
 }
 
 /**
@@ -158,6 +166,103 @@ export class AgentSessionService {
     });
   }
 
+  /**
+   * Continues the one durable Run already owned by this Session. This route is
+   * intentionally deterministic: it does not append a synthetic chat message
+   * or ask the Planner to rediscover which Run/phase the user just approved.
+   */
+  advanceRun(
+    sessionId: string,
+    runId: string,
+    unparsedInput: AdvanceAgentRunInput,
+  ): Promise<AgentSdlcAdvanceResult> {
+    const input = advanceAgentRunSchema.parse(unparsedInput);
+    return this.withSessionLock(sessionId, async () => {
+      const record = await this.store.getAgentSession(sessionId);
+      const association = record.sessionRuns.find(
+        (candidate) => candidate.workflowRunId === runId,
+      );
+      if (!association) {
+        throw new AppError(
+          "这条 Run 不属于当前 Agent Session",
+          404,
+          "AGENT_SESSION_RUN_NOT_FOUND",
+        );
+      }
+      const bundle = await this.workflow.getRun(runId);
+      if (bundle.run.status === "completed") {
+        throw new AppError(
+          "这条 Agent Session Run 已完成；产物、审核和决定历史保持只读",
+          409,
+          "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE",
+          { sessionId },
+        );
+      }
+      if (record.status !== "active") {
+        throw new AppError(
+          "已归档的 Agent Session 不能继续 Run",
+          409,
+          "AGENT_SESSION_ARCHIVED",
+        );
+      }
+      if (record.turnState === "running") {
+        throw new AppError(
+          "当前会话仍有消息在处理，请等待本轮完成后再继续 Run",
+          409,
+          "AGENT_SESSION_TURN_IN_PROGRESS",
+        );
+      }
+      assertExpectedAgentRunAdvancePhase(bundle.phases, input.expectedPhaseId);
+      const primary = record.repositories.find(({ accessMode }) => accessMode === "write");
+      if (!primary || bundle.run.projectId !== primary.projectId) {
+        throw new AppError(
+          "Run 与当前 Session 的可写主仓库不一致",
+          409,
+          "AGENT_SESSION_RUN_PROJECT_MISMATCH",
+        );
+      }
+      return this.providers.runWithProvider(input.providerId, async () => {
+        assertConfiguredProvider(this.providers, input.providerId);
+        // A direct Run continuation has no new chat message, so beginAgentTurn
+        // cannot persist the dropdown choice for us. Save it under the same
+        // Session lock before execution so a refresh restores this Provider.
+        // The store re-locks the Run and association before this update so a
+        // completion racing the service-level read still fails closed.
+        await this.store.updateIdleAgentSessionProvider(sessionId, runId, input.providerId);
+        const outcome = this.providerPhaseOutcomeBarrier({
+          sessionId,
+          messageId: association.triggerMessageId,
+          projectId: primary.projectId,
+        });
+        try {
+          const progress = await this.sdlc.advance({
+            runId,
+            requestedRoles: [],
+            startCurrentRole: true,
+            providerContext: {
+              providerId: input.providerId,
+              messages: providerPhaseConversation(
+                boundedHistory(record.messages, association.triggerMessageId),
+              ),
+              outcomeReady: outcome.ready,
+              onExecutionSettled: outcome.record,
+            },
+          });
+          await this.recordSdlcAdvance({
+            sessionId,
+            messageId: association.triggerMessageId,
+            projectId: primary.projectId,
+            providerId: input.providerId,
+            progress,
+          });
+          return progress;
+        } finally {
+          outcome.release();
+        }
+      });
+    });
+  }
+
   private async bindMentionedReadOnlyRepositories(
     sessionId: string,
     content: string,
@@ -193,6 +298,7 @@ export class AgentSessionService {
     userMessage: AgentMessageDto,
     signal?: AbortSignal,
   ): Promise<AgentSessionDetail> {
+    let providerPhaseOutcome: ReturnType<AgentSessionService["providerPhaseOutcomeBarrier"]> | undefined;
     try {
       const session = await this.store.getAgentSession(sessionId);
       const primary = session.repositories.find(({ accessMode }) => accessMode === "write");
@@ -283,6 +389,20 @@ export class AgentSessionService {
       }
 
       const history = boundedHistory(session.messages.filter(({ id }) => id !== userMessage.id));
+      providerPhaseOutcome = this.providerPhaseOutcomeBarrier({
+        sessionId,
+        messageId: userMessage.id,
+        projectId: primary.projectId,
+      });
+      const providerContext = {
+        providerId,
+        messages: providerPhaseConversation([
+          ...history,
+          { role: "user" as const, content: input.content },
+        ]),
+        outcomeReady: providerPhaseOutcome.ready,
+        onExecutionSettled: providerPhaseOutcome.record,
+      };
       const plan = await this.planner.plan({
         providerId,
         content: input.content,
@@ -418,13 +538,16 @@ export class AgentSessionService {
             runId: priorRunId,
             requestedRoles: continuation.roles,
             startCurrentRole: true,
+            providerContext,
           });
           await this.recordSdlcAdvance({
             sessionId,
             messageId: userMessage.id,
             projectId: primary.projectId,
+            providerId,
             progress,
           });
+          providerPhaseOutcome.release();
           response = renderRunContinued({
             alias: primary.repoAlias,
             focusRoles: continuation.roles.length > 0 ? continuation.roles : focusRoles,
@@ -445,11 +568,13 @@ export class AgentSessionService {
             workItem: workItem?.workItem,
             readOnlyRepositories,
           });
+          const targetPhaseId = plan.targetPhaseId ?? undefined;
           const run = await this.workflow.createRun(primary.projectId, {
             title: plan.task.title,
             objective: contract.summary,
             changeContract: contract,
             baseRevision: primary.sourceRevision,
+            ...(targetPhaseId ? { targetPhaseId } : {}),
           }, preparedSandbox, {
             sessionId,
             triggerMessageId: userMessage.id,
@@ -458,25 +583,29 @@ export class AgentSessionService {
             sessionId,
             kind: "sdlc.run-created",
             status: "completed",
-            summary: "已从对话整理 Change Contract，并创建固定六角色的后台 Run。",
+            summary: targetPhaseId
+              ? `已从对话整理 Change Contract，并创建从 ${targetPhaseId} 直接开始的单阶段后台 Run。`
+              : "已从对话整理 Change Contract，并创建固定六角色的后台 Run。",
             messageId: userMessage.id,
             projectId: primary.projectId,
             workflowRunId: run.id,
           });
-          // A new Run always starts from PM / BA, even when the user mainly
-          // cares about a later role. Focus roles stay visible in the reply,
-          // but never become permission to skip their upstream owners.
+          // A direct target is permitted only when the planner found explicit
+          // stage language. Otherwise the canonical PM / BA-first path remains.
           const progress = await this.sdlc.advance({
             runId: run.id,
             requestedRoles: focusRoles,
             startCurrentRole: true,
+            providerContext,
           });
           await this.recordSdlcAdvance({
             sessionId,
             messageId: userMessage.id,
             projectId: primary.projectId,
+            providerId,
             progress,
           });
+          providerPhaseOutcome.release();
           response = renderWorkAccepted({
             alias: primary.repoAlias,
             runId: run.id,
@@ -517,6 +646,8 @@ export class AgentSessionService {
       // conversation. The next request continues from the latest sequence.
       await this.store.resetInterruptedAgentSession(sessionId).catch(() => undefined);
       throw error;
+    } finally {
+      providerPhaseOutcome?.release();
     }
   }
 
@@ -673,19 +804,97 @@ export class AgentSessionService {
     sessionId: string;
     messageId: string;
     projectId: string;
+    providerId: AskProviderId;
     progress: AgentSdlcAdvanceResult;
   }): Promise<void> {
-    if (input.progress.state !== "started") return;
+    if (input.progress.state === "started") {
+      await this.store.appendAgentEvent({
+        sessionId: input.sessionId,
+        kind: "sdlc.phase-started",
+        status: "started",
+        summary: `${roleDisplayName(input.progress.roleId)} 已继承当前 Session 对话，并通过 ${this.providers.status(input.providerId).label} 启动 ${input.progress.phaseId}；执行与输入 Artifact 均已落库。`,
+        messageId: input.messageId,
+        projectId: input.projectId,
+        workflowRunId: input.progress.runId,
+        phaseId: input.progress.phaseId,
+      });
+      return;
+    }
+    if (input.progress.state !== "failed" && input.progress.state !== "blocked") return;
     await this.store.appendAgentEvent({
       sessionId: input.sessionId,
-      kind: "sdlc.phase-started",
-      status: "started",
-      summary: `${roleDisplayName(input.progress.roleId)} 已通过固定 Workflow 启动 ${input.progress.phaseId}；执行与输入 Artifact 均已落库。`,
+      kind: input.progress.state === "failed" ? "sdlc.phase-started" : "human-gate.required",
+      status: input.progress.state === "failed" ? "failed" : "waiting",
+      // Coordinator progress reasons are already constrained by the public
+      // Agent Run result contract. Persist that safe, bounded explanation
+      // verbatim instead of serializing an exception or Provider response.
+      summary: input.progress.reason,
       messageId: input.messageId,
       projectId: input.projectId,
       workflowRunId: input.progress.runId,
       phaseId: input.progress.phaseId,
     });
+  }
+
+  private providerPhaseOutcomeBarrier(input: {
+    sessionId: string;
+    messageId: string;
+    projectId: string;
+  }): {
+    ready: Promise<void>;
+    release(): void;
+    record: (outcome: ProviderPhaseExecutionOutcome) => Promise<void>;
+  } {
+    let released = false;
+    let resolveReady!: () => void;
+    const ready = new Promise<void>((resolve) => { resolveReady = resolve; });
+    return {
+      ready,
+      release: () => {
+        if (released) return;
+        released = true;
+        resolveReady();
+      },
+      record: async (outcome) => {
+        await ready;
+        if (outcome.state === "failed") {
+          await this.store.appendAgentEvent({
+            sessionId: input.sessionId,
+            kind: "sdlc.phase-completed",
+            status: "failed",
+            summary: outcome.message,
+            messageId: input.messageId,
+            projectId: input.projectId,
+            workflowRunId: outcome.runId,
+            phaseId: outcome.phaseId,
+          });
+          return;
+        }
+        const artifacts = outcome.artifactKeys.length > 0
+          ? `产物 ${outcome.artifactKeys.join("、")} 已完整落盘。`
+          : "阶段产物已完整落盘。";
+        await this.store.appendAgentEvent({
+          sessionId: input.sessionId,
+          kind: "sdlc.phase-completed",
+          status: "completed",
+          summary: `${artifacts}当前状态为等待人工审核。`,
+          messageId: input.messageId,
+          projectId: input.projectId,
+          workflowRunId: outcome.runId,
+          phaseId: outcome.phaseId,
+        });
+        await this.store.appendAgentEvent({
+          sessionId: input.sessionId,
+          kind: "human-gate.required",
+          status: "waiting",
+          summary: "请在当前 Session 查看产物 Diff、决定与待办，并选择批准或要求修改；平台不会代替人工通过 Gate。",
+          messageId: input.messageId,
+          projectId: input.projectId,
+          workflowRunId: outcome.runId,
+          phaseId: outcome.phaseId,
+        });
+      },
+    };
   }
 
   private async withSessionLock<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
@@ -774,8 +983,45 @@ function assertFixedRunReadOnlyRepositories(
 }
 
 function detail(record: AgentSessionRecord): AgentSessionDetail {
-  const { messages, events, toolCalls, humanGates, sessionRuns: _sessionRuns, ...session } = record;
-  return { session, messages, events, toolCalls, humanGates };
+  const { messages, events, toolCalls, humanGates, sessionRuns, ...session } = record;
+  const messagesById = new Map(messages.map((message) => [message.id, message]));
+  const runs = sessionRuns.map((association): AgentSessionRunDto => {
+    const trigger = messagesById.get(association.triggerMessageId);
+    if (!trigger) {
+      throw new AppError(
+        "Agent Session 的 Run 关联缺少触发消息",
+        500,
+        "AGENT_SESSION_RUN_TRIGGER_MISSING",
+      );
+    }
+    return { ...association, providerId: trigger.providerId };
+  });
+  return { session, messages, events, toolCalls, humanGates, runs };
+}
+
+export function assertExpectedAgentRunAdvancePhase(
+  phases: readonly PhaseRunDto[],
+  expectedPhaseId: PhaseId,
+): void {
+  const byId = new Map(phases.map((phase) => [phase.phaseId, phase]));
+  const currentIndex = PHASE_IDS.findIndex((phaseId) => byId.get(phaseId)?.status !== "approved");
+  const allowed = new Set<PhaseId>();
+  if (currentIndex < 0) {
+    const last = PHASE_IDS.at(-1);
+    if (last) allowed.add(last);
+  } else {
+    const current = PHASE_IDS[currentIndex];
+    if (current) allowed.add(current);
+    const preceding = PHASE_IDS[currentIndex - 1];
+    if (preceding && byId.get(preceding)?.status === "approved") allowed.add(preceding);
+  }
+  if (allowed.has(expectedPhaseId)) return;
+  throw new AppError(
+    "Run 状态已经变化，请刷新当前阶段后再继续",
+    409,
+    "AGENT_RUN_ADVANCE_STALE",
+    { expectedPhaseId, currentPhaseIds: [...allowed] },
+  );
 }
 
 function assertConfiguredProvider(registry: AskProviderRegistry, providerId: AskProviderId) {
@@ -810,17 +1056,50 @@ function repositoryMentions(content: string): string[] {
   )];
 }
 
-function boundedHistory(messages: AgentSessionRecord["messages"]): AskHistoryMessage[] {
+function boundedHistory(
+  messages: AgentSessionRecord["messages"],
+  durableRunTriggerMessageId?: string,
+): AskHistoryMessage[] {
   const history: AskHistoryMessage[] = [];
   let characters = 0;
   for (const message of messages.slice(-maximumHistoryMessages).reverse()) {
-    if (!message.content || message.status !== "completed") continue;
+    // A Session→Run association proves that its triggering user request was
+    // committed with the Run. Recovery may later mark that interrupted turn
+    // failed before its assistant reply was saved; keep the real user goal in
+    // inherited phase context without admitting unrelated failed messages.
+    if (
+      !message.content
+      || (message.status !== "completed" && message.id !== durableRunTriggerMessageId)
+    ) continue;
     const content = message.content.slice(0, 12_000);
     if (characters + content.length > 48_000) break;
     characters += content.length;
     history.push({ role: message.role, content });
   }
   return history.reverse();
+}
+
+function providerPhaseConversation(
+  messages: readonly AskHistoryMessage[],
+): AskHistoryMessage[] {
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  if (lastUserIndex < 0) {
+    throw new AppError(
+      "当前 Session 没有可继承的用户目标",
+      409,
+      "AGENT_RUN_CONVERSATION_MISSING",
+    );
+  }
+  // ProviderNativeAgentRuntime intentionally accepts at most eight messages
+  // and requires the final item to be a real user request. Drop later platform
+  // replies instead of inventing and persisting a synthetic continuation turn.
+  return messages.slice(0, lastUserIndex + 1).slice(-8);
 }
 
 function renderWorkAccepted(input: {
@@ -852,7 +1131,7 @@ function renderWorkAccepted(input: {
       `${index + 1}. ${roleNames[role]}${input.focusRoles.includes(role) ? " · involve 关注点" : ""}`
     )),
     "",
-    `Run：\`${input.runId}\`。完整 Artifact、Review、Diff、测试和 Patch 可从右侧“高级审计”打开。`,
+    `Run：\`${input.runId}\`。当前状态、产物和审核入口会直接显示在这条会话中；完整 Diff、测试、Patch 与日志仍可打开“高级审计”。`,
     "",
     AGENT_WORK_BOUNDARY_MESSAGE,
   ].join("\n");
@@ -873,7 +1152,7 @@ function renderRunContinued(input: {
     renderProgress(input.progress),
     "",
     "角色仍按 PM / BA → Designer → Architect → Software Engineer → Tester → DevOps 串联；后一个角色只读取已批准的上游 Artifact。",
-    "完整产物与审阅入口在右侧“高级审计”。",
+    "当前状态、产物和审阅入口会直接显示在这条会话中；完整证据仍可打开“高级审计”。",
   ].join("\n");
 }
 

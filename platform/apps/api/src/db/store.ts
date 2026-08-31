@@ -153,6 +153,12 @@ export interface RunBundle {
   phases: PhaseRunDto[];
   artifactPaths: Record<string, string>;
   workspace?: ManagedWorkspaceRecord | null;
+  /**
+   * Durable provenance for Runs created from an Agent Session. Optional only
+   * for source compatibility with older in-process store doubles; PostgreSQL
+   * always returns either the association or null.
+   */
+  agentSessionRun?: AgentSessionRunRecord | null;
 }
 
 export interface CreateRunPersistence {
@@ -163,6 +169,12 @@ export interface CreateRunPersistence {
   workspaceId?: string;
   baseRevision?: GitRevision;
   definitionVersion?: string;
+  executionModel?: "legacy" | "flexible";
+  targetPhaseId?: PhaseId;
+  runIntent?: WorkflowRunDto["runIntent"];
+  runContextReferences?: WorkflowRunDto["runContextReferences"];
+  runEnvironmentRequest?: WorkflowRunDto["runEnvironmentRequest"];
+  resultReceiptVersion?: number;
   /**
    * When a Run originates from an Agent message, this association is written
    * in the same PostgreSQL transaction as the Run, phases, Artifact, and
@@ -323,6 +335,12 @@ export interface ApplyPhaseResolutionInput {
   resolution: PhaseResolutionDto;
   expectedBaselineArtifactIds: string[];
   targetArtifactPaths: Record<string, string>;
+  /**
+   * An explicit human no-impact decision may close an already-started
+   * Architecture phase. The store still rejects running work and every other
+   * late resolution mode; prior artifacts remain as superseded audit history.
+   */
+  allowStartedArchitectureSkip?: boolean;
 }
 
 export interface AdoptArchitectureBaselineInput {
@@ -1473,6 +1491,91 @@ export class PgWorkflowStore {
       this.listAgentSessionRuns(id),
     ]);
     return { ...summary, messages, events, toolCalls, humanGates, sessionRuns };
+  }
+
+  /**
+   * Persists a Provider selected by deterministic Run continuation without
+   * inventing a chat message. The row lock keeps this consistent with turn
+   * creation and archive, which use the same Agent Session lock.
+   */
+  async updateIdleAgentSessionProvider(
+    id: string,
+    workflowRunId: string,
+    providerId: AskProviderId,
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const sessionResult = await client.query(
+        "SELECT * FROM agent_sessions WHERE id = $1 FOR UPDATE",
+        [id],
+      );
+      const session = sessionResult.rows[0];
+      if (!session) throw notFound("Agent Session");
+      const runResult = await client.query(
+        "SELECT status FROM workflow_runs WHERE id = $1 FOR UPDATE",
+        [workflowRunId],
+      );
+      const run = runResult.rows[0];
+      if (!run) throw notFound("工作流运行");
+      const associationResult = await client.query(
+        `SELECT session_id
+         FROM agent_session_runs
+         WHERE workflow_run_id = $1
+         FOR UPDATE`,
+        [workflowRunId],
+      );
+      const association = associationResult.rows[0];
+      if (!association || String(association.session_id) !== id) {
+        throw new AppError(
+          "这条 Run 不属于当前 Agent Session",
+          404,
+          "AGENT_SESSION_RUN_NOT_FOUND",
+        );
+      }
+      if (run.status === "completed") {
+        throw new AppError(
+          "这条 Agent Session Run 已完成；产物、审核和决定历史保持只读",
+          409,
+          "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE",
+          { sessionId: id },
+        );
+      }
+      if (session.status !== "active") {
+        throw new AppError(
+          "已归档的 Agent Session 不能继续 Run",
+          409,
+          "AGENT_SESSION_ARCHIVED",
+        );
+      }
+      if (session.turn_state !== "idle") {
+        throw new AppError(
+          "当前会话仍有消息在处理，请等待本轮完成后再继续 Run",
+          409,
+          "AGENT_SESSION_TURN_IN_PROGRESS",
+        );
+      }
+      const updated = await client.query(
+        `UPDATE agent_sessions
+         SET current_provider_id = $1, updated_at = now()
+         WHERE id = $2 AND status = 'active' AND turn_state = 'idle'
+         RETURNING id`,
+        [providerId, id],
+      );
+      if (!updated.rows[0]) {
+        throw new AppError(
+          "Agent Session 状态已变化",
+          409,
+          "AGENT_SESSION_PROVIDER_STATE_CHANGED",
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async archiveAgentSession(id: string): Promise<AgentSessionDto> {
@@ -3497,8 +3600,11 @@ export class PgWorkflowStore {
       const runResult = await client.query(
         `INSERT INTO workflow_runs
            (id, project_id, title, objective, artifact_paths, change_contract,
-            workspace_id, base_revision, definition_version, status)
-         VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, 'active') RETURNING *`,
+            workspace_id, base_revision, definition_version, execution_model,
+            target_phase_id, run_intent, run_context_references,
+            run_environment_request, result_receipt_version, status)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10,
+                 $11, $12::jsonb, $13::jsonb, $14::jsonb, $15, 'active') RETURNING *`,
         [
           runId,
           projectId,
@@ -3509,6 +3615,12 @@ export class PgWorkflowStore {
           persistence.workspaceId ?? null,
           persistence.baseRevision ?? null,
           persistence.definitionVersion ?? null,
+          persistence.executionModel ?? "legacy",
+          persistence.targetPhaseId ?? null,
+          persistence.runIntent ? JSON.stringify(persistence.runIntent) : null,
+          persistence.runContextReferences ? JSON.stringify(persistence.runContextReferences) : null,
+          persistence.runEnvironmentRequest ? JSON.stringify(persistence.runEnvironmentRequest) : null,
+          persistence.resultReceiptVersion ?? null,
         ]
       );
       if (persistence.workspaceId) {
@@ -3542,13 +3654,16 @@ export class PgWorkflowStore {
           );
         }
       }
+      const initialReadyPhaseId = persistence.executionModel === "flexible"
+        ? persistence.targetPhaseId ?? "discovery"
+        : "discovery";
       let discoveryPhaseRunId: string | undefined;
       for (const [position, phaseId] of PHASE_IDS.entries()) {
         const phaseRunId = randomUUID();
         await client.query(
           `INSERT INTO phase_runs (id, workflow_run_id, phase_id, position, status)
            VALUES ($1, $2, $3, $4, $5)`,
-          [phaseRunId, runId, phaseId, position, position === 0 ? "ready" : "pending"]
+          [phaseRunId, runId, phaseId, position, phaseId === initialReadyPhaseId ? "ready" : "pending"]
         );
         if (phaseId === "discovery") discoveryPhaseRunId = phaseRunId;
       }
@@ -3627,9 +3742,14 @@ export class PgWorkflowStore {
               mw.root_path AS w_root_path, mw.state AS w_state, mw.revision AS w_revision,
               mw.active AS w_active, mw.generation AS w_generation,
               mw.error_message AS w_error_message, mw.expires_at AS w_expires_at,
-              mw.created_at AS w_created_at, mw.updated_at AS w_updated_at
+              mw.created_at AS w_created_at, mw.updated_at AS w_updated_at,
+              asr.session_id AS asr_session_id,
+              asr.trigger_message_id AS asr_trigger_message_id,
+              asr.workflow_run_id AS asr_workflow_run_id,
+              asr.created_at AS asr_created_at
        FROM workflow_runs wr JOIN projects p ON p.id = wr.project_id
        LEFT JOIN managed_workspaces mw ON mw.id = wr.workspace_id
+       LEFT JOIN agent_session_runs asr ON asr.workflow_run_id = wr.id
        WHERE wr.id = $1`,
       [runId]
     );
@@ -3700,6 +3820,14 @@ export class PgWorkflowStore {
         created_at: row.w_created_at,
         updated_at: row.w_updated_at,
       }) : null,
+      agentSessionRun: row.asr_session_id
+        ? mapAgentSessionRun({
+            session_id: row.asr_session_id,
+            trigger_message_id: row.asr_trigger_message_id,
+            workflow_run_id: row.asr_workflow_run_id,
+            created_at: row.asr_created_at,
+          })
+        : null,
     };
   }
 
@@ -3786,16 +3914,35 @@ export class PgWorkflowStore {
     try {
       await client.query("BEGIN");
       const targetResult = await client.query(
-        `SELECT pr.*, wr.project_id
+        `SELECT pr.*, wr.project_id, wr.status AS workflow_run_status,
+                wr.execution_model, wr.target_phase_id,
+                asr.session_id AS agent_session_id
          FROM phase_runs pr
          JOIN workflow_runs wr ON wr.id = pr.workflow_run_id
+         LEFT JOIN agent_session_runs asr ON asr.workflow_run_id = wr.id
          WHERE wr.id = $1 AND pr.phase_id = $2
          FOR UPDATE OF pr, wr`,
         [runId, resolution.phaseId],
       );
       const target = targetResult.rows[0];
       if (!target) throw notFound("阶段");
-      if (target.status !== "ready" || target.phase_resolution != null) {
+      if (target.agent_session_id && target.workflow_run_status === "completed") {
+        throw new AppError(
+          "这条 Agent Session Run 已完成；产物、审核和决定历史保持只读",
+          409,
+          "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE",
+          { sessionId: target.agent_session_id },
+        );
+      }
+      const lateArchitectureSkip = input.allowStartedArchitectureSkip === true
+        && resolution.phaseId === "architecture"
+        && resolution.mode === "skip"
+        && ["awaiting_review", "changes_requested", "failed"].includes(String(target.status))
+        && target.phase_resolution == null;
+      if (
+        (target.status !== "ready" && !lateArchitectureSkip)
+        || target.phase_resolution != null
+      ) {
         throw new AppError(
           "阶段已经开始或已有处置，不能重复执行 Impact Check",
           409,
@@ -3812,7 +3959,7 @@ export class PgWorkflowStore {
         [target.id],
       );
       const targetExecutions = await client.query(
-        "SELECT id FROM executions WHERE phase_run_id = $1 FOR UPDATE",
+        "SELECT id, status FROM executions WHERE phase_run_id = $1 FOR UPDATE",
         [target.id],
       );
       const targetReviews = await client.query(
@@ -3825,10 +3972,20 @@ export class PgWorkflowStore {
       const unexpectedTargetArtifacts = targetArtifactsResult.rows.filter(
         (artifact) => !allowedExistingTargetKeys.has(String(artifact.artifact_key)),
       );
+      if (lateArchitectureSkip && targetExecutions.rows.some(({ status }) => status === "running")) {
+        throw new AppError(
+          "Architect 仍在执行，不能同时记录无需架构决定",
+          409,
+          "PHASE_RESOLUTION_EXECUTION_RUNNING",
+        );
+      }
       if (
+        !lateArchitectureSkip
+        && (
         unexpectedTargetArtifacts.length > 0
         || targetExecutions.rows.length > 0
         || targetReviews.rows.length > 0
+        )
       ) {
         throw new AppError(
           "阶段已经产生执行、审核或业务产物，不能再改变处置",
@@ -3972,7 +4129,17 @@ export class PgWorkflowStore {
       }
 
       const currentTargetArtifactIds = targetArtifactsResult.rows.map((artifact) => String(artifact.id));
-      const reviewedArtifactIds = [...currentTargetArtifactIds, ...inheritedArtifactIds];
+      if (lateArchitectureSkip && currentTargetArtifactIds.length > 0) {
+        await client.query(
+          `UPDATE artifacts
+           SET review_status = 'superseded'
+           WHERE phase_run_id = $1 AND review_status <> 'superseded'`,
+          [target.id],
+        );
+      }
+      const reviewedArtifactIds = lateArchitectureSkip
+        ? []
+        : [...currentTargetArtifactIds, ...inheritedArtifactIds];
       const reviewDecision: ReviewDecision = resolution.mode === "partial"
         ? "request_changes"
         : "approve";
@@ -3994,7 +4161,10 @@ export class PgWorkflowStore {
          WHERE id = $1`,
         [target.id, nextStatus, JSON.stringify(resolution)],
       );
-      if (nextStatus === "approved") {
+      const completesFlexibleTarget = nextStatus === "approved"
+        && target.execution_model === "flexible"
+        && target.target_phase_id === resolution.phaseId;
+      if (nextStatus === "approved" && !completesFlexibleTarget) {
         const nextResult = await client.query(
           `SELECT id, status FROM phase_runs
            WHERE workflow_run_id = $1 AND position = $2 FOR UPDATE`,
@@ -4016,8 +4186,8 @@ export class PgWorkflowStore {
         }
       }
       await client.query(
-        "UPDATE workflow_runs SET status = 'active', updated_at = now() WHERE id = $1",
-        [runId],
+        "UPDATE workflow_runs SET status = $2, updated_at = now() WHERE id = $1",
+        [runId, completesFlexibleTarget ? "completed" : "active"],
       );
       await client.query("COMMIT");
       return mapReview(reviewResult.rows[0]);
@@ -4151,15 +4321,25 @@ export class PgWorkflowStore {
     try {
       await client.query("BEGIN");
       const currentResult = await client.query(
-        `SELECT pr.*, wr.project_id
+        `SELECT pr.*, wr.project_id, wr.status AS workflow_run_status,
+                asr.session_id AS agent_session_id
          FROM phase_runs pr
          JOIN workflow_runs wr ON wr.id = pr.workflow_run_id
+         LEFT JOIN agent_session_runs asr ON asr.workflow_run_id = wr.id
          WHERE wr.id = $1 AND pr.phase_id = 'architecture'
          FOR UPDATE OF pr, wr`,
         [runId],
       );
       const current = currentResult.rows[0];
       if (!current) throw notFound("架构阶段");
+      if (current.agent_session_id && current.workflow_run_status === "completed") {
+        throw new AppError(
+          "这条 Agent Session Run 已完成；产物、审核和决定历史保持只读",
+          409,
+          "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE",
+          { sessionId: current.agent_session_id },
+        );
+      }
       if (current.status !== "ready") {
         throw new AppError(
           `当前架构阶段状态 ${current.status} 不能继承基线`,
@@ -4512,11 +4692,26 @@ export class PgWorkflowStore {
     try {
       await client.query("BEGIN");
       const phaseResult = await client.query(
-        "SELECT * FROM phase_runs WHERE workflow_run_id = $1 AND phase_id = $2 FOR UPDATE",
+        `SELECT pr.*, wr.status AS workflow_run_status,
+                wr.execution_model, wr.target_phase_id,
+                asr.session_id AS agent_session_id
+         FROM phase_runs pr
+         JOIN workflow_runs wr ON wr.id = pr.workflow_run_id
+         LEFT JOIN agent_session_runs asr ON asr.workflow_run_id = wr.id
+         WHERE pr.workflow_run_id = $1 AND pr.phase_id = $2
+         FOR UPDATE OF pr, wr`,
         [runId, phaseId]
       );
       const phase = phaseResult.rows[0];
       if (!phase) throw notFound("阶段");
+      if (phase.agent_session_id && phase.workflow_run_status === "completed") {
+        throw new AppError(
+          "这条 Agent Session Run 已完成；产物、审核和决定历史保持只读",
+          409,
+          "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE",
+          { sessionId: phase.agent_session_id },
+        );
+      }
       assertPhaseExecutable(phase.status);
       const architectureImpact = mapArchitectureImpact(phase.architecture_impact);
       const phaseResolution = mapPhaseResolution(phase.phase_resolution, architectureImpact);
@@ -4610,11 +4805,105 @@ export class PgWorkflowStore {
     );
   }
 
+  async commitVerificationE2eScriptReview<T>(
+    runId: string,
+    operation: () => Promise<{
+      result: T;
+      executionId: string;
+      payload: unknown;
+      rollback: () => Promise<void>;
+    }>,
+  ): Promise<T> {
+    const client = await this.pool.connect();
+    let committedChange: Awaited<ReturnType<typeof operation>> | undefined;
+    try {
+      await client.query("BEGIN");
+      const authorityResult = await client.query(
+        `SELECT wr.status AS workflow_run_status,
+                asr.session_id AS agent_session_id
+         FROM workflow_runs wr
+         LEFT JOIN agent_session_runs asr ON asr.workflow_run_id = wr.id
+         WHERE wr.id = $1
+         FOR UPDATE OF wr`,
+        [runId],
+      );
+      const authority = authorityResult.rows[0];
+      if (!authority) throw notFound("工作流运行");
+      if (authority.agent_session_id && authority.workflow_run_status === "completed") {
+        throw new AppError(
+          "这条 Agent Session Run 已完成；产物、审核和决定历史保持只读",
+          409,
+          "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE",
+          { sessionId: authority.agent_session_id },
+        );
+      }
+
+      committedChange = await operation();
+      const executionResult = await client.query(
+        `SELECT e.id
+         FROM executions e
+         JOIN phase_runs pr ON pr.id = e.phase_run_id
+         WHERE e.id = $1
+           AND pr.workflow_run_id = $2
+           AND pr.phase_id = 'verification'
+         FOR KEY SHARE OF e, pr`,
+        [committedChange.executionId, runId],
+      );
+      if (!executionResult.rows[0]) {
+        throw new AppError(
+          "E2E 脚本审核记录不属于当前 Run 的 Verification 执行",
+          409,
+          "E2E_AUTHORING_EXECUTION_UNTRUSTED",
+        );
+      }
+      const sequenceResult = await client.query(
+        `SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence
+         FROM execution_events
+         WHERE execution_id = $1`,
+        [committedChange.executionId],
+      );
+      const nextSequence = Number(sequenceResult.rows[0]?.next_sequence ?? 1);
+      await client.query(
+        `INSERT INTO execution_events (id, execution_id, sequence, event_type, payload)
+         VALUES ($1, $2, $3, 'e2e.script.reviewed', $4::jsonb)`,
+        [
+          randomUUID(),
+          committedChange.executionId,
+          nextSequence,
+          JSON.stringify(committedChange.payload ?? null),
+        ],
+      );
+      await client.query("COMMIT");
+      return committedChange.result;
+    } catch (error) {
+      let rollbackFailed = false;
+      if (committedChange) {
+        try {
+          await committedChange.rollback();
+        } catch {
+          rollbackFailed = true;
+        }
+      }
+      await client.query("ROLLBACK").catch(() => undefined);
+      if (rollbackFailed) {
+        throw new AppError(
+          "E2E 脚本审核未能持久化，且 manifest 回滚失败",
+          500,
+          "E2E_SCRIPT_REVIEW_ROLLBACK_FAILED",
+        );
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async completeExecution(
     executionId: string,
     exitCode: number,
     artifacts: ArtifactRecordInput[],
-    ticketSync?: TicketSyncInput
+    ticketSync?: TicketSyncInput,
+    actualModel?: string,
   ): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -4699,8 +4988,10 @@ export class PgWorkflowStore {
         );
       }
       await client.query(
-        `UPDATE executions SET status = 'completed', exit_code = $2, finished_at = now() WHERE id = $1`,
-        [executionId, exitCode]
+        `UPDATE executions
+         SET status = 'completed', exit_code = $2, model = COALESCE($3, model), finished_at = now()
+         WHERE id = $1`,
+        [executionId, exitCode, actualModel ?? null]
       );
       await client.query(
         "UPDATE phase_runs SET status = 'awaiting_review', updated_at = now() WHERE id = $1",
@@ -4758,11 +5049,25 @@ export class PgWorkflowStore {
     try {
       await client.query("BEGIN");
       const phaseResult = await client.query(
-        "SELECT * FROM phase_runs WHERE workflow_run_id = $1 AND phase_id = $2 FOR UPDATE",
+        `SELECT pr.*, wr.status AS workflow_run_status,
+                asr.session_id AS agent_session_id
+         FROM phase_runs pr
+         JOIN workflow_runs wr ON wr.id = pr.workflow_run_id
+         LEFT JOIN agent_session_runs asr ON asr.workflow_run_id = wr.id
+         WHERE pr.workflow_run_id = $1 AND pr.phase_id = $2
+         FOR UPDATE OF pr, wr`,
         [runId, phaseId]
       );
       const phase = phaseResult.rows[0];
       if (!phase) throw notFound("阶段");
+      if (phase.agent_session_id && phase.workflow_run_status === "completed") {
+        throw new AppError(
+          "这条 Agent Session Run 已完成；产物、审核和决定历史保持只读",
+          409,
+          "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE",
+          { sessionId: phase.agent_session_id },
+        );
+      }
       if (allowedPhaseStatuses.length === 1 && allowedPhaseStatuses[0] === "awaiting_review") {
         assertPhaseReviewable(phase.status);
       } else if (!allowedPhaseStatuses.includes(phase.status)) {
@@ -4947,20 +5252,29 @@ export class PgWorkflowStore {
             [runId]
           );
         }
-        const next = await client.query(
-          "SELECT id FROM phase_runs WHERE workflow_run_id = $1 AND position = $2 FOR UPDATE",
-          [runId, phase.position + 1]
-        );
-        if (next.rows[0]) {
-          await client.query(
-            "UPDATE phase_runs SET status = 'ready', updated_at = now() WHERE id = $1 AND status = 'pending'",
-            [next.rows[0].id]
-          );
-        } else {
+        const completesFlexibleTarget = phase.execution_model === "flexible"
+          && phase.target_phase_id === phase.phase_id;
+        if (completesFlexibleTarget) {
           await client.query(
             "UPDATE workflow_runs SET status = 'completed', updated_at = now() WHERE id = $1",
-            [runId]
+            [runId],
           );
+        } else {
+          const next = await client.query(
+            "SELECT id FROM phase_runs WHERE workflow_run_id = $1 AND position = $2 FOR UPDATE",
+            [runId, phase.position + 1]
+          );
+          if (next.rows[0]) {
+            await client.query(
+              "UPDATE phase_runs SET status = 'ready', updated_at = now() WHERE id = $1 AND status = 'pending'",
+              [next.rows[0].id]
+            );
+          } else {
+            await client.query(
+              "UPDATE workflow_runs SET status = 'completed', updated_at = now() WHERE id = $1",
+              [runId]
+            );
+          }
         }
       }
       await client.query("UPDATE workflow_runs SET updated_at = now() WHERE id = $1", [runId]);
@@ -5016,15 +5330,26 @@ export class PgWorkflowStore {
       await client.query("BEGIN");
       const artifactResult = await client.query(
         `SELECT a.*, pr.workflow_run_id, pr.phase_id, pr.position, pr.status AS phase_status,
-           pr.architecture_impact, pr.phase_resolution
+           pr.architecture_impact, pr.phase_resolution, wr.status AS workflow_run_status,
+           asr.session_id AS agent_session_id
          FROM artifacts a
          JOIN phase_runs pr ON pr.id = a.phase_run_id
+         JOIN workflow_runs wr ON wr.id = pr.workflow_run_id
+         LEFT JOIN agent_session_runs asr ON asr.workflow_run_id = wr.id
          WHERE a.id = $1
-         FOR UPDATE OF a, pr`,
+         FOR UPDATE OF a, pr, wr`,
         [artifactId]
       );
       const artifact = artifactResult.rows[0];
       if (!artifact) throw notFound("产物");
+      if (artifact.agent_session_id && artifact.workflow_run_status === "completed") {
+        throw new AppError(
+          "这条 Agent Session Run 已完成；产物、审核和决定历史保持只读",
+          409,
+          "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE",
+          { sessionId: artifact.agent_session_id },
+        );
+      }
       if (["pending", "running"].includes(artifact.phase_status)) {
         throw new AppError(
           `当前阶段状态 ${artifact.phase_status} 不允许人工编辑产物`,
@@ -5188,6 +5513,28 @@ export class PgWorkflowStore {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      const runResult = await client.query(
+        "SELECT status FROM workflow_runs WHERE id = $1 FOR UPDATE",
+        [runId],
+      );
+      const run = runResult.rows[0];
+      if (!run) throw notFound("工作流运行");
+      const associationResult = await client.query(
+        `SELECT session_id
+         FROM agent_session_runs
+         WHERE workflow_run_id = $1
+         FOR KEY SHARE`,
+        [runId],
+      );
+      const association = associationResult.rows[0];
+      if (association && run.status === "completed") {
+        throw new AppError(
+          "这条 Agent Session Run 已完成；产物、审核和决定历史保持只读",
+          409,
+          "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE",
+          { sessionId: association.session_id },
+        );
+      }
       await this.syncTicketsWithClient(client, runId, sourceArtifactId, tickets);
       await client.query(
         `UPDATE tickets
@@ -5237,18 +5584,54 @@ export class PgWorkflowStore {
   }
 
   async updateTicketStatus(runId: string, ticketId: string, status: TicketStatus): Promise<TicketSummaryDto> {
-    const { rows } = await this.pool.query(
-      `WITH updated AS (
-         UPDATE tickets SET status = $3, updated_at = now()
-         WHERE workflow_run_id = $1 AND id = $2 AND active = true
-         RETURNING *
-       )
-       SELECT updated.*, a.review_status AS source_review_status
-       FROM updated LEFT JOIN artifacts a ON a.id = updated.source_artifact_id`,
-      [runId, ticketId, status]
-    );
-    if (!rows[0]) throw notFound("Ticket");
-    return mapTicketSummary(rows[0]);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const runResult = await client.query(
+        "SELECT status FROM workflow_runs WHERE id = $1 FOR UPDATE",
+        [runId],
+      );
+      const run = runResult.rows[0];
+      if (!run) throw notFound("工作流运行");
+      // Read the association only after the Run lock. This gives us a fresh
+      // READ COMMITTED snapshot after any in-flight FK insert has settled, and
+      // the Run lock serializes this mutation with the transition to completed.
+      const associationResult = await client.query(
+        `SELECT session_id
+         FROM agent_session_runs
+         WHERE workflow_run_id = $1
+         FOR KEY SHARE`,
+        [runId],
+      );
+      const association = associationResult.rows[0];
+      if (association && run.status === "completed") {
+        throw new AppError(
+          "这条 Agent Session Run 已完成；产物、审核和决定历史保持只读",
+          409,
+          "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE",
+          { sessionId: association.session_id },
+        );
+      }
+      const { rows } = await client.query(
+        `WITH updated AS (
+           UPDATE tickets SET status = $3, updated_at = now()
+           WHERE workflow_run_id = $1 AND id = $2 AND active = true
+           RETURNING *
+         )
+         SELECT updated.*, a.review_status AS source_review_status
+         FROM updated LEFT JOIN artifacts a ON a.id = updated.source_artifact_id`,
+        [runId, ticketId, status],
+      );
+      if (!rows[0]) throw notFound("Ticket");
+      const ticket = mapTicketSummary(rows[0]);
+      await client.query("COMMIT");
+      return ticket;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async eventsForExecution(executionId: string): Promise<ExecutionEventDto[]> {
@@ -6059,6 +6442,14 @@ function mapRun(row: any): WorkflowRunDto {
     status: row.status,
     baseRevision: row.base_revision ?? null,
     definitionVersion: row.definition_version ?? null,
+    executionModel: row.execution_model ?? "legacy",
+    targetPhaseId: row.target_phase_id ?? null,
+    runIntent: row.run_intent ?? null,
+    runContextReferences: row.run_context_references ?? null,
+    runEnvironmentRequest: row.run_environment_request ?? null,
+    resultReceiptVersion: row.result_receipt_version == null
+      ? null
+      : Number(row.result_receipt_version),
     workspaceState: row.w_state ?? null,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),

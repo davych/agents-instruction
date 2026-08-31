@@ -2,7 +2,10 @@ import type {
   AgentEvent,
   AgentHumanGate,
   AgentMessage,
+  AgentRunAdvanceResult,
+  AgentRunPhaseId,
   AgentSession,
+  AgentSessionRun,
   AgentToolCall,
   Artifact,
   AskAnswer,
@@ -50,6 +53,7 @@ import type {
   RunDetail,
   RunEvent,
   RunChangeset,
+  RunResultReceipt,
   SandboxBlueprintSummary,
   SendAgentMessageInput,
   ResolveWorkItemInput,
@@ -63,8 +67,8 @@ import type {
   VerificationE2eAction,
   VerificationE2eScriptReviewInput,
   VerificationE2eSelectionInput,
-} from "@/lib/types";
-import { parseApiErrorBody } from "@/lib/api-error";
+} from "./types";
+import { parseApiErrorBody } from "./api-error";
 import {
   ApiError,
   hasStringFields,
@@ -72,11 +76,11 @@ import {
   parseCollectionResponse,
   parseDirectResponse,
   parseEntityResponse,
-} from "@/lib/api-response";
+} from "./api-response";
 
-export { ApiError } from "@/lib/api-response";
+export { ApiError } from "./api-response";
 
-const configuredApiUrl = import.meta.env.VITE_API_URL?.trim();
+const configuredApiUrl = import.meta.env?.VITE_API_URL?.trim();
 const API_URL = (
   configuredApiUrl
   || (typeof window === "undefined" ? "http://localhost:4100" : window.location.origin)
@@ -166,6 +170,22 @@ const isAgentRepository = (value: unknown): boolean =>
   hasStringFields(value, ["sessionId", "projectId", "repoAlias", "accessMode", "sourceRevision", "createdAt"]) &&
   ["write", "read"].includes(value.accessMode as string);
 
+const AGENT_SESSION_RUN_KEYS = new Set([
+  "sessionId",
+  "triggerMessageId",
+  "workflowRunId",
+  "providerId",
+  "createdAt",
+]);
+
+const isAgentSessionRun = (value: unknown): value is AgentSessionRun =>
+  isRecord(value) &&
+  hasOnlyKeys(value, AGENT_SESSION_RUN_KEYS) &&
+  hasStringFields(value, [
+    "sessionId", "triggerMessageId", "workflowRunId", "providerId", "createdAt",
+  ]) &&
+  isAskProviderId(value.providerId);
+
 const isAgentSandbox = (value: unknown): boolean =>
   hasStringFields(value, [
     "id", "sessionId", "projectId", "sourceRevision", "blueprintId",
@@ -226,7 +246,152 @@ const isAgentSession = (value: unknown): value is AgentSession =>
   (value.messages === undefined || (Array.isArray(value.messages) && value.messages.every(isAgentMessage))) &&
   (value.events === undefined || (Array.isArray(value.events) && value.events.every(isAgentEvent))) &&
   (value.toolCalls === undefined || (Array.isArray(value.toolCalls) && value.toolCalls.every(isAgentToolCall))) &&
-  (value.humanGates === undefined || (Array.isArray(value.humanGates) && value.humanGates.every(isAgentHumanGate)));
+  (value.humanGates === undefined || (Array.isArray(value.humanGates) && value.humanGates.every(isAgentHumanGate))) &&
+  (value.runs === undefined || (Array.isArray(value.runs) && value.runs.every(isAgentSessionRun)));
+
+const AGENT_RUN_PHASE_IDS = new Set<AgentRunPhaseId>([
+  "discovery",
+  "design",
+  "architecture",
+  "implementation",
+  "verification",
+  "release",
+]);
+
+const AGENT_RUN_ROLE_IDS = new Set([
+  "pm-ba",
+  "designer",
+  "architect",
+  "software-engineer",
+  "tester",
+  "devops",
+]);
+
+const AGENT_RUN_EXECUTION_KEYS = new Set([
+  "id",
+  "phaseRunId",
+  "status",
+  "selectedArtifactIds",
+  "selectedOutputKeys",
+  "runnerMode",
+  "model",
+  "reasoningEffort",
+  "command",
+  "exitCode",
+  "error",
+  "startedAt",
+  "finishedAt",
+  "createdAt",
+]);
+
+const isAgentRunExecution = (value: unknown): boolean =>
+  isRecord(value) &&
+  hasOnlyKeys(value, AGENT_RUN_EXECUTION_KEYS) &&
+  hasStringFields(value, ["id", "phaseRunId", "status", "command", "createdAt"]) &&
+  ["queued", "running", "completed", "failed"].includes(value.status as string) &&
+  isStringArray(value.selectedArtifactIds) &&
+  isStringArray(value.selectedOutputKeys) &&
+  (value.runnerMode === null || ["real", "fake"].includes(value.runnerMode as string)) &&
+  isNullableString(value.model) &&
+  (value.reasoningEffort === null || [
+    "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+  ].includes(value.reasoningEffort as string)) &&
+  (value.exitCode === null || Number.isSafeInteger(value.exitCode)) &&
+  isNullableString(value.error) &&
+  isNullableString(value.startedAt) &&
+  isNullableString(value.finishedAt);
+
+const AGENT_RUN_STARTED_KEYS = new Set([
+  "state", "runId", "phaseId", "roleId", "execution", "selectedArtifactIds",
+]);
+const AGENT_RUN_PROGRESS_KEYS = new Set([
+  "state", "runId", "phaseId", "roleId", "artifactKeys", "reason",
+]);
+const AGENT_RUN_COMPLETED_KEYS = new Set([
+  "state", "runId", "artifactKeys", "reason",
+]);
+
+const isAgentRunAdvanceResult = (value: unknown): value is AgentRunAdvanceResult => {
+  if (!isRecord(value) || typeof value.state !== "string" || typeof value.runId !== "string") {
+    return false;
+  }
+  if (value.state === "started") {
+    return hasOnlyKeys(value, AGENT_RUN_STARTED_KEYS) &&
+      typeof value.phaseId === "string" && AGENT_RUN_PHASE_IDS.has(value.phaseId as AgentRunPhaseId) &&
+      typeof value.roleId === "string" && AGENT_RUN_ROLE_IDS.has(value.roleId) &&
+      isStringArray(value.selectedArtifactIds) &&
+      (value.execution === undefined || isAgentRunExecution(value.execution));
+  }
+  if (["running", "awaiting_review", "blocked", "failed"].includes(value.state)) {
+    return hasOnlyKeys(value, AGENT_RUN_PROGRESS_KEYS) &&
+      typeof value.phaseId === "string" && AGENT_RUN_PHASE_IDS.has(value.phaseId as AgentRunPhaseId) &&
+      typeof value.roleId === "string" && AGENT_RUN_ROLE_IDS.has(value.roleId) &&
+      isStringArray(value.artifactKeys) &&
+      typeof value.reason === "string";
+  }
+  return value.state === "completed" &&
+    hasOnlyKeys(value, AGENT_RUN_COMPLETED_KEYS) &&
+    isStringArray(value.artifactKeys) &&
+    typeof value.reason === "string";
+};
+
+const HUMAN_DECISION_PHASE_IDS = new Set(["discovery", "design", "architecture"]);
+const HUMAN_DECISION_KINDS = new Set(["decision", "work", "dependency", "acceptance"]);
+const HUMAN_DECISION_GATE_STATES = new Set([
+  "clear",
+  "awaiting_decision",
+  "awaiting_role_work",
+  "inconsistent_approval",
+]);
+const HUMAN_DECISION_ITEM_KEYS = new Set([
+  "id", "phaseId", "actionPhaseId", "artifactKey", "kind", "title", "prompt",
+  "owner", "nextAction", "blocking", "response",
+]);
+const HUMAN_DECISION_GATE_KEYS = new Set([
+  "phaseId", "roleId", "state", "items", "blockingCount", "decisionCount",
+  "workCount", "dependencyCount", "inconsistentApproval",
+]);
+const HUMAN_DECISION_SUMMARY_KEYS = new Set([
+  "totalBlocking", "totalDecisions", "totalRoleWork", "inconsistentPhaseIds", "phases",
+]);
+
+const isNonnegativeInteger = (value: unknown): value is number =>
+  Number.isSafeInteger(value) && (value as number) >= 0;
+
+const isHumanDecisionItem = (value: unknown): boolean =>
+  isRecord(value) &&
+  hasOnlyKeys(value, HUMAN_DECISION_ITEM_KEYS) &&
+  hasStringFields(value, [
+    "id", "phaseId", "actionPhaseId", "artifactKey", "kind", "title", "prompt",
+    "owner", "nextAction",
+  ]) &&
+  HUMAN_DECISION_PHASE_IDS.has(value.phaseId as string) &&
+  HUMAN_DECISION_PHASE_IDS.has(value.actionPhaseId as string) &&
+  HUMAN_DECISION_KINDS.has(value.kind as string) &&
+  typeof value.blocking === "boolean" &&
+  isNullableString(value.response);
+
+const isPhaseHumanDecisionGate = (value: unknown): boolean =>
+  isRecord(value) &&
+  hasOnlyKeys(value, HUMAN_DECISION_GATE_KEYS) &&
+  hasStringFields(value, ["phaseId", "roleId", "state"]) &&
+  HUMAN_DECISION_PHASE_IDS.has(value.phaseId as string) &&
+  ["pm-ba", "designer", "architect"].includes(value.roleId as string) &&
+  HUMAN_DECISION_GATE_STATES.has(value.state as string) &&
+  Array.isArray(value.items) && value.items.every(isHumanDecisionItem) &&
+  [value.blockingCount, value.decisionCount, value.workCount, value.dependencyCount]
+    .every(isNonnegativeInteger) &&
+  typeof value.inconsistentApproval === "boolean";
+
+const isHumanDecisionSummary = (value: unknown): value is HumanDecisionSummary =>
+  isRecord(value) &&
+  hasOnlyKeys(value, HUMAN_DECISION_SUMMARY_KEYS) &&
+  [value.totalBlocking, value.totalDecisions, value.totalRoleWork].every(isNonnegativeInteger) &&
+  Array.isArray(value.inconsistentPhaseIds) &&
+  value.inconsistentPhaseIds.every((phaseId) => (
+    typeof phaseId === "string" && HUMAN_DECISION_PHASE_IDS.has(phaseId)
+  )) &&
+  Array.isArray(value.phases) && value.phases.every(isPhaseHumanDecisionGate);
 
 const isProjectAgentSettings = (value: unknown): value is ProjectAgentSettings =>
   hasStringFields(value, [
@@ -474,8 +639,50 @@ const isRunChangeset = (value: unknown): value is RunChangeset =>
     hasStringFields(file, ["path", "status"]) &&
     ["added", "modified", "deleted", "renamed", "copied", "type_changed", "unmerged"].includes(file.status as string) &&
     isNullableString(file.oldPath) &&
-    typeof file.binary === "boolean"
+      typeof file.binary === "boolean"
   );
+
+const WORKFLOW_PHASE_IDS = [
+  "discovery", "design", "architecture", "implementation", "verification", "release",
+] as const;
+
+const isRunResultReceipt = (value: unknown): value is RunResultReceipt =>
+  isRecord(value) &&
+  hasStringFields(value, [
+    "runId", "title", "objective", "status", "outcome", "summary", "createdAt", "updatedAt",
+  ]) &&
+  Number.isSafeInteger(value.resultReceiptVersion) &&
+  (value.resultReceiptVersion as number) > 0 &&
+  (value.targetPhaseId === null || WORKFLOW_PHASE_IDS.includes(value.targetPhaseId as never)) &&
+  isRecord(value.files) &&
+  isStringArray(value.files.created) &&
+  isStringArray(value.files.modified) &&
+  isStringArray(value.files.deleted) &&
+  Array.isArray(value.artifacts) &&
+  value.artifacts.every((artifact) =>
+    hasStringFields(artifact, ["phaseId", "artifactId", "artifactKey", "filePath", "reviewStatus", "contentHash"]) &&
+    Number.isSafeInteger(artifact.revision)
+  ) &&
+  Array.isArray(value.executions) &&
+  value.executions.every((execution) =>
+    hasStringFields(execution, ["phaseId", "executionId", "status", "command"]) &&
+    isNullableString(execution.model) &&
+    isNullableString(execution.error) &&
+    (execution.exitCode === null || Number.isSafeInteger(execution.exitCode)) &&
+    (execution.durationMs === null || (typeof execution.durationMs === "number" && execution.durationMs >= 0))
+  ) &&
+  isRecord(value.environment) &&
+  isRecord(value.tests) &&
+  ["totalExecutions", "passedExecutions", "failedExecutions", "pendingExecutions"]
+    .every((key) =>
+      Number.isSafeInteger((value.tests as Record<string, unknown>)[key])
+      && ((value.tests as Record<string, unknown>)[key] as number) >= 0
+    ) &&
+  (value.git === null || isRunChangeset(value.git)) &&
+  isStringArray(value.externalOperations) &&
+  isStringArray(value.permissionDecisions) &&
+  isStringArray(value.risks) &&
+  isStringArray(value.recommendations);
 
 const isWorkflowDefinition = (
   value: unknown,
@@ -498,6 +705,10 @@ const isRunDetail = (value: unknown): value is RunDetail =>
   isWorkflowRun(value.run) &&
   isProject(value.project) &&
   isWorkflowDefinition(value.definition) &&
+  (value.agentSession === null || (
+    isRecord(value.agentSession) &&
+    hasStringFields(value.agentSession, ["sessionId"])
+  )) &&
   Array.isArray(value.phases) &&
   value.phases.every(isPhaseRun);
 
@@ -560,19 +771,26 @@ function mergeAgentSessionDetail(value: unknown): AgentSession {
   if (!isRecord(value) || !isAgentSession(value.session)) {
     throw new ApiError("服务端返回的 Agent 会话无效。", 502, "INVALID_API_RESPONSE");
   }
+  const session = value.session;
   const messages = value.messages ?? [];
   const events = value.events ?? [];
   const toolCalls = value.toolCalls ?? [];
   const humanGates = value.humanGates ?? [];
+  // Older Agent Session detail responses predate durable Run associations.
+  // Preserve the event-based fallback in the workspace while validating every
+  // association whenever the field is present.
+  const runs = value.runs ?? [];
   if (
     !Array.isArray(messages) || !messages.every(isAgentMessage) ||
     !Array.isArray(events) || !events.every(isAgentEvent) ||
     !Array.isArray(toolCalls) || !toolCalls.every(isAgentToolCall) ||
-    !Array.isArray(humanGates) || !humanGates.every(isAgentHumanGate)
+    !Array.isArray(humanGates) || !humanGates.every(isAgentHumanGate) ||
+    !Array.isArray(runs) || !runs.every(isAgentSessionRun) ||
+    !runs.every((run) => run.sessionId === session.id)
   ) {
     throw new ApiError("服务端返回的 Agent 时间线无效。", 502, "INVALID_API_RESPONSE");
   }
-  return { ...value.session, messages, events, toolCalls, humanGates };
+  return { ...session, messages, events, toolCalls, humanGates, runs };
 }
 
 export const api = {
@@ -659,6 +877,27 @@ export const api = {
       },
     );
     return mergeAgentSessionDetail(response);
+  },
+
+  async advanceAgentRun(
+    sessionId: string,
+    runId: string,
+    input: { expectedPhaseId: AgentRunPhaseId; providerId: AskProviderId },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<AgentRunAdvanceResult> {
+    const response = await request<unknown>(
+      `/api/agent-sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/advance`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+      },
+    );
+    return parseDirectResponse(
+      response,
+      "Agent Run 推进响应",
+      isAgentRunAdvanceResult,
+    );
   },
 
   async getProjectAgentSettings(
@@ -1170,6 +1409,13 @@ export const api = {
     return parseDirectResponse(response, "工作流详情响应", isRunDetail);
   },
 
+  async getRunResult(runId: string): Promise<RunResultReceipt> {
+    const response = await request<unknown>(
+      `/api/runs/${encodeURIComponent(runId)}/result`,
+    );
+    return parseEntityResponse(response, "result", "Run 结果收据响应", isRunResultReceipt);
+  },
+
   async getRunChangeset(
     runId: string,
     options: { signal?: AbortSignal } = {},
@@ -1246,9 +1492,14 @@ export const api = {
     return "execution" in response ? response.execution : response;
   },
 
-  getHumanDecisions(runId: string): Promise<HumanDecisionSummary> {
-    return request<HumanDecisionSummary>(
+  async getHumanDecisions(runId: string): Promise<HumanDecisionSummary> {
+    const response = await request<unknown>(
       `/api/runs/${encodeURIComponent(runId)}/human-decisions`,
+    );
+    return parseDirectResponse(
+      response,
+      "决定与待办响应",
+      isHumanDecisionSummary,
     );
   },
 
@@ -1326,6 +1577,20 @@ export const api = {
         body: JSON.stringify(input),
       },
     );
+  },
+
+  waiveArchitecture(
+    runId: string,
+    inputArtifactIds: string[],
+    rationale: string,
+  ): Promise<unknown> {
+    return this.assessArchitectureImpact(runId, {
+      mode: "skip",
+      rationale,
+      selectedArtifactIds: inputArtifactIds,
+      expectedBaselineArtifactIds: [],
+      affectedOutputKeys: [],
+    });
   },
 
   assessProductImpact(

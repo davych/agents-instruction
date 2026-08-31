@@ -215,8 +215,13 @@ export default function App() {
 
   const crumbs = route.runId
     ? [
-        { label: "Agent 工作台", onClick: () => navigate({ projectId: route.projectId, sessionId: route.sessionId }) },
-        { label: route.view === "tickets" ? "Ticket 看板" : "工作流看板" },
+        {
+          label: "Agent 工作台",
+          onClick: () => navigate({ projectId: route.projectId }),
+        },
+        {
+          label: route.view === "tickets" ? "Ticket 看板" : "工作流看板",
+        },
       ]
     : route.projectId && route.projectView === "ask"
       ? [
@@ -239,15 +244,37 @@ export default function App() {
       {route.runId ? (
         <RunPage
           runId={route.runId}
-          onBack={(projectId) => navigate({ projectId: projectId || route.projectId, sessionId: route.sessionId })}
+          sessionId={route.sessionId}
+          onBack={(projectId) => navigate({ projectId: projectId || route.projectId })}
+          onReturnToSession={(projectId, verifiedSessionId) => navigate({
+            projectId: projectId || route.projectId,
+            sessionId: verifiedSessionId || route.sessionId,
+            projectView: "workspace",
+          })}
           view={route.view ?? "workflow"}
           ticketId={route.ticketId}
-          onViewChange={(view) => navigate({ projectId: route.projectId, runId: route.runId, view })}
+          onViewChange={(view) => navigate({
+            projectId: route.projectId,
+            sessionId: route.sessionId,
+            runId: route.runId,
+            view,
+          })}
           onOpenTicket={(ticketId) =>
-            navigate({ projectId: route.projectId, runId: route.runId, view: "tickets", ticketId })
+            navigate({
+              projectId: route.projectId,
+              sessionId: route.sessionId,
+              runId: route.runId,
+              view: "tickets",
+              ticketId,
+            })
           }
           onCloseTicket={() =>
-            navigate({ projectId: route.projectId, runId: route.runId, view: "tickets" })
+            navigate({
+              projectId: route.projectId,
+              sessionId: route.sessionId,
+              runId: route.runId,
+              view: "tickets",
+            })
           }
         />
       ) : route.projectId && route.projectView === "ask" ? (

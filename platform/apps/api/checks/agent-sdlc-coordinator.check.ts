@@ -12,6 +12,7 @@ import {
 
 import {
   AgentSdlcCoordinator,
+  activeSdlcPhase,
   explicitRoleContinuation,
   latestSessionRunId,
   type SdlcRoleId,
@@ -20,9 +21,11 @@ import {
   AGENT_WORK_BOUNDARY_MESSAGE,
   agentPlatformHelp,
   agentTurnFailureSummary,
+  assertExpectedAgentRunAdvancePhase,
 } from "../src/services/agent/agent-session-service.ts";
 import {
   ConversationPlanner,
+  explicitRunTargetPhase,
   isClearlyReadOnlyQuestion,
 } from "../src/services/agent/conversation-planner.ts";
 import { AppError } from "../src/domain/errors.ts";
@@ -70,6 +73,17 @@ test("CHAT-SDLC-01: a future involve role is only a focus label and PM / BA stil
   assert.deepEqual(focused.executions.map(({ phaseId }) => phaseId), ["discovery"]);
 });
 
+test("CHAT-SDLC-01A: an explicit flexible target selects only that phase while legacy stays PM / BA-first", () => {
+  const fixture = coordinatorFixture(0, "ready");
+  assert.equal(activeSdlcPhase(fixture.phases, "legacy", null)?.phaseId, "discovery");
+  assert.equal(
+    activeSdlcPhase(fixture.phases, "flexible", "implementation")?.phaseId,
+    "implementation",
+  );
+  assert.equal(explicitRunTargetPhase("请直接从实现阶段开始写代码"), "implementation");
+  assert.equal(explicitRunTargetPhase("请添加登录功能"), null);
+});
+
 test("CHAT-SDLC-02: all six roles run in order even when only DevOps is involved", async () => {
   for (const [position, phaseId] of PHASE_IDS.entries()) {
     const fixture = coordinatorFixture(position, "ready");
@@ -90,6 +104,20 @@ test("CHAT-SDLC-02: all six roles run in order even when only DevOps is involved
       `${phaseId} must receive its configured inputs in order`,
     );
   }
+});
+
+test("CHAT-SDLC-02A: a Session phase forwards its selected Provider and bounded conversation", async () => {
+  const fixture = coordinatorFixture(0, "ready");
+  const messages = [{ role: "user" as const, content: "请修复登录问题" }];
+  const result = await fixture.coordinator.advance({
+    runId: fixture.runId,
+    requestedRoles: [],
+    startCurrentRole: true,
+    providerContext: { providerId: "openai", messages },
+  });
+
+  assert.equal(result.state, "started");
+  assert.deepEqual(fixture.providerContexts, [{ providerId: "openai", messages }]);
 });
 
 function roleForPhaseForTest(phaseId: PhaseId): SdlcRoleId {
@@ -115,6 +143,26 @@ test("CHAT-SDLC-03: generated artifacts wait for review and are never auto-appro
   assert.equal(fixture.executions.length, 0);
   assert.deepEqual("artifactKeys" in result ? result.artifactKeys : [], definitions[1].outputs);
   assert.match("reason" in result ? result.reason : "", /不会替人批准/u);
+});
+
+test("CHAT-SDLC-03A: an explicit Session retry may rerun only current-role repair work", async () => {
+  const repair = coordinatorFixture(0, "awaiting_review", undefined, "current-role-work");
+  const repaired = await repair.coordinator.advance({
+    runId: repair.runId,
+    requestedRoles: [],
+    startCurrentRole: true,
+  });
+  assert.equal(repaired.state, "started");
+  assert.deepEqual(repair.executions.map(({ phaseId }) => phaseId), ["discovery"]);
+
+  const decision = coordinatorFixture(0, "awaiting_review", undefined, "human-decision");
+  const stopped = await decision.coordinator.advance({
+    runId: decision.runId,
+    requestedRoles: [],
+    startCurrentRole: true,
+  });
+  assert.equal(stopped.state, "awaiting_review");
+  assert.equal(decision.executions.length, 0);
 });
 
 test("CHAT-SDLC-04: only explicit continue/involve language reuses an existing Run", () => {
@@ -148,6 +196,23 @@ test("CHAT-SDLC-05: an unavailable role worker keeps the Run resumable instead o
   assert.match("reason" in result ? result.reason : "", /Run 已保留/u);
 });
 
+test("CHAT-SDLC-05A: deterministic continuation accepts the current phase or its just-approved predecessor only", () => {
+  const active = coordinatorFixture(1, "ready");
+  assert.doesNotThrow(() => assertExpectedAgentRunAdvancePhase(active.phases, "design"));
+  assert.doesNotThrow(() => assertExpectedAgentRunAdvancePhase(active.phases, "discovery"));
+  assert.throws(
+    () => assertExpectedAgentRunAdvancePhase(active.phases, "architecture"),
+    (error: unknown) => error instanceof AppError && error.code === "AGENT_RUN_ADVANCE_STALE",
+  );
+
+  const completed = coordinatorFixture(5, "approved");
+  assert.doesNotThrow(() => assertExpectedAgentRunAdvancePhase(completed.phases, "release"));
+  assert.throws(
+    () => assertExpectedAgentRunAdvancePhase(completed.phases, "verification"),
+    (error: unknown) => error instanceof AppError && error.code === "AGENT_RUN_ADVANCE_STALE",
+  );
+});
+
 test("CHAT-SDLC-06: Planner treats involveRoles as optional focus labels, not the execution set", async () => {
   const captured: AskLlmCompleteRequest[] = [];
   const providers = {
@@ -155,7 +220,7 @@ test("CHAT-SDLC-06: Planner treats involveRoles as optional focus labels, not th
       captured.push(request);
       return {
         text: JSON.stringify(captured.length === 1
-          ? { intent: "work", involveRoles: [] }
+          ? { intent: "work", involveRoles: [], targetPhaseId: "implementation" }
           : {
               title: "修复问题",
               workType: "bug",
@@ -168,16 +233,41 @@ test("CHAT-SDLC-06: Planner treats involveRoles as optional focus labels, not th
   } as unknown as AskProviderRegistry;
   const result = await new ConversationPlanner(providers).plan({
     providerId: "openai",
-    content: "@repo 修复问题",
+    content: "@repo 请直接从实现阶段开始修复问题",
     repoAlias: "repo",
   });
 
   assert.equal(result.intent, "work");
   assert.deepEqual(result.involveRoles, []);
+  assert.equal(result.targetPhaseId, "implementation");
   assert.equal(captured.length, 2);
   assert.match(captured[0]?.systemPrompt ?? "", /六个角色始终全部运行/u);
   assert.match(captured[0]?.systemPrompt ?? "", /只是.*关注.*标签/u);
   assert.match(captured[1]?.systemPrompt ?? "", /任务元数据整理器/u);
+});
+
+test("CHAT-SDLC-06A: Planner rejects a model-invented target for an ordinary repair request", async () => {
+  let call = 0;
+  const providers = {
+    complete: async () => {
+      call += 1;
+      return {
+        text: JSON.stringify(call === 1
+          ? { intent: "work", involveRoles: [], targetPhaseId: "implementation" }
+          : { title: "修复问题", workType: "bug", clarification: null }),
+        model: "planner-model",
+        usage: { inputTokens: 10, outputTokens: 10 },
+      };
+    },
+  } as unknown as AskProviderRegistry;
+  const result = await new ConversationPlanner(providers).plan({
+    providerId: "openai",
+    content: "@repo 修复登录问题",
+    repoAlias: "repo",
+  });
+
+  assert.equal(result.intent, "work");
+  assert.equal(result.targetPhaseId, null);
 });
 
 test("CHAT-SDLC-07: chat copy does not promise unimplemented external-write gates", () => {
@@ -411,6 +501,7 @@ function coordinatorFixture(
   activePosition: number,
   activeStatus: PhaseRunDto["status"],
   executionFailure?: Error,
+  awaitingReviewGate: "clear" | "current-role-work" | "human-decision" = "clear",
 ) {
   const runId = randomUUID();
   const artifactKeyById = new Map<string, string>();
@@ -442,6 +533,7 @@ function coordinatorFixture(
     };
   });
   const executions: Array<{ phaseId: PhaseId; selectedArtifactIds: string[] }> = [];
+  const providerContexts: unknown[] = [];
   const execution: ExecutionDto = {
     id: randomUUID(),
     phaseRunId: phases[activePosition]!.id,
@@ -483,16 +575,64 @@ function coordinatorFixture(
   };
   const workflow = {
     getRun: async () => bundle,
-    executePhase: async (_runId: string, phaseId: PhaseId, input: { selectedArtifactIds: string[] }) => {
+    getHumanDecisions: async () => {
+      const phase = phases[activePosition]!;
+      const roleId = roleForPhaseForTest(phase.phaseId);
+      const item = awaitingReviewGate === "clear"
+        ? []
+        : [{
+            id: awaitingReviewGate === "current-role-work" ? "ROLE-REPAIR" : "HUMAN-DECISION",
+            phaseId: phase.phaseId,
+            actionPhaseId: phase.phaseId,
+            artifactKey: definitions[activePosition]!.outputs[0]!,
+            kind: awaitingReviewGate === "current-role-work" ? "work" as const : "decision" as const,
+            title: "Current phase gate",
+            prompt: "Resolve the current phase gate.",
+            owner: awaitingReviewGate === "current-role-work" ? roleId : "Human product owner",
+            nextAction: "Update the formal artifact.",
+            blocking: true,
+            response: null,
+          }];
+      return {
+        totalBlocking: item.length,
+        totalDecisions: awaitingReviewGate === "human-decision" ? 1 : 0,
+        totalRoleWork: awaitingReviewGate === "current-role-work" ? 1 : 0,
+        inconsistentPhaseIds: [],
+        phases: [{
+          phaseId: phase.phaseId,
+          roleId,
+          state: awaitingReviewGate === "human-decision"
+            ? "awaiting_decision" as const
+            : awaitingReviewGate === "current-role-work"
+              ? "awaiting_role_work" as const
+              : "clear" as const,
+          items: item,
+          blockingCount: item.length,
+          decisionCount: awaitingReviewGate === "human-decision" ? 1 : 0,
+          workCount: awaitingReviewGate === "current-role-work" ? 1 : 0,
+          dependencyCount: 0,
+          inconsistentApproval: false,
+        }],
+      };
+    },
+    executePhase: async (
+      _runId: string,
+      phaseId: PhaseId,
+      input: { selectedArtifactIds: string[] },
+      providerContext?: unknown,
+    ) => {
       if (executionFailure) {
         throw new AppError(executionFailure.message, 503, "ROLE_WORKER_UNAVAILABLE");
       }
       executions.push({ phaseId, selectedArtifactIds: input.selectedArtifactIds });
+      if (providerContext) providerContexts.push(providerContext);
       return { ...execution, selectedArtifactIds: input.selectedArtifactIds };
     },
-  } as unknown as Pick<WorkflowService, "getRun" | "executePhase">;
+  } as unknown as Pick<WorkflowService, "getRun" | "getHumanDecisions" | "executePhase">;
   return {
     runId,
+    phases,
+    providerContexts,
     artifactKeyById,
     executions,
     coordinator: new AgentSdlcCoordinator(workflow),

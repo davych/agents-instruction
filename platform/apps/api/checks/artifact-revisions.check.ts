@@ -56,7 +56,7 @@ test("completing a selected output supersedes its old head and inserts the next 
     filePath: "docs/prd.md",
     content: "# revised",
     contentHash: "b".repeat(64)
-  }]);
+  }], undefined, "actual-provider-model");
 
   const supersede = queries.find((query) =>
     query.sql.includes("UPDATE artifacts SET review_status = 'superseded'")
@@ -66,6 +66,11 @@ test("completing a selected output supersedes its old head and inserts the next 
   assert.match(insert?.sql ?? "", /'pending', \$8, 'ai', \$9/u);
   assert.equal(insert?.values?.[7], 3);
   assert.equal(insert?.values?.[8], previousId);
+  const completion = queries.find((query) => (
+    query.sql.includes("UPDATE executions") && query.sql.includes("status = 'completed'")
+  ));
+  assert.match(completion?.sql ?? "", /model = COALESCE\(\$3, model\)/u);
+  assert.deepEqual(completion?.values, [executionId, 0, "actual-provider-model"]);
   assert.ok(queries.some((query) => query.sql.includes("SET status = 'awaiting_review'")));
   assert.equal(queries.at(-2)?.sql, "COMMIT");
 });
@@ -147,12 +152,43 @@ test("a human edit creates a pending child revision and invalidates downstream p
   ));
 });
 
+test("a completed Agent Session Run rejects human revisions inside the store transaction", async () => {
+  const artifactId = crypto.randomUUID();
+  const queries: CapturedQuery[] = [];
+  const client = mockClient(queries, async (sql) => {
+    if (sql.includes("SELECT a.*, pr.workflow_run_id")) {
+      return { rows: [{
+        id: artifactId,
+        agent_session_id: crypto.randomUUID(),
+        workflow_run_status: "completed",
+      }] };
+    }
+    return { rows: [] };
+  });
+  const store = new PgWorkflowStore(mockPool(client));
+
+  await assert.rejects(
+    () => store.createHumanArtifactRevision(
+      artifactId,
+      "a".repeat(64),
+      "attempted edit",
+      "b".repeat(64),
+    ),
+    (error: unknown) => (
+      (error as { code?: string }).code === "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE"
+    ),
+  );
+  assert.equal(queries.some(({ sql }) => sql.includes("INSERT INTO artifacts")), false);
+  assert.equal(queries.some(({ sql }) => sql.includes("position > $2")), false);
+  assert.equal(queries.at(-2)?.sql, "ROLLBACK");
+});
+
 test("revision operations reject a running downstream phase before changing state", async () => {
   const runId = crypto.randomUUID();
   const phaseRunId = crypto.randomUUID();
   const queries: CapturedQuery[] = [];
   const client = mockClient(queries, async (sql) => {
-    if (sql.includes("SELECT * FROM phase_runs")) {
+    if (sql.includes("FROM phase_runs pr")) {
       return { rows: [{ id: phaseRunId, position: 0, status: "approved" }] };
     }
     if (sql.includes("position > $2") && sql.includes("FOR UPDATE")) {
@@ -284,7 +320,7 @@ test("review rejects stale artifact heads before writing a decision", async () =
   const currentArtifactId = crypto.randomUUID();
   const queries: CapturedQuery[] = [];
   const client = mockClient(queries, async (sql) => {
-    if (sql.includes("SELECT * FROM phase_runs")) {
+    if (sql.includes("FROM phase_runs pr")) {
       return {
         rows: [{
           id: phaseRunId,
@@ -320,6 +356,42 @@ test("review rejects stale artifact heads before writing a decision", async () =
   assert.equal(queries.at(-2)?.sql, "ROLLBACK");
 });
 
+test("a completed Agent Session Run rejects review-based decision capture transactionally", async () => {
+  const queries: CapturedQuery[] = [];
+  const client = mockClient(queries, async (sql) => {
+    if (sql.includes("FROM phase_runs pr")) {
+      return { rows: [{
+        id: crypto.randomUUID(),
+        phase_id: "discovery",
+        position: 0,
+        status: "approved",
+        agent_session_id: crypto.randomUUID(),
+        workflow_run_status: "completed",
+      }] };
+    }
+    return { rows: [] };
+  });
+  const store = new PgWorkflowStore(mockPool(client));
+
+  await assert.rejects(
+    () => store.reviewPhase(
+      crypto.randomUUID(),
+      "discovery",
+      "request_changes",
+      "attempted decision change",
+      [crypto.randomUUID()],
+      [],
+      undefined,
+      ["approved"],
+    ),
+    (error: unknown) => (
+      (error as { code?: string }).code === "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE"
+    ),
+  );
+  assert.equal(queries.some(({ sql }) => sql.includes("INSERT INTO reviews")), false);
+  assert.equal(queries.at(-2)?.sql, "ROLLBACK");
+});
+
 test("approval rejects an architecture selection checkpoint without the full pack", async () => {
   const phaseRunId = crypto.randomUUID();
   const checkpoint = [
@@ -338,7 +410,7 @@ test("approval rejects an architecture selection checkpoint without the full pac
   ];
   const queries: CapturedQuery[] = [];
   const client = mockClient(queries, async (sql) => {
-    if (sql.includes("SELECT * FROM phase_runs")) {
+    if (sql.includes("FROM phase_runs pr")) {
       return {
         rows: [{
           id: phaseRunId,
@@ -400,7 +472,7 @@ test("approval rejects selected-state architecture heads created before the huma
   }));
   const queries: CapturedQuery[] = [];
   const client = mockClient(queries, async (sql) => {
-    if (sql.includes("SELECT * FROM phase_runs")) {
+    if (sql.includes("FROM phase_runs pr")) {
       return {
         rows: [{
           id: phaseRunId,
@@ -465,7 +537,7 @@ test("partial architecture approval requires real post-adoption revisions", asyn
   ];
   const queries: CapturedQuery[] = [];
   const client = mockClient(queries, async (sql) => {
-    if (sql.includes("SELECT * FROM phase_runs")) {
+    if (sql.includes("FROM phase_runs pr")) {
       return {
         rows: [{
           id: phaseRunId,
@@ -528,7 +600,7 @@ test("partial architecture approval rejects an index older than a changed child 
   ];
   const queries: CapturedQuery[] = [];
   const client = mockClient(queries, async (sql) => {
-    if (sql.includes("SELECT * FROM phase_runs")) {
+    if (sql.includes("FROM phase_runs pr")) {
       return {
         rows: [{
           id: phaseRunId,
@@ -569,7 +641,7 @@ test("review stores the exact locked artifact head ids", async () => {
   const now = new Date();
   const queries: CapturedQuery[] = [];
   const client = mockClient(queries, async (sql, values) => {
-    if (sql.includes("SELECT * FROM phase_runs")) {
+    if (sql.includes("FROM phase_runs pr")) {
       return {
         rows: [{
           id: phaseRunId,

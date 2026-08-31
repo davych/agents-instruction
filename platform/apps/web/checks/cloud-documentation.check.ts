@@ -10,6 +10,9 @@ const businessReadmePath = fileURLToPath(
 const technicalReadmePath = fileURLToPath(
   new URL("../../../docs/technical-design/README.md", import.meta.url),
 );
+const securityModelPath = fileURLToPath(
+  new URL("../../../docs/security-model.md", import.meta.url),
+);
 const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 
 test("DOC-BP-01 business documentation preserves the complete reviewable delivery path", async () => {
@@ -122,7 +125,7 @@ test("DOC-TA-01 technical architecture identifies the trusted control plane and 
   ]) {
     assert.ok(architecture.includes(marker), `system architecture must contain ${marker}`);
   }
-  assert.match(trustBoundary, /Ephemeral Worker boundary/u);
+  assert.match(trustBoundary, /Legacy ephemeral Codex Worker boundary/u);
   assert.match(trustBoundary, /Non-root read-only-rootfs Worker/u);
   assert.match(trustBoundary, /Main repository at \/workspace read-write/u);
   assert.match(trustBoundary, /Git metadata read-only/u);
@@ -133,10 +136,13 @@ test("DOC-TA-01 technical architecture identifies the trusted control plane and 
     technical,
     /Agent Sandbox[^\n]*持久受管 Workspace[^\n]*不是常驻容器/u,
   );
-  assert.match(technical, /结束后容器删除，而 Workspace 继续保留/u);
   assert.match(
     technical,
-    /默认 Worker 网络是普通 Docker `bridge`，因此这不是 egress 隔离/u,
+    /独立远程 Run\/Codex 路径才为每个阶段临时启动 Worker[^\n]*Workspace 都继续保留/u,
+  );
+  assert.match(
+    technical,
+    /默认 Worker 网络仍是普通 Docker `bridge`，不是 egress 隔离/u,
   );
   assert.match(
     technical,
@@ -144,7 +150,7 @@ test("DOC-TA-01 technical architecture identifies the trusted control plane and 
   );
 });
 
-test("DOC-TA-02 technical design separates attached manifests, provider-native tests, and the real Artifact gate", async () => {
+test("DOC-TA-02 technical design separates attached manifests, Provider-native runtime, and the real Artifact gate", async () => {
   const technical = await readUtf8(technicalReadmePath);
 
   assert.match(
@@ -153,11 +159,15 @@ test("DOC-TA-02 technical design separates attached manifests, provider-native t
   );
   assert.match(
     technical,
-    /附加仓不会挂载进 Worker，也不会获得 Shell、Git、网络或写权限/u,
+    /附加仓不会暴露给 Provider-native 文件工具[^\n]*不会挂载进兼容 Worker[^\n]*不能获得 Shell、Git、网络或写权限/u,
   );
   assert.match(
     technical,
-    /Provider-native Agent Runtime[^\n]*尚未接入生产六阶段/u,
+    /Provider-native Phase Runtime[^\n]*本版生产接线也不暴露 `run_check`/u,
+  );
+  assert.match(
+    technical,
+    /Chat-first 六阶段已接入 Provider-native Runtime[^\n]*需要命令执行证据时必须 Pending \/ Blocked/u,
   );
   assert.match(
     technical,
@@ -191,6 +201,39 @@ test("DOC-TA-02 technical design separates attached manifests, provider-native t
   assert.match(
     technical,
     /源码 `revision`、Control Pack `definitionVersion`、内容 `manifestHash\/contentHash`/u,
+  );
+});
+
+test("DOC-SEC-01 security model distinguishes Session Provider tools from standalone Codex Workers", async () => {
+  const security = await readUtf8(securityModelPath);
+
+  assert.match(
+    security,
+    /Chat-first Agent Session phases do not use that Codex\/Worker gate[\s\S]{0,300}rooted file tools directly/u,
+  );
+  assert.match(
+    security,
+    /Provider credentials stay inside the Provider registry\/Vault[\s\S]{0,300}never placed in the Workspace/u,
+  );
+  assert.match(
+    security,
+    /no arbitrary Shell, process, network, Desktop Figma or Codex E2E author\/run tool/u,
+  );
+  assert.match(
+    security,
+    /no isolated `run_check` implementation[\s\S]{0,300}must remain Pending\/Blocked/u,
+  );
+  assert.match(
+    security,
+    /Standalone legacy Run\/Codex[\s\S]{0,300}constrained Docker Worker/u,
+  );
+  assert.match(
+    security,
+    /Standalone remote Run\/Codex phases require both[\s\S]{0,300}`AI_SDLC_REAL_EXECUTION_TRUSTED_REPOSITORIES`/u,
+  );
+  assert.match(
+    security,
+    /Chat-first Cloud Verification currently cannot run test commands or browser suites/u,
   );
 });
 

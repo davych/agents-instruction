@@ -15,7 +15,7 @@ Use the Cloud MVP only when all of these conditions hold:
 - the operator understands that real model execution sends required task context to the configured model service;
 - consequential changes remain subject to explicit human review.
 
-The repository itself is always treated as untrusted Prompt/data input. Import is allowed only by the Git Origin policy; real phase execution has a second, narrower gate and requires the repository's exact URL in `AI_SDLC_REAL_EXECUTION_TRUSTED_REPOSITORIES`. That entry means the single trusted operator has reviewed the execution risk, not that every future commit or dependency is safe. Docker is defense in depth rather than a hostile multi-tenant sandbox. Do not offer this MVP to mutually untrusted tenants.
+The repository itself is always treated as untrusted Prompt/data input. Import is allowed only by the Git Origin policy. The standalone legacy Run/Codex execution path has a second, narrower gate and requires the repository's exact URL in `AI_SDLC_REAL_EXECUTION_TRUSTED_REPOSITORIES`; that entry means the single trusted operator has reviewed the execution risk, not that every future commit or dependency is safe. Chat-first Agent Session phases do not use that Codex/Worker gate: the trusted API calls the selected Provider and applies rooted file tools directly to the already materialized Session Workspace. Those tools do not execute repository code, but they are also not a container or hostile-code isolation boundary. Do not offer this MVP to mutually untrusted tenants.
 
 ## Explicitly missing boundaries
 
@@ -34,13 +34,20 @@ The current platform does not provide:
 - a general rollback guarantee for all product-source changes;
 - automated push, PR, merge, deployment or release authority.
 
-The deployment-level Bearer Token prevents anonymous use but every holder has the same authority, including changing instance-wide Provider endpoints and credentials. It is a bearer secret, so remote traffic must use HTTPS. Remote real execution invokes Codex only inside a constrained Docker Worker. The Worker is non-root, has a read-only root filesystem, dropped capabilities, no-new-privileges, resource limits, bounded tmpfs and exact mounts. It still has model/network egress and a writable Run repository; malicious code can intentionally fill that writable filesystem until the Host quota is reached. A kernel/container escape, allowed-network abuse, or unlimited writes within a poorly provisioned filesystem is outside this MVP's guarantee. Production hostile-code service requires microVM/VM isolation, egress enforcement, hard per-Run quotas and per-tenant identity.
+The deployment-level Bearer Token prevents anonymous use but every holder has the same authority, including changing instance-wide Provider endpoints and credentials. It is a bearer secret, so remote traffic must use HTTPS.
+
+There are two different real execution boundaries:
+
+- **Chat-first Agent Session:** the trusted API invokes the selected configured Provider and exposes only bounded, repository-relative list/read/search/create-directory/write/patch tools. Reads and searches reject symlinks, hard-linked files and common sensitive directories. Writes reject unselected registered artifacts and platform-control paths in every phase; Implementation may edit only the remaining in-scope product source, tests and non-sensitive implementation configuration. Provider credentials stay inside the Provider registry/Vault and are never placed in the Workspace, model-visible tool arguments, phase instruction, browser response or execution record. This path has no arbitrary Shell, process, network, Desktop Figma or Codex E2E author/run tool. The production wiring currently supplies no isolated `run_check` implementation, so it cannot run repository tests or claim fresh command/browser evidence. Verification can inspect files and update its report, but must remain Pending/Blocked when acceptance requires trusted execution or provenance evidence.
+- **Standalone legacy Run/Codex:** remote real execution invokes Codex only inside the constrained Docker Worker and still requires the execution trust allowlist. The Worker is non-root, has a read-only root filesystem, dropped capabilities, no-new-privileges, resource limits, bounded tmpfs and exact mounts. It still has model/network egress and a writable Run repository; malicious code can intentionally fill that writable filesystem until the Host quota is reached.
+
+A compromised trusted API is host-significant on either path. A kernel/container escape, allowed-network abuse, or unlimited writes within a poorly provisioned filesystem is outside this MVP's guarantee. Production hostile-code service requires microVM/VM isolation, egress enforcement, hard per-Run quotas and per-tenant identity.
 
 ## Application-level boundaries
 
 The API is a trusted coordinator. The browser receives only Public Project DTOs and never receives database credentials, Git secrets or host Workspace paths. Non-loopback binding is refused without a strong deployment token, and CORS uses exact configured Origins. Compose publishes Web on `127.0.0.1` by default. Remote access must keep that loopback binding, terminate TLS in a reverse proxy, and configure the exact `https://...` Origin; plain HTTP would expose the Bearer Token and is not a supported remote deployment.
 
-Cloud startup proves that the Managed Root can create, read and delete a private sentinel, reaches the Docker Server Version, and resolves an administrator-built image carrying `com.ai-sdlc.worker=true`. Real mode cannot skip this preflight. The Compose API healthcheck starts Web only after the API has passed these gates and migrations.
+Cloud startup proves that the Managed Root can create, read and delete a private sentinel, reaches the Docker Server Version, and resolves an administrator-built image carrying `com.ai-sdlc.worker=true`. Real mode cannot skip this preflight because the standalone compatibility path remains available; passing it does not mean Chat-first Provider-native phases execute in that Worker. The Compose API healthcheck starts Web only after the API has passed these gates and migrations.
 
 The trusted API holds database access, Git Broker credentials and—when deployed by Cloud Compose—the Docker socket. Compromise of the API is therefore host-significant. The Docker socket is never mounted into a Worker. Put the API on a dedicated host or VM, restrict who can reach it, and do not add repository-selected Docker flags, mounts or images.
 
@@ -48,11 +55,13 @@ Remote Git accepts HTTPS only. URL userinfo, query, fragment, alternate protocol
 
 `AI_SDLC_GIT_MAX_REPOSITORY_BYTES` is checked **after materialization**. It is an acceptance gate for the finished snapshot, not proof that Git or checkout never used more temporary disk space. A deliberately compressed or otherwise expensive repository can consume transient space before the application measures it. Put `AI_SDLC_MANAGED_WORKSPACE_ROOT` on its own filesystem/volume with an operating-system or storage-level hard capacity quota; do not place it on `/`, a home directory, or a shared business-data volume. Capacity monitoring and reserve space remain operator responsibilities.
 
-Credential Profiles bind one exact origin and keep the secret in a separate server environment variable, never in a Project row, argv, Prompt, Worker or browser response. Import permission is separate from execution permission. Real phases require both an administrator-approved `AI_SDLC_WORKER_IMAGE` and an exact full repository URL in `AI_SDLC_REAL_EXECUTION_TRUSTED_REPOSITORIES`; the empty list denies every real remote phase. Use a dedicated low-quota, quickly rotatable model key for Workers.
+Credential Profiles bind one exact origin and keep the secret in a separate server environment variable, never in a Project row, argv, Prompt, Worker or browser response. Import permission is separate from execution permission. Standalone remote Run/Codex phases require both an administrator-approved `AI_SDLC_WORKER_IMAGE` and an exact full repository URL in `AI_SDLC_REAL_EXECUTION_TRUSTED_REPOSITORIES`; the empty list denies that compatibility path. Chat-first phases instead require an enabled Provider with a configured model and verified native tool calling, and do not receive Git credentials or the Provider credential itself. Use a dedicated low-quota, quickly rotatable model key for Workers.
 
 Cloud project paths are restricted to the dedicated Managed Root and are never supplied by the browser. `AI_SDLC_ALLOWED_PROJECT_ROOTS` applies only to explicit `legacy-local` compatibility APIs. Project and artifact path checks reject unsafe absolute/traversal/backslash/control-character forms, symlink escape, cross-owner placement, case/Unicode-equivalent collisions, and file/directory overlap. These checks reduce accidental or confused-deputy writes; they do not create an OS sandbox.
 
-The selected native Agent directory, `ai-native.yaml`, `.ai-sdlc/`, `.agents/`, `.codex/`, `.claude/`, Git control state, root Agent/environment controls, and other project-control paths receive additional protection according to the phase workspace policy. Remote Codex starts with its primary working directory outside the repository, receives `/workspace` only as an explicit writable directory, and disables user/repository project-doc and rule discovery. Repository-native Skills and Agent files are data, not platform instructions, and are excluded from Cloud Changesets.
+The selected native Agent directory, `ai-native.yaml`, `.ai-sdlc/`, `.agents/`, `.codex/`, `.claude/`, Git control state, root Agent/environment controls, and other project-control paths receive additional protection according to the phase workspace policy. Provider-native tools deny these write targets before filesystem mutation and reuse Artifact/control snapshots and rollback guards as a second layer. Non-Implementation roles can write only their selected registered outputs; Implementation receives a broader in-scope product-source surface but still cannot write an unselected registered artifact or any control path. Remote Codex starts with its primary working directory outside the repository, receives `/workspace` only as an explicit writable directory, and disables user/repository project-doc and rule discovery. Repository-native Skills and Agent files are data, not platform instructions, and are excluded from Cloud Changesets.
+
+Provider-native finalization is also fail closed. A no-tool model response is checked against every selected output before it is accepted, including the narrow `user-stories` contract: at least one canonical Story with two AC-owned complete scenarios, or one uniquely versioned root Blocker whose required sections contain substantive bullets. Sentinel/Blocker intent takes priority over stale Story files, and a valid Blocker is projected into the human gate so “reviewable” cannot become accidental approval. An incomplete or unreviewable attempt receives at most two platform-authored correction messages inside the same bounded loop; these contain only registered artifact keys, repository-relative paths, and materialization/quality rules, never an absolute Host path, artifact body, or raw Provider body. Corrections do not renew the wall-clock deadline or tool budget. Persistent failure rolls back all selected outputs, and user-visible errors retain only safe affected keys plus that rollback fact.
 
 Real phase capacity is process-local and defaults to one through `AI_SDLC_MAX_CONCURRENT_PHASES=1`. Excess starts receive 429 rather than entering a durable queue. There is no cross-process lock or cancellation protocol, so running more than one API instance against the same database/Managed Root is unsupported.
 
@@ -80,6 +89,8 @@ Choosing OpenAI or a remote custom endpoint sends selected repository excerpts o
 
 Cloud Ask Threads and messages are stored in PostgreSQL. The server fixes the Provider and raw source revision at Thread creation, reconstructs bounded history itself, and resolves old Threads through the matching retained Project Snapshot. This gives refresh continuity and revision integrity, but it is still a single-tenant record store without per-user privacy or retention controls.
 
+Provider tool-call IDs and reported model identifiers are also untrusted upstream data. The API does not persist an upstream-supplied call ID verbatim in events, logs, or workflow business records; it records a bounded platform audit ID and one-way argument/output hashes instead. An actual model identifier is recorded only after bounded validation and a likely-Secret check; a secret-like value fails the phase without echoing that value. This prevents Provider-controlled metadata from becoming durable log content or an apparent platform authority token.
+
 The old stateless Ask endpoint remains only for `legacy-local` compatibility. Remote Cloud projects must use a server-owned Ask Thread, so the browser cannot supply authoritative history or select a host path. Desktop Figma discovery is likewise hidden from the global Cloud surface and run-scoped calls reject remote projects.
 
 ## Initialization boundary
@@ -103,6 +114,8 @@ Human approval controls workflow state, not arbitrary process behavior:
 - script-manifest approval authorizes only the exact current executable bytes;
 - Release readiness prepares a human decision and grants no deployment authority.
 
+Completion is an additional server-side authorization boundary for Session-owned Runs. After the durable Run state is `completed`, every mutation endpoint rejects human Artifact revisions, Reviews and structured decisions, Architecture selection, E2E script review, execution, retry, or advance. The completed audit remains readable. This rule is scoped to Session-owned Runs and does not silently change standalone Run semantics.
+
 For ordinary phases, the runner protects project controls and unselected registered artifacts and restores selected-output paths after a failed execution. Implementation intentionally allows product-source changes before human review, so approval is not a general source rollback mechanism.
 
 ## Changeset boundary
@@ -111,9 +124,9 @@ For a remote Run, the API builds a Changeset against the Run's pinned `baseRevis
 
 ## E2E authoring boundary（legacy-local only）
 
-Cloud Verification can run only the test commands and browser suites already present in the imported repository. It does not author a second Playwright repository, attach an operator-local browser, or claim the complete Linked E2E chain below. If acceptance requires durable browser evidence that the repository cannot already produce in the Worker, the Cloud Tester must report Blocked. The rest of this section describes the retained `legacy-local` capability.
+Chat-first Cloud Verification currently cannot run test commands or browser suites because its Provider-native tool host has no production `run_check` runner, arbitrary Shell, browser or Codex E2E author/run action. It may inspect existing test sources and update the selected Test Report, but must report Blocked whenever approval requires fresh command, browser or provenance evidence. A standalone remote Run may execute repository-owned checks in its constrained Codex Worker, but it does not author a second Playwright repository or attach an operator-local browser. The rest of this section describes the retained `legacy-local` linked-E2E capability.
 
-The Linked E2E Workspace must be explicitly selected by a human, allowed, separate from the product root, and non-nested. The platform does not infer it from a sibling path, conventional directory name, Git history, prior report, or legacy documentation.
+The Linked E2E Workspace must be explicitly selected by a human, allowed, separate from the product root, and non-nested. The platform does not infer it from a sibling path, conventional directory name, Git history, prior report, or legacy documentation. Session-owned Runs cannot use this legacy-local author/run path, and a completed Session-owned Run also rejects script-manifest review so completion cannot be reopened through an E2E approval endpoint.
 
 For fresh E2E authoring, the platform:
 
@@ -129,7 +142,7 @@ The author does not receive product implementation or exploration transcript, in
 
 ## Verification workspace policy
 
-Verification adds a synchronous workspace mutation detector and restoration layer. It snapshots tracked and untracked files plus directory topology without relying on Git, then scans at the end of the runner window. Discovery, scan, or restoration errors fail closed.
+Verification adds a synchronous workspace mutation detector and restoration layer on both paths. It snapshots tracked and untracked files plus directory topology without relying on Git, then scans at the end of the execution window. Discovery, scan, or restoration errors fail closed. This protects workspace integrity; it does not prove tests ran. On the Chat-first path the rooted tools expose only the selected report as writable and no check runner is wired, so runtime-evidence directories are not fresh Provider-native execution evidence.
 
 For a supported Git repository:
 
@@ -174,7 +187,7 @@ A worktree too large for those bounds requires a separately designed isolated ru
 
 ## Process-lifetime limitation
 
-Verification and Release forbid background or detached commands and require child processes to finish before the runner returns. Even so, these controls are not OS process sandboxes. They cannot contain a descendant that escapes supervision and writes after the end scan has completed.
+The standalone Codex Verification and Release paths forbid background or detached commands and require child processes to finish before the runner returns. Even so, these controls are not OS process sandboxes. They cannot contain a descendant that escapes supervision and writes after the end scan has completed. Chat-first Provider-native tools do not expose process creation at all.
 
 For that reason, snapshot and restoration controls are defense in depth for trusted local work, not containment for hostile code.
 
@@ -206,8 +219,9 @@ Before real execution:
 - keep the Git Origin allowlist and Credential Profiles as narrow as possible;
 - dedicate and back up the Managed Workspace Root, and put it on a filesystem/volume with a hard capacity quota; preserve the Provider Vault key and ciphertext as one restricted pair;
 - give the deployment Bearer Token only to people allowed to replace every instance-wide Provider endpoint and credential;
-- build and pin an administrator-reviewed Worker image;
-- list only reviewed exact repository URLs in `AI_SDLC_REAL_EXECUTION_TRUSTED_REPOSITORIES` and give Workers a low-quota, rotatable model key;
+- build and pin an administrator-reviewed Worker image for standalone legacy Run/Codex execution;
+- list only reviewed exact repository URLs in `AI_SDLC_REAL_EXECUTION_TRUSTED_REPOSITORIES` and give standalone Workers a low-quota, rotatable model key;
+- treat the API Host as the Chat-first execution boundary; keep Provider Vault material out of Workspace files and do not claim Provider-native test/browser evidence until an isolated approved check runner is wired;
 - run one API instance and keep the real-phase concurrency cap at a capacity the Host can sustain;
 - install reviewed, fixed-version MCP binaries through the read-only `/opt/ai-sdlc/mcp-bin` mount;
 - protect the trusted API host and its Docker socket;

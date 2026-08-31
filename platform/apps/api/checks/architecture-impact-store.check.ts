@@ -219,6 +219,45 @@ test("partial adoption keeps inherited heads stale and does not unlock downstrea
   ), false);
 });
 
+test("completed Agent Session Run rejects architecture adoption inside the store transaction", async () => {
+  const sessionId = crypto.randomUUID();
+  const harness = adoptionHarness("reuse", undefined, {
+    workflowRunStatus: "completed",
+    agentSessionId: sessionId,
+  });
+  const store = new PgWorkflowStore(harness.pool);
+
+  await assert.rejects(
+    () => store.adoptArchitectureBaseline(ids.targetRun, harness.input),
+    (error: unknown) => (
+      (error as { code?: string }).code === "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE"
+      && (error as { details?: { sessionId?: string } }).details?.sessionId === sessionId
+    ),
+  );
+  assert.match(
+    harness.queries.find(({ sql }) => sql.includes("pr.phase_id = 'architecture'"))?.sql ?? "",
+    /LEFT JOIN agent_session_runs/u,
+  );
+  assert.equal(harness.queries.some(({ sql }) => sql.includes("INSERT INTO artifacts")), false);
+  assert.equal(harness.queries.at(-2)?.sql, "ROLLBACK");
+});
+
+test("completed standalone Run keeps the existing architecture adoption behavior", async () => {
+  const harness = adoptionHarness("partial", undefined, {
+    workflowRunStatus: "completed",
+    agentSessionId: null,
+  });
+
+  const review = await new PgWorkflowStore(harness.pool).adoptArchitectureBaseline(
+    ids.targetRun,
+    harness.input,
+  );
+
+  assert.equal(review.decision, "request_changes");
+  assert.ok(harness.queries.some(({ sql }) => sql.includes("INSERT INTO artifacts")));
+  assert.equal(harness.queries.at(-2)?.sql, "COMMIT");
+});
+
 test("adoption rolls back when an assessed upstream input is no longer an approved current head", async () => {
   const harness = adoptionHarness("reuse", []);
   const store = new PgWorkflowStore(harness.pool);
@@ -426,7 +465,7 @@ test("the locked phase row blocks stale concurrent executions from bypassing imp
     const client = {
       async query(sql: string, values?: unknown[]) {
         queries.push({ sql, values });
-        if (sql.includes("SELECT * FROM phase_runs")) {
+        if (sql.includes("FROM phase_runs pr")) {
           return {
             rows: [{
               id: ids.targetPhase,
@@ -543,6 +582,10 @@ function makeSourceReviews() {
 function adoptionHarness(
   mode: "reuse" | "partial",
   inputRows: Array<{ id: string }> = [{ id: ids.inputArtifact }],
+  targetOrigin: {
+    workflowRunStatus: "active" | "completed";
+    agentSessionId: string | null;
+  } = { workflowRunStatus: "active", agentSessionId: null },
 ) {
   const queries: CapturedQuery[] = [];
   const sourceArtifacts = makeSourceArtifacts();
@@ -565,6 +608,8 @@ function adoptionHarness(
             status: "ready",
             project_id: ids.project,
             architecture_impact: null,
+            workflow_run_status: targetOrigin.workflowRunStatus,
+            agent_session_id: targetOrigin.agentSessionId,
           }],
         };
       }

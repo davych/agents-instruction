@@ -50,7 +50,9 @@ import {
   humanDecisionGateHeadline,
   humanDecisionKindLabel,
   humanDecisionPresets,
+  isGenericHumanDecisionResponse,
   nonBlockingHumanDecisionItems,
+  visibleHumanReviewComment,
 } from "@/lib/human-decisions";
 import { registerNavigationGuard } from "@/lib/navigation-guard";
 import { TEST_REPORT_REVIEW_POINTS } from "@/lib/tester-workflow";
@@ -77,9 +79,9 @@ import type {
 } from "@/lib/types";
 import { cn, formatDate } from "@/lib/utils";
 import {
-  STATUS_LABELS,
   artifactLabel,
   getPhaseName,
+  phaseStatusLabel,
 } from "@/lib/workflow";
 
 const MarkdownPreview = lazy(() =>
@@ -97,6 +99,7 @@ export function ReviewDialog({
   phase,
   definition,
   decisionGate,
+  readOnly = false,
   initialArtifactId,
   open,
   onOpenChange,
@@ -109,6 +112,7 @@ export function ReviewDialog({
   phase: PhaseRun;
   definition: PhaseDefinition;
   decisionGate?: PhaseHumanDecisionGate;
+  readOnly?: boolean;
   initialArtifactId?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -156,6 +160,7 @@ export function ReviewDialog({
     () => new Set(),
   );
   const actionableDecisionItems = actionableHumanDecisionItems(decisionGate);
+  const requiredDecisionItems = actionableDecisionItems.filter(({ kind }) => kind === "decision");
   const dependentDecisionItems = dependentHumanDecisionItems(decisionGate);
   const deferredDecisionItems = deferredHumanDecisionItems(decisionGate);
   const nonBlockingDecisionItems = nonBlockingHumanDecisionItems(decisionGate);
@@ -191,6 +196,8 @@ export function ReviewDialog({
   const revisionByteLength = artifactRevisionByteLength(draftContent);
   const revisionContentInvalid = artifactRevisionContentInvalid(draftContent);
   const canEdit =
+    !readOnly
+    &&
     typeof content === "string"
     && Boolean(artifact?.contentHash)
     && !isSuperseded
@@ -204,7 +211,8 @@ export function ReviewDialog({
       "failed",
     ].includes(phase.status);
   const canRerunArtifact =
-    Boolean(artifactKey)
+    !readOnly
+    && Boolean(artifactKey)
     && !isSuperseded
     && !isImpactReadOnly
     && [
@@ -591,23 +599,32 @@ export function ReviewDialog({
   }, [open, hasPendingReviewWork, hasUnsavedReviewWork]);
 
   const submitDecisionResponses = () => {
-    if (!decisionGate || actionableDecisionItems.length === 0) return;
+    if (!decisionGate || requiredDecisionItems.length === 0) return;
     if (isDirty || revisionMutation.isPending) {
       setError("请先保存或取消当前人工编辑，再提交决定。");
       return;
     }
-    const responses = actionableDecisionItems.map((item) => ({
+    const responses = requiredDecisionItems.map((item) => ({
       id: item.id,
       response: (decisionResponses[item.id] ?? "").trim(),
     }));
-    const missingDecision = actionableDecisionItems.find(
-      (item) => item.kind === "decision" && (decisionResponses[item.id] ?? "").trim().length < 3,
+    const missingDecision = requiredDecisionItems.find(
+      (item) => (decisionResponses[item.id] ?? "").trim().length < 3,
     );
     if (missingDecision) {
       setError(`请回答 ${missingDecision.id}：${missingDecision.title}`);
       return;
     }
-    const incompleteMonitoringDecision = actionableDecisionItems.find((item) => {
+    const genericDecision = requiredDecisionItems.find((item) => (
+      isGenericHumanDecisionResponse(decisionResponses[item.id] ?? "")
+    ));
+    if (genericDecision) {
+      setError(
+        `请对 ${genericDecision.id} 写明具体选择或规则；只写“同意、确认、可以、好的、yes、agree、approved、ok”无法让角色更新正式产物。`,
+      );
+      return;
+    }
+    const incompleteMonitoringDecision = requiredDecisionItems.find((item) => {
       const response = (decisionResponses[item.id] ?? "").trim();
       return item.id === "ARCH-OBS-002"
         && /已有监控平台/u.test(response)
@@ -752,7 +769,9 @@ export function ReviewDialog({
       onOpenChange={handleOpenChange}
       closeDisabled={hasPendingReviewWork}
       title={`人工审核 · ${getPhaseName(definition)}`}
-      description={phase.phaseId === "implementation"
+      description={readOnly
+        ? "只读查看这条已完成 Session Run 的产物与审核历史；这里不会创建人工修订、重跑阶段或重新打开后续角色。"
+        : phase.phaseId === "implementation"
         ? "你只需看实现、测试和风险，不要求编辑 Markdown；确认没有阻塞后，通过并解锁 Tester。"
         : phase.phaseId === "verification"
           ? `先确认 ${TEST_REPORT_REVIEW_POINTS.join("；")}。通过只代表 Verification 证据完整，不代表 PR、合并或发布已批准。`
@@ -770,7 +789,7 @@ export function ReviewDialog({
           <span>{reviewConflict}</span>
         </div>
       ) : null}
-      {isReviewable ? (
+      {!readOnly && isReviewable ? (
         <div
           role="status"
           aria-live="polite"
@@ -805,7 +824,11 @@ export function ReviewDialog({
                       reviewedHeadKey && viewedArtifactHeadKeys.has(reviewedHeadKey),
                     );
                     return (
-                      <TabsTrigger key={item.id} value={item.id}>
+                      <TabsTrigger
+                        key={item.id}
+                        value={item.id}
+                        onClick={() => changeArtifact(item.id)}
+                      >
                         {hasViewedCurrentHead ? <Check className="h-3.5 w-3.5" aria-hidden /> : null}
                         {artifactLabel(keyForArtifact(item))}
                         {item.revision ? ` · v${item.revision}` : ""}
@@ -1027,15 +1050,17 @@ export function ReviewDialog({
                         </div>
                         <Badge variant="muted" className="shrink-0">{humanDecisionKindLabel(item)}</Badge>
                       </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="mt-2 bg-white"
-                        onClick={() => leaveReviewFor(() => onNavigateDecisionPhase(item.actionPhaseId))}
-                      >
-                        <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
-                        去 {HUMAN_DECISION_PHASE_LABELS[item.actionPhaseId]} 处理
-                      </Button>
+                      {!readOnly ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="mt-2 bg-white"
+                          onClick={() => leaveReviewFor(() => onNavigateDecisionPhase(item.actionPhaseId))}
+                        >
+                          <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
+                          去 {HUMAN_DECISION_PHASE_LABELS[item.actionPhaseId]} 处理
+                        </Button>
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -1054,7 +1079,7 @@ export function ReviewDialog({
                           {humanDecisionKindLabel(item)}
                         </Badge>
                       </div>
-                      <p className="mt-1.5 text-[11px] leading-4 text-slate-600">{item.prompt}</p>
+                      <p className="mt-1.5 whitespace-pre-wrap text-[11px] leading-4 text-slate-600">{item.prompt}</p>
                       <p className="mt-1.5 text-[10px] leading-4 text-slate-500">
                         负责人：{item.owner} · 下一步：{item.nextAction}
                       </p>
@@ -1063,7 +1088,13 @@ export function ReviewDialog({
                           上次已记录：{item.response}。正式产物仍需由角色更新后才算关闭。
                         </div>
                       ) : null}
-                      {item.kind === "decision" ? (
+                      {readOnly ? (
+                        <div className="mt-2 rounded-md bg-slate-50 px-2.5 py-2 text-[10px] leading-4 text-slate-700">
+                          {item.response
+                            ? `已记录回答：${item.response}`
+                            : "完成态记录中没有已保存回答；该条目仅作为历史审计展示。"}
+                        </div>
+                      ) : item.kind === "decision" ? (
                         <>
                           {humanDecisionPresets(item).length > 0 ? (
                             <div className="mt-2 grid gap-2">
@@ -1077,7 +1108,7 @@ export function ReviewDialog({
                                       ? "border-teal-500 bg-teal-50 ring-1 ring-teal-500"
                                       : "border-slate-200 bg-slate-50 hover:border-teal-300 hover:bg-teal-50/50",
                                   )}
-                                  disabled={decisionCaptureMutation.isPending}
+                                  disabled={readOnly || decisionCaptureMutation.isPending}
                                   onClick={() => setDecisionResponses((current) => ({
                                     ...current,
                                     [item.id]: preset.value,
@@ -1092,7 +1123,7 @@ export function ReviewDialog({
                           <Textarea
                             className="mt-2 min-h-24 bg-white text-xs"
                             value={decisionResponses[item.id] ?? ""}
-                            disabled={decisionCaptureMutation.isPending}
+                            disabled={readOnly || decisionCaptureMutation.isPending}
                             onChange={(event) => setDecisionResponses((current) => ({
                               ...current,
                               [item.id]: event.target.value,
@@ -1108,7 +1139,7 @@ export function ReviewDialog({
                       )}
                     </div>
                   ))}
-                  <Button
+                  {!readOnly && requiredDecisionItems.length > 0 ? <Button
                     variant="primary"
                     className="w-full"
                     loading={decisionCaptureMutation.isPending}
@@ -1121,22 +1152,30 @@ export function ReviewDialog({
                     onClick={submitDecisionResponses}
                   >
                     <Save className="h-4 w-4" aria-hidden />
-                    {actionableDecisionItems.some(({ kind }) => kind === "decision")
-                      ? `保存决定并让 ${HUMAN_DECISION_ROLE_LABELS[decisionGate.phaseId]} 更新`
-                      : `让 ${HUMAN_DECISION_ROLE_LABELS[decisionGate.phaseId]} 完成待办`}
-                  </Button>
+                    {`一次保存 ${requiredDecisionItems.length} 项决定，返回 Session 继续 ${HUMAN_DECISION_ROLE_LABELS[decisionGate.phaseId]}`}
+                  </Button> : !readOnly ? <Button
+                    variant="primary"
+                    className="w-full"
+                    disabled={revisionMutation.isPending || isDirty || dependentDecisionItems.length > 0}
+                    onClick={() => leaveReviewFor(() => onNavigateDecisionPhase(decisionGate.phaseId))}
+                  >
+                    <ArrowLeft className="h-4 w-4" aria-hidden />
+                    {`让 ${HUMAN_DECISION_ROLE_LABELS[decisionGate.phaseId]} 补做并重跑`}
+                  </Button> : null}
                   {dependentDecisionItems.length > 0 ? (
                     <p className="rounded-md bg-amber-100/70 px-2.5 py-2 text-[10px] leading-4 text-amber-900">
                       先处理上游依赖；本阶段变为 Ready 后直接重新运行 {HUMAN_DECISION_ROLE_LABELS[decisionGate.phaseId]}，让它同步最新上游产物并完成自己的待办。
                     </p>
                   ) : null}
                   <p className="text-[10px] leading-4 text-slate-500">
-                    保存会记录为“要求修改”，使下游旧结果失效，并立即打开当前角色的重新执行窗口。
+                    {readOnly
+                      ? "完成态 Run 不再接受决定、产物或流程变更；这里仅保留当时未关闭条目的审计记录。"
+                      : `保存会记录为“要求修改”并返回原 Session。下一步在后台 Run 卡片点击“让 ${HUMAN_DECISION_ROLE_LABELS[decisionGate.phaseId]} 补做并重跑”；它会沿用已选 Provider 和同一个 Run，不会另行调用 Codex 或新建 Run。`}
                   </p>
                 </div>
               ) : null}
 
-              {phase.status === "ready" && (
+              {!readOnly && phase.status === "ready" && (
                 dependentDecisionItems.length > 0 || decisionGate.workCount > 0
               ) ? (
                 <Button
@@ -1191,14 +1230,26 @@ export function ReviewDialog({
                       </Badge>
                       <span className="text-[10px] text-slate-400">{formatDate(review.createdAt)}</span>
                     </div>
-                    <p className="mt-1.5 text-xs leading-5 text-slate-600">{review.comment}</p>
+                    <p className="mt-1.5 whitespace-pre-wrap text-xs leading-5 text-slate-600">
+                      {visibleHumanReviewComment(review.comment ?? "")}
+                    </p>
                   </div>
                 ))}
               </div>
             </div>
           ) : null}
 
-          {isReviewable ? (
+          {readOnly ? (
+            <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-700">
+              <div className="flex items-center gap-2 font-semibold">
+                <FileCheck2 className="h-4 w-4" aria-hidden />
+                完成态只读审计
+              </div>
+              <p className="mt-1">
+                历史阶段状态为“{phaseStatusLabel(phase.status, phase.executions[0]?.command)}”。此 Session Run 已完成，不能再提交审核、选择方案、要求修改或重新打开流程。
+              </p>
+            </div>
+          ) : isReviewable ? (
             <div className="mt-5">
               {isArchitectureSelectionCheckpoint ? (
                 <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
@@ -1461,7 +1512,9 @@ export function ReviewDialog({
               <p className="mt-1">
                 {phase.phaseId === "release"
                   ? RELEASE_COMPLETION_BOUNDARY
-                  : "可以继续创建人工修订，或只重跑需要调整的当前产物。"}
+                  : readOnly
+                    ? "此 Session Run 已完成；这里仅保留产物与审核历史。"
+                    : "可以继续创建人工修订，或只重跑需要调整的当前产物。"}
               </p>
             </div>
           ) : phase.status === "changes_requested" || phase.status === "rejected" ? (
@@ -1484,7 +1537,7 @@ export function ReviewDialog({
             <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4 text-xs leading-5 text-slate-600">
               <div className="flex items-center gap-2 font-semibold text-slate-700">
                 <FileText className="h-4 w-4" aria-hidden />
-                当前状态：{STATUS_LABELS[phase.status] ?? phase.status}
+                当前状态：{phaseStatusLabel(phase.status, phase.executions[0]?.command)}
               </div>
               <p className="mt-1">
                 {phase.status === "ready"

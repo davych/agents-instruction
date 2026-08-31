@@ -95,7 +95,19 @@ export class OpenAiChatProvider implements AskLlmProvider {
       };
     }
     if (request.tools) {
-      body.tools = request.tools.map((tool) => ({
+      // LM Studio supports the string tool-choice modes but currently rejects
+      // OpenAI's named-function object. Preserve the provider-neutral named
+      // intent by exposing only that function and requiring a tool call. The
+      // agent runtime independently verifies the returned function name before
+      // executing it.
+      const lmStudioNamedTool = this.id === "lmstudio"
+        && typeof request.toolChoice === "object"
+        ? request.toolChoice.name
+        : null;
+      const wireTools = lmStudioNamedTool
+        ? request.tools.filter(({ name }) => name === lmStudioNamedTool)
+        : request.tools;
+      body.tools = wireTools.map((tool) => ({
         type: "function",
         function: {
           name: tool.name,
@@ -105,7 +117,9 @@ export class OpenAiChatProvider implements AskLlmProvider {
         },
       }));
       if (request.toolChoice !== undefined) {
-        body.tool_choice = chatToolChoice(request.toolChoice);
+        body.tool_choice = lmStudioNamedTool
+          ? "required"
+          : chatToolChoice(request.toolChoice);
       }
       body.parallel_tool_calls = false;
     }

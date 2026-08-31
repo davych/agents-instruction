@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { AppError } from "../src/domain/errors.ts";
-import { parseUserStoryTickets } from "../src/domain/user-story-tickets.ts";
+import {
+  parseUserStoryTicketEntries,
+  parseUserStoryTickets,
+} from "../src/domain/user-story-tickets.ts";
 
 test("parses and orders individual story files from an aggregate snapshot", () => {
   const snapshot = `## pinyin-learning/US-002-continue/story.md
@@ -107,4 +110,23 @@ Deterministic fake artifact.
 
 # Story without a stable ID
 `), []);
+});
+
+test("entry parsing counts colon, fullwidth colon, dash, and em-dash AC delimiters", () => {
+  const [ticket] = parseUserStoryTicketEntries([{
+    relativePath: "review/US-011-review/story.md",
+    content: `# US-011 — Review a proposal
+
+### US-011-AC-01 - Core path
+
+### US-011-AC-02 — Revision path
+
+### US-011-AC-03：Fallback path
+
+### US-011-AC-04: Recovery path
+`,
+  }]);
+
+  assert.equal(ticket?.storyKey, "US-011");
+  assert.equal(ticket?.acceptanceCriteriaCount, 4);
 });

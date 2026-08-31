@@ -35,7 +35,11 @@ import {
   type AskLlmProvider,
 } from "./types.js";
 
-const PROVIDER_TIMEOUT_MS = 60_000;
+// Compatibility probes should fail quickly, while a real local model may need
+// more than one minute for a cold or long tool-calling turn. The outer Agent
+// deadline still bounds the complete phase and aborts the in-flight request.
+const PROVIDER_CHECK_TIMEOUT_MS = 60_000;
+const PROVIDER_ACTIVE_TIMEOUT_MS = 180_000;
 const PROVIDER_MAX_RESPONSE_BYTES = 2_097_152;
 const PROVIDER_PROBE_TOOL_NAME = "ai_sdlc_provider_probe";
 const PROVIDER_PROBE_ACK = "provider-check-v1";
@@ -509,7 +513,9 @@ function registrationFor(
       structuredOutput: configuration.structuredOutput,
       toolCalling: configuration.toolCalling,
       ...(configuration.credential ? { apiKey: configuration.credential } : {}),
-      timeoutMs: PROVIDER_TIMEOUT_MS,
+      timeoutMs: use === "active"
+        ? PROVIDER_ACTIVE_TIMEOUT_MS
+        : PROVIDER_CHECK_TIMEOUT_MS,
       maxResponseBytes: PROVIDER_MAX_RESPONSE_BYTES,
     };
   }

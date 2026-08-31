@@ -5,6 +5,7 @@ import {
   MAX_DISMISSED_AGENT_FAILURE_EVENTS,
   agentFailureVisibilityStorageKey,
   conversationFailureEvents,
+  latestAgentSessionRunPointer,
   mergeDismissedAgentFailureEventIds,
   parseDismissedAgentFailureEventIds,
   readDismissedAgentFailureEventIds,
@@ -40,15 +41,53 @@ test("only failure cards that are presentation noise can be dismissed", () => {
     event(2, "tool.failed", "failed"),
     event(3, "sandbox.failed", "failed"),
     event(4, "sdlc.run-created", "completed"),
-    event(5, "turn.completed", "completed"),
+    event(5, "sdlc.phase-started", "started"),
+    event(6, "sdlc.phase-completed", "completed"),
+    event(7, "turn.completed", "completed"),
   ];
 
   assert.deepEqual(conversationFailureEvents(events).map(({ sequence }) => sequence), [1, 2, 3]);
   assert.deepEqual(
     visibleConversationActivityEvents(events, [id(1), id(4)]).map(({ sequence }) => sequence),
-    [2, 3, 4],
+    [2, 3, 4, 5, 6],
     "local browser data must never hide structural Run events",
   );
+});
+
+test("durable Session-to-Run associations win over display events", () => {
+  const durableRunId = id(101);
+  const olderRunId = id(100);
+  const misleadingEventRunId = id(102);
+  assert.deepEqual(latestAgentSessionRunPointer({
+    runs: [
+      {
+        workflowRunId: olderRunId,
+        providerId: "openai",
+        createdAt: "2026-08-28T11:00:00.000Z",
+      },
+      {
+        workflowRunId: durableRunId,
+        providerId: "custom",
+        createdAt: "2026-08-28T12:00:00.000Z",
+      },
+    ],
+    events: [{ workflowRunId: misleadingEventRunId }],
+  }), {
+    workflowRunId: durableRunId,
+    providerId: "custom",
+  });
+});
+
+test("legacy Session details fall back to the latest Run-bearing event", () => {
+  assert.deepEqual(latestAgentSessionRunPointer({
+    runs: [],
+    events: [
+      { workflowRunId: null },
+      { workflowRunId: id(201) },
+      { workflowRunId: id(202) },
+    ],
+  }), { workflowRunId: id(202) });
+  assert.equal(latestAgentSessionRunPointer({ runs: [], events: [] }), undefined);
 });
 
 test("dismissed ids are namespaced per Session, validated and bounded", () => {

@@ -2,6 +2,7 @@ import {
   PHASE_IDS,
   type ArtifactDto,
   type ExecutionDto,
+  type PhaseHumanDecisionGateDto,
   type PhaseId,
   type PhaseRunDto,
 } from "@ai-sdlc/contracts";
@@ -10,10 +11,14 @@ import { effectiveRequiredInputKeys } from "../../domain/change-routing.js";
 import { AppError } from "../../domain/errors.js";
 import type { WorkflowService } from "../workflow-service.js";
 import { SDLC_ROLE_IDS } from "./conversation-planner.js";
+import type { ProviderPhaseExecutionContext } from "./provider-phase-executor.js";
 
 export type SdlcRoleId = (typeof SDLC_ROLE_IDS)[number];
 
-type WorkflowCoordinatorPort = Pick<WorkflowService, "getRun" | "executePhase">;
+type WorkflowCoordinatorPort = Pick<
+  WorkflowService,
+  "getRun" | "getHumanDecisions" | "executePhase"
+>;
 
 export type AgentSdlcAdvanceResult =
   | {
@@ -56,6 +61,11 @@ export class AgentSdlcCoordinator {
      */
     requestedRoles: readonly SdlcRoleId[];
     startCurrentRole: boolean;
+    /**
+     * Present only for a phase started from an Agent Session. Operator-started
+     * legacy Runs intentionally omit it and continue to use the Codex runner.
+     */
+    providerContext?: ProviderPhaseExecutionContext;
   }): Promise<AgentSdlcAdvanceResult> {
     const bundle = await this.workflow.getRun(input.runId);
     const artifactKeys = currentArtifactKeys(bundle.phases);
@@ -64,11 +74,17 @@ export class AgentSdlcCoordinator {
         state: "completed",
         runId: input.runId,
         artifactKeys,
-        reason: "六个阶段都已通过现有 Workflow 的审阅门禁；这条 Run 已完成。",
+        reason: bundle.run.executionModel === "flexible" && bundle.run.targetPhaseId
+          ? `${bundle.run.targetPhaseId} 目标阶段已通过现有 Workflow 的审阅门禁；这条 Run 已完成。`
+          : "六个阶段都已通过现有 Workflow 的审阅门禁；这条 Run 已完成。",
       };
     }
 
-    const phase = firstIncompletePhase(bundle.phases);
+    const phase = activeSdlcPhase(
+      bundle.phases,
+      bundle.run.executionModel,
+      bundle.run.targetPhaseId,
+    );
     if (!phase) {
       return {
         state: "completed",
@@ -106,14 +122,21 @@ export class AgentSdlcCoordinator {
       };
     }
     if (phase.status === "awaiting_review") {
-      return {
-        state: "awaiting_review",
-        runId: input.runId,
-        phaseId: phase.phaseId,
-        roleId,
-        artifactKeys: phaseArtifactKeys,
-        reason: `${roleLabel(roleId)} 已生成当前 Artifact，正在等待既有 Workflow 的审阅或人工决定；Agent 不会替人批准。`,
-      };
+      const gate = input.startCurrentRole
+        ? (await this.workflow.getHumanDecisions(input.runId)).phases.find(
+            (candidate) => candidate.phaseId === phase.phaseId,
+          )
+        : undefined;
+      if (!isCurrentRoleRepairGate(gate)) {
+        return {
+          state: "awaiting_review",
+          runId: input.runId,
+          phaseId: phase.phaseId,
+          roleId,
+          artifactKeys: phaseArtifactKeys,
+          reason: `${roleLabel(roleId)} 已生成当前 Artifact，正在等待既有 Workflow 的审阅或人工决定；Agent 不会替人批准。`,
+        };
+      }
     }
     if (phase.status === "pending") {
       return {
@@ -137,13 +160,17 @@ export class AgentSdlcCoordinator {
       };
     }
 
-    const configuredInputs = effectiveRequiredInputKeys(
-      phase.phaseId,
-      definition.inputs,
-      bundle.phases,
-      Boolean(bundle.run.changeContract),
-      Object.fromEntries(bundle.definition.phases.map(({ id, outputs }) => [id, outputs])),
-    );
+    const isFlexibleDirectEntry = bundle.run.executionModel === "flexible"
+      && bundle.run.targetPhaseId === phase.phaseId;
+    const configuredInputs = isFlexibleDirectEntry
+      ? []
+      : effectiveRequiredInputKeys(
+          phase.phaseId,
+          definition.inputs,
+          bundle.phases,
+          Boolean(bundle.run.changeContract),
+          Object.fromEntries(bundle.definition.phases.map(({ id, outputs }) => [id, outputs])),
+        );
     const selectedArtifacts = selectApprovedInputs(
       bundle.phases,
       phase.phaseId,
@@ -153,7 +180,7 @@ export class AgentSdlcCoordinator {
     try {
       execution = await this.workflow.executePhase(input.runId, phase.phaseId, {
         selectedArtifactIds: selectedArtifacts.map(({ id }) => id),
-      });
+      }, input.providerContext);
     } catch (error) {
       if (error instanceof AppError) {
         return {
@@ -176,6 +203,17 @@ export class AgentSdlcCoordinator {
       selectedArtifactIds: selectedArtifacts.map(({ id }) => id),
     };
   }
+}
+
+function isCurrentRoleRepairGate(
+  gate: PhaseHumanDecisionGateDto | undefined,
+): boolean {
+  if (!gate || gate.blockingCount === 0) return false;
+  const blockers = gate.items.filter(({ blocking }) => blocking);
+  return blockers.length === gate.blockingCount
+    && blockers.every((item) => (
+      item.kind === "work" && item.actionPhaseId === gate.phaseId
+    ));
 }
 
 export interface ExplicitRoleContinuation {
@@ -243,6 +281,17 @@ function firstIncompletePhase(phases: readonly PhaseRunDto[]): PhaseRunDto | und
   const byId = new Map(phases.map((phase) => [phase.phaseId, phase]));
   return PHASE_IDS.map((phaseId) => byId.get(phaseId))
     .find((phase): phase is PhaseRunDto => Boolean(phase && phase.status !== "approved"));
+}
+
+export function activeSdlcPhase(
+  phases: readonly PhaseRunDto[],
+  executionModel: "legacy" | "flexible" | null | undefined,
+  targetPhaseId: PhaseId | null | undefined,
+): PhaseRunDto | undefined {
+  if (executionModel === "flexible" && targetPhaseId) {
+    return phases.find((phase) => phase.phaseId === targetPhaseId);
+  }
+  return firstIncompletePhase(phases);
 }
 
 function currentArtifactKeys(phases: readonly PhaseRunDto[]): string[] {

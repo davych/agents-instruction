@@ -37,6 +37,7 @@ test("review dialog guards pending and dirty exits and gates approval on viewed 
   assert.match(source, /closeDisabled=\{hasPendingReviewWork\}/u);
   assert.match(source, /unviewedArtifactHeads\.length > 0/u);
   assert.match(source, /当前版本已查看/u);
+  assert.match(source, /<TabsTrigger[\s\S]{0,180}onClick=\{\(\) => changeArtifact\(item\.id\)\}/u);
   assert.match(source, /registerNavigationGuard\(confirmReviewExit\)/u);
   assert.match(source, /window\.addEventListener\("beforeunload"/u);
 });

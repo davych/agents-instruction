@@ -76,6 +76,11 @@ export interface AskLlmProvider {
   ): Promise<AskLlmCompleteResponse>;
 }
 
+// A guarded Provider-native workflow may carry eight inherited chat messages
+// plus two platform-owned messages for each of at most 32 tool calls. Character
+// limits below remain the primary context-size boundary.
+const MAX_ASK_MESSAGES = 80;
+
 interface AskConfiguredProviderBaseOptions {
   id: AskProviderId;
   label: string;
@@ -143,7 +148,11 @@ export function assertCompleteRequest(
   ) {
     throw invalidRequest(providerId, "Ask system prompt 无效");
   }
-  if (!Array.isArray(request.messages) || request.messages.length === 0 || request.messages.length > 32) {
+  if (
+    !Array.isArray(request.messages)
+    || request.messages.length === 0
+    || request.messages.length > MAX_ASK_MESSAGES
+  ) {
     throw invalidRequest(providerId, "Ask messages 数量无效");
   }
   let totalMessageCharacters = 0;

@@ -135,6 +135,7 @@ export function ExecuteDialog({
   phase,
   phases,
   hasChangeContract,
+  allowMissingUpstreamInputs = false,
   outputKeysByPhase,
   workType,
   hasEvidenceRefs,
@@ -154,6 +155,7 @@ export function ExecuteDialog({
   phase: PhaseRun;
   phases: PhaseRun[];
   hasChangeContract: boolean;
+  allowMissingUpstreamInputs?: boolean;
   outputKeysByPhase: Partial<Record<string, string[]>>;
   workType?: ChangeContract["workType"];
   hasEvidenceRefs: boolean;
@@ -178,11 +180,13 @@ export function ExecuteDialog({
   const executableOutputKeys = definition.outputs.filter((key) =>
     key !== "change-contract" && (figmaEnabled || key !== "figma-handoff")
   );
-  const effectiveInputKeys = effectiveRequiredInputKeys(
-    definition.inputs,
-    phases,
-    { hasChangeContract, outputKeysByPhase },
-  );
+  const effectiveInputKeys = allowMissingUpstreamInputs
+    ? []
+    : effectiveRequiredInputKeys(
+      definition.inputs,
+      phases,
+      { hasChangeContract, outputKeysByPhase },
+    );
   const routedImpactPhaseId = phase.phaseId === "discovery" || phase.phaseId === "design"
     ? phase.phaseId
     : undefined;
@@ -660,16 +664,6 @@ export function ExecuteDialog({
 
   const selectArchitectureImpactChoice = (choice: ArchitectureImpactChoice) => {
     if (mutation.isPending) return;
-    if (
-      choice === "skip"
-      && (
-        (workType !== "bug" && workType !== "technical")
-        || !hasEvidenceRefs
-      )
-    ) {
-      setError("只有在 Change Contract 中带明确证据引用的 Bug 或技术任务可以声明无需架构工作。");
-      return;
-    }
     if ((choice === "reuse" || choice === "partial") && !architectureBaseline) {
       setError("当前项目还没有可复用的已批准架构基线；请选择跳过或完整重跑。");
       return;
@@ -976,13 +970,6 @@ export function ExecuteDialog({
                     const disabled = (
                       (option.value === "reuse" || option.value === "partial")
                       && !architectureBaseline
-                    ) || (
-                      option.value === "skip"
-                      && workType !== "bug"
-                      && workType !== "technical"
-                    ) || (
-                      option.value === "skip"
-                      && !hasEvidenceRefs
                     );
                     return (
                     <label
@@ -1010,11 +997,6 @@ export function ExecuteDialog({
                           <span className="mt-1 block text-[11px] leading-4 text-slate-500">
                             {option.description}
                           </span>
-                          {option.value === "skip" && disabled ? (
-                            <span className="mt-1 block text-[10px] font-semibold text-amber-700">
-                              仅限带证据引用的 Bug / 技术任务
-                            </span>
-                          ) : null}
                       </span>
                     </label>
                     );
@@ -1322,7 +1304,9 @@ export function ExecuteDialog({
             </div>
           ) : (
             <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-7 text-center text-xs leading-5 text-slate-500">
-              {effectiveInputKeys.length
+              {allowMissingUpstreamInputs
+                ? "Flexible Run 直接从本阶段开始；可选上下文会被采用，但不要求补齐前序阶段产物。"
+                : effectiveInputKeys.length
                 ? "暂时没有可用的上游产物。只有审核通过的产物才会出现在这里。"
                 : "这是第一个阶段，不需要选择上游产物。"}
             </div>

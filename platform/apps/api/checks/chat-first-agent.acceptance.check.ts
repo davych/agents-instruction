@@ -5,6 +5,8 @@ import {
   agentEventSchema,
   agentHumanGateSchema,
   agentMessageSchema,
+  agentRunAdvanceResultSchema,
+  agentSessionRunSchema,
   agentSessionSchema,
   agentToolCallSchema,
   deepWikiGenerationSchema,
@@ -13,6 +15,8 @@ import {
   projectAgentSettingsSchema,
   publicProjectSchema,
   sandboxBlueprintSummarySchema,
+  type AdvanceAgentRunInput,
+  type AgentRunAdvanceResultDto,
   type BindRemoteRepositoryInput,
   type CreateAgentSessionInput,
   type GenerateDeepWikiInput,
@@ -293,6 +297,11 @@ interface AcceptanceCalls {
   createSessions: CreateAgentSessionInput[];
   archives: string[];
   sendMessages: Array<{ sessionId: string; input: SendAgentMessageInput }>;
+  advanceRuns: Array<{
+    sessionId: string;
+    runId: string;
+    input: AdvanceAgentRunInput;
+  }>;
   updateSettings: Array<{ projectId: string; input: UpdateProjectAgentSettingsInput }>;
   activations: Array<{ projectId: string; serverId: string; enabled: boolean }>;
   deepWiki: Array<{ projectId: string; input: GenerateDeepWikiInput }>;
@@ -304,11 +313,19 @@ async function acceptanceApp() {
     createSessions: [],
     archives: [],
     sendMessages: [],
+    advanceRuns: [],
     updateSettings: [],
     activations: [],
     deepWiki: [],
   };
-  const detail = { session, messages, events, toolCalls, humanGates };
+  const runs = [{
+    sessionId,
+    triggerMessageId: userMessageId,
+    workflowRunId: runId,
+    providerId: "ollama" as const,
+    createdAt: now,
+  }];
+  const detail = { session, messages, events, toolCalls, humanGates, runs };
   const marker = "SECRET_PATH_IMAGE_COMMAND_MARKER /srv/private image=private/worker command=evil";
   const app = await buildApp({
     pool: {
@@ -338,6 +355,26 @@ async function acceptanceApp() {
         calls.sendMessages.push({ sessionId: requestedSessionId, input });
         if (input.content === "trigger-safe-error") throw new Error(marker);
         return detail;
+      },
+      advanceRun: async (
+        requestedSessionId: string,
+        requestedRunId: string,
+        input: AdvanceAgentRunInput,
+      ): Promise<AgentRunAdvanceResultDto> => {
+        calls.advanceRuns.push({
+          sessionId: requestedSessionId,
+          runId: requestedRunId,
+          input,
+        });
+        detail.session = { ...detail.session, currentProviderId: input.providerId };
+        return {
+          state: "running",
+          runId: requestedRunId,
+          phaseId: input.expectedPhaseId,
+          roleId: "designer",
+          artifactKeys: ["design-spec"],
+          reason: "Designer 已在同一 Session 中运行。",
+        };
       },
     },
     projectAgentSettings: {
@@ -452,6 +489,14 @@ test("CHAT-AC-03/04/06/09/10: Session HTTP surface restores context and accepts 
     assert.equal((restoredBody.events as unknown[]).every((item) => agentEventSchema.safeParse(item).success), true);
     assert.equal((restoredBody.toolCalls as unknown[]).every((item) => agentToolCallSchema.safeParse(item).success), true);
     assert.equal((restoredBody.humanGates as unknown[]).every((item) => agentHumanGateSchema.safeParse(item).success), true);
+    assert.equal((restoredBody.runs as unknown[]).every((item) => agentSessionRunSchema.safeParse(item).success), true);
+    assert.deepEqual(restoredBody.runs, [{
+      sessionId,
+      triggerMessageId: userMessageId,
+      workflowRunId: runId,
+      providerId: "ollama",
+      createdAt: now,
+    }]);
     assert.deepEqual(
       (restoredBody.events as typeof events)
         .filter(({ kind }) => kind === "sdlc.phase-completed")
@@ -482,6 +527,48 @@ test("CHAT-AC-03/04/06/09/10: Session HTTP surface restores context and accepts 
     });
     assert.equal(jsonRecord(sent.body).session !== undefined, true);
     assertNoPrivateRuntimeData(sent.body);
+
+    const advanced = await app.inject({
+      method: "POST",
+      url: `/api/agent-sessions/${sessionId}/runs/${runId}/advance`,
+      payload: {
+        expectedPhaseId: "design",
+        providerId: "openai",
+      },
+    });
+    assert.equal(advanced.statusCode, 202);
+    assert.equal(agentRunAdvanceResultSchema.safeParse(jsonRecord(advanced.body)).success, true);
+    assert.deepEqual(calls.advanceRuns.at(-1), {
+      sessionId,
+      runId,
+      input: { expectedPhaseId: "design", providerId: "openai" },
+    });
+    const refreshedAfterAdvance = await app.inject({
+      method: "GET",
+      url: `/api/agent-sessions/${sessionId}`,
+    });
+    assert.equal(refreshedAfterAdvance.statusCode, 200);
+    assert.equal(
+      (jsonRecord(refreshedAfterAdvance.body).session as { currentProviderId?: unknown })
+        .currentProviderId,
+      "openai",
+      "refresh must retain the Provider selected by direct Run continuation",
+    );
+
+    const advanceCount = calls.advanceRuns.length;
+    for (const invalid of [
+      { expectedPhaseId: "done", providerId: "openai" },
+      { expectedPhaseId: "design", providerId: "codex" },
+      { expectedPhaseId: "design", providerId: "openai", syntheticMessage: true },
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/agent-sessions/${sessionId}/runs/${runId}/advance`,
+        payload: invalid,
+      });
+      assert.equal(response.statusCode, 400);
+    }
+    assert.equal(calls.advanceRuns.length, advanceCount);
 
     for (const forbidden of [
       { projectId },

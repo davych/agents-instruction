@@ -48,7 +48,9 @@ import { VerificationE2ePanel } from "@/components/verification-e2e-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { verifiedAgentSessionRun } from "@/lib/agent-session-run-context";
 import { api } from "@/lib/api";
+import { phaseRunEventMessage } from "@/lib/session-run-failure";
 import {
   HUMAN_DECISION_PHASE_LABELS,
   HUMAN_DECISION_ROLE_LABELS,
@@ -79,7 +81,7 @@ import type {
   PhaseRun,
   PhaseStatus,
   RoleDefinition,
-  RunEvent,
+  RunResultReceipt,
   VerificationE2eAction,
   WorkflowRun,
 } from "@/lib/types";
@@ -87,9 +89,9 @@ import { cn, formatDate } from "@/lib/utils";
 import {
   FALLBACK_PHASES,
   FALLBACK_ROLES,
-  STATUS_LABELS,
   artifactLabel,
   getPhaseName,
+  phaseStatusLabel,
 } from "@/lib/workflow";
 
 const roleIcons: Record<string, typeof Bot> = {
@@ -148,7 +150,9 @@ interface ReviewTarget {
 
 export function RunPage({
   runId,
+  sessionId,
   onBack,
+  onReturnToSession,
   view,
   ticketId,
   onViewChange,
@@ -156,7 +160,9 @@ export function RunPage({
   onCloseTicket,
 }: {
   runId: string;
+  sessionId?: string;
   onBack: (projectId?: string) => void;
+  onReturnToSession: (projectId?: string, sessionId?: string) => void;
   view: "workflow" | "tickets";
   ticketId?: string;
   onViewChange: (view: "workflow" | "tickets") => void;
@@ -175,12 +181,34 @@ export function RunPage({
     refetchInterval: (query) =>
       query.state.data?.phases?.some((phase) => phase.status === "running") ? 1_500 : false,
   });
+  const authoritativeSessionId = runQuery.data?.agentSession?.sessionId;
+  const agentSessionDetailQuery = useQuery({
+    queryKey: ["agent-session", authoritativeSessionId],
+    queryFn: ({ signal }) => api.getAgentSession(authoritativeSessionId!, { signal }),
+    enabled: Boolean(authoritativeSessionId),
+    retry: false,
+  });
   const changesetQuery = useQuery({
     queryKey: ["run", runId, "changeset"],
     queryFn: ({ signal }) => api.getRunChangeset(runId, { signal }),
     enabled: runQuery.data?.project.sourceKind === "remote-git"
       && !runQuery.data.phases.some((phase) => phase.status === "running"),
     retry: false,
+  });
+  const resultQuery = useQuery({
+    queryKey: [
+      "run",
+      runId,
+      "result",
+      runQuery.data?.run.updatedAt,
+      changesetQuery.data?.generatedAt,
+    ],
+    queryFn: () => api.getRunResult(runId),
+    enabled: Boolean(runQuery.data),
+    retry: false,
+    refetchInterval: runQuery.data?.phases?.some((phase) => phase.status === "running")
+      ? 1_500
+      : false,
   });
   const patchDownloadMutation = useMutation({
     mutationFn: () => api.downloadRunPatch(runId),
@@ -291,6 +319,36 @@ export function RunPage({
     designBaseline,
     architectureBaseline,
   } = runQuery.data;
+  const sessionAssociation = authoritativeSessionId && agentSessionDetailQuery.isSuccess
+    ? verifiedAgentSessionRun(authoritativeSessionId, runId, agentSessionDetailQuery.data)
+    : undefined;
+  const sessionAudit = Boolean(sessionAssociation);
+  const sessionArchived = Boolean(
+    sessionAssociation && agentSessionDetailQuery.data?.status === "archived",
+  );
+  const sessionRouteUnverified = Boolean(authoritativeSessionId && !sessionAudit);
+  const sessionRouteState = authoritativeSessionId
+    ? agentSessionDetailQuery.isPending
+      ? "loading"
+      : agentSessionDetailQuery.isError
+        ? "error"
+        : sessionAudit ? "verified" : "conflict"
+    : sessionId ? "mismatch" : "standalone";
+  const sessionHeaderNavigationLocked = sessionRouteUnverified || sessionArchived;
+  // Run detail is the authority for ownership. Keep completed Session Runs
+  // read-only even when the secondary Session detail request is unavailable or
+  // temporarily inconsistent; never let that read failure reopen mutations.
+  const sessionRunCompleted = Boolean(authoritativeSessionId && run.status === "completed");
+  const requestPhaseExecution = (target: ExecuteTarget) => {
+    if (sessionRouteUnverified || sessionRunCompleted || sessionArchived) return;
+    if (sessionAudit) {
+      setExecuteTarget(undefined);
+      setReviewTarget(undefined);
+      onReturnToSession(run.projectId, sessionAssociation?.sessionId);
+      return;
+    }
+    setExecuteTarget(target);
+  };
   const phases = normalizePhases(runQuery.data.phases, definition?.phases);
   const phaseDefinitions = definition?.phases?.length ? definition.phases : FALLBACK_PHASES;
   const outputKeysByPhase = Object.fromEntries(
@@ -314,7 +372,15 @@ export function RunPage({
   const approvedCount = phases.filter(
     (phase) => phase.status === "approved" && !inconsistentApprovedPhases.has(phase.phaseId as HumanDecisionPhaseId),
   ).length;
-  const progress = Math.round((approvedCount / Math.max(phases.length, 1)) * 100);
+  const flexibleTargetPhase = run.executionModel === "flexible"
+    ? phases.find((phase) => phase.phaseId === run.targetPhaseId)
+    : undefined;
+  const progressCompleted = flexibleTargetPhase
+    ? flexibleTargetPhase.status === "approved" || run.status === "completed" ? 1 : 0
+    : approvedCount;
+  const progressTotal = flexibleTargetPhase ? 1 : Math.max(phases.length, 1);
+  const progress = Math.round((progressCompleted / progressTotal) * 100);
+  const targetPhaseDefinition = phaseDefinitions.find((phase) => phase.id === run.targetPhaseId);
   const selectedDecisionGate = humanDecisions?.phases.find(
     ({ phaseId }) => phaseId === selectedPhase?.phaseId,
   );
@@ -330,7 +396,7 @@ export function RunPage({
       : "select";
     if (nextAction === "execute") {
       setReviewTarget(undefined);
-      setExecuteTarget({ phaseId });
+      requestPhaseExecution({ phaseId });
     } else if (nextAction === "review") {
       setReviewTarget({ phaseId });
     } else {
@@ -342,9 +408,29 @@ export function RunPage({
   return (
     <div className="space-y-6 animate-fade-up">
       <section>
-        <Button variant="ghost" size="sm" className="-ml-2 mb-3" onClick={() => onBack(run.projectId)}>
-          <ArrowLeft className="h-4 w-4" aria-hidden />
-          返回 {project.name}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="-ml-2 mb-3"
+          disabled={sessionHeaderNavigationLocked}
+          onClick={sessionHeaderNavigationLocked
+            ? undefined
+            : authoritativeSessionId
+            ? () => onReturnToSession(run.projectId, authoritativeSessionId)
+            : () => onBack(run.projectId)}
+        >
+          {sessionRouteState === "loading"
+            ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
+            : sessionHeaderNavigationLocked
+            ? <LockKeyhole className="h-4 w-4" aria-hidden />
+            : <ArrowLeft className="h-4 w-4" aria-hidden />}
+          {sessionArchived
+            ? "所属 Session 已归档"
+            : sessionRouteState === "loading"
+              ? "正在验证所属 Session"
+              : sessionRouteUnverified
+                ? "所属 Session 暂不可返回"
+            : `返回 ${authoritativeSessionId ? "Agent Session" : project.name}`}
         </Button>
         <div className="flex flex-col justify-between gap-5 xl:flex-row xl:items-end">
           <div className="min-w-0">
@@ -357,6 +443,12 @@ export function RunPage({
                 <Badge variant="outline">
                   <GitCommitHorizontal className="h-3 w-3" aria-hidden />
                   base {run.baseRevision.slice(0, 12)}
+                </Badge>
+              ) : null}
+              {run.executionModel === "flexible" && targetPhaseDefinition ? (
+                <Badge variant="info">
+                  <ArrowRight className="h-3 w-3" aria-hidden />
+                  目标 · {getPhaseName(targetPhaseDefinition)}
                 </Badge>
               ) : null}
               {project.sourceKind === "remote-git" && run.workspaceState ? (
@@ -376,7 +468,7 @@ export function RunPage({
           <div className="w-full max-w-sm rounded-xl border border-slate-200 bg-white/80 p-4 shadow-sm backdrop-blur xl:w-80">
             <div className="mb-2 flex items-center justify-between text-xs">
               <span className="font-semibold text-slate-700">整体进度</span>
-              <span className="font-bold text-teal-700">{approvedCount} / {phases.length}</span>
+              <span className="font-bold text-teal-700">{progressCompleted} / {progressTotal}</span>
             </div>
             <div className="h-2 overflow-hidden rounded-full bg-slate-100">
               <div
@@ -385,7 +477,9 @@ export function RunPage({
               />
             </div>
             <div className="mt-2 text-[11px] text-slate-400">
-              所有阶段均需人工审核且没有未关闭事项后才算完成
+              {flexibleTargetPhase
+                ? "目标阶段审核通过后，本 Run 即完成"
+                : "所有阶段均需人工审核且没有未关闭事项后才算完成"}
               {inconsistentApprovedPhases.size > 0
                 ? ` · ${inconsistentApprovedPhases.size} 个旧批准需要修复`
                 : ""}
@@ -393,6 +487,87 @@ export function RunPage({
           </div>
         </div>
       </section>
+
+      {sessionAudit ? (
+        <Card className="border-teal-200 bg-teal-50/55 shadow-none" aria-label="Agent Session 高级审计">
+          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-teal-950">
+                <Badge variant="info">高级审计</Badge>
+                此 Run 隶属于当前 Agent Session
+              </div>
+              <p className="mt-1 text-xs leading-5 text-teal-900">
+                {sessionRunCompleted
+                  ? "在这里查看完整状态、产物与历史审核记录。此 Session Run 已完成，不再提供执行或重跑入口。"
+                  : "在这里查看完整状态、产物审核、结构化决定与架构选型；执行、重跑和保存决定后的继续动作会返回原 Session，沿用当前所选 Provider 与有界会话历史。"}
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              className="shrink-0 bg-white"
+              disabled={sessionArchived}
+              onClick={sessionArchived
+                ? undefined
+                : () => onReturnToSession(run.projectId, sessionAssociation?.sessionId)}
+            >
+              {sessionArchived
+                ? <LockKeyhole className="h-4 w-4" aria-hidden />
+                : <ArrowLeft className="h-4 w-4" aria-hidden />}
+              {sessionArchived
+                ? "所属 Session 已归档"
+                : sessionRunCompleted ? "返回 Session" : "返回 Session 继续"}
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {sessionRouteState !== "standalone" && sessionRouteState !== "verified" ? (
+        <Card
+          className={sessionRouteState === "loading"
+            ? "border-slate-200 bg-slate-50 shadow-none"
+            : "border-amber-200 bg-amber-50/70 shadow-none"}
+          aria-label="Agent Session 归属验证"
+        >
+          <CardContent
+            className="flex flex-col gap-3 p-4 text-sm sm:flex-row sm:items-start"
+            role={sessionRouteState === "loading" ? "status" : "alert"}
+          >
+            {sessionRouteState === "loading"
+              ? <LoaderCircle className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-slate-500" aria-hidden />
+              : <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden />}
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold text-slate-900">
+                {sessionRouteState === "loading"
+                  ? "正在验证 Agent Session 归属"
+                  : sessionRouteState === "error"
+                    ? "无法验证 Agent Session 归属"
+                    : sessionRouteState === "conflict"
+                      ? "Run 归属记录暂时不一致"
+                      : "这个 Agent Session 未关联当前 Run"}
+              </div>
+              <p className="mt-1 text-xs leading-5 text-slate-700">
+                {sessionRouteState === "loading"
+                  ? "确认持久化 Run 关联前，执行与重跑保持锁定，不会切换到 Codex 或绑定 URL 中的 Session。"
+                  : sessionRouteState === "error"
+                    ? "服务端已确认此 Run 属于一个 Agent Session，但 Session 详情暂时读取失败。执行与重跑保持锁定。"
+                    : sessionRouteState === "conflict"
+                      ? "Run 详情与 Session 关联清单不一致。执行与重跑保持锁定，请重试；系统不会降级为 Codex 独立执行。"
+                      : "服务端已确认当前 Run 不属于 URL 中的 Session。页面按独立 Run 展示，返回操作不会进入无关 Session。"}
+              </p>
+            </div>
+            {sessionRouteState === "error" || sessionRouteState === "conflict" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0 bg-white"
+                onClick={() => void agentSessionDetailQuery.refetch()}
+              >
+                重试归属验证
+              </Button>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {project.sourceKind === "remote-git" ? (
         <Card className="border-sky-100 bg-sky-50/45 shadow-none">
@@ -429,6 +604,25 @@ export function RunPage({
         </Card>
       ) : null}
 
+      {resultQuery.data ? (
+        <RunResultReceiptCard receipt={resultQuery.data} />
+      ) : resultQuery.isError ? (
+        <div role="alert" className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:flex-row sm:items-center sm:justify-between">
+          <span>Result Receipt 暂时不可用；现有阶段与产物记录不受影响。</span>
+          <Button variant="outline" className="shrink-0 bg-white" onClick={() => void resultQuery.refetch()}>
+            <RefreshCw className="h-4 w-4" aria-hidden />
+            重新加载
+          </Button>
+        </div>
+      ) : (
+        <Card className="border-slate-200 bg-white shadow-none">
+          <CardContent className="flex items-center gap-2 p-4 text-sm text-slate-500">
+            <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
+            正在汇总 Result Receipt…
+          </CardContent>
+        </Card>
+      )}
+
       {run.changeContract ? (
         <ChangeContractSummary
           contract={run.changeContract}
@@ -457,6 +651,7 @@ export function RunPage({
       ) ? (
         <HumanDecisionOverview
           summary={humanDecisions}
+          readOnly={sessionRunCompleted}
           onOpenPhase={openDecisionPhase}
         />
       ) : null}
@@ -498,6 +693,7 @@ export function RunPage({
           <TicketBoard
             runId={runId}
             ticketId={ticketId}
+            readOnly={sessionRunCompleted}
             onOpenTicket={onOpenTicket}
             onCloseTicket={onCloseTicket}
           />
@@ -519,10 +715,14 @@ export function RunPage({
                 phase={selectedPhase}
                 phases={phases}
                 hasChangeContract={Boolean(run.changeContract)}
+                allowMissingUpstreamInputs={run.executionModel === "flexible" && run.targetPhaseId === selectedPhase.phaseId}
                 outputKeysByPhase={outputKeysByPhase}
                 definition={selectedDefinition}
                 role={selectedRole}
                 decisionGate={selectedDecisionGate}
+                sessionAudit={sessionAudit}
+                sessionRoutePending={sessionRouteUnverified}
+                sessionRunCompleted={sessionRunCompleted}
                 architectureImpactAvailable={
                   selectedPhase.phaseId === "architecture"
                   && selectedPhase.status === "ready"
@@ -536,9 +736,10 @@ export function RunPage({
                   && !selectedPhase.resolution
                   && isFirstPhaseImpactAttempt(selectedPhase)
                 }
-                onExecute={(initialOutputKeys) =>
-                  setExecuteTarget({ phaseId: selectedPhase.phaseId, initialOutputKeys })
-                }
+                onExecute={(initialOutputKeys) => requestPhaseExecution({
+                  phaseId: selectedPhase.phaseId,
+                  initialOutputKeys,
+                })}
                 onReview={(initialArtifactId) =>
                   setReviewTarget({ phaseId: selectedPhase.phaseId, initialArtifactId })
                 }
@@ -552,7 +753,7 @@ export function RunPage({
                   e2eFlowQuery.data?.state === "awaiting_verification_review"
                   && !e2eFlowLoadError
                 }
-                verificationE2ePanel={selectedPhase.phaseId === "verification" && project.sourceKind === "remote-git" ? (
+                verificationE2ePanel={sessionRunCompleted ? undefined : selectedPhase.phaseId === "verification" && project.sourceKind === "remote-git" ? (
                   <CloudVerificationBoundary />
                 ) : selectedPhase.phaseId === "verification" ? (
                   <VerificationE2ePanel
@@ -566,6 +767,7 @@ export function RunPage({
                       || e2eWorkspaceQuery.isFetching
                       || preflightE2eMutation.isPending
                       || prepareE2eMutation.isPending
+                      || sessionRouteUnverified
                     }
                     error={e2eFlowErrorMessage(
                       e2eFlowQuery.error,
@@ -585,12 +787,12 @@ export function RunPage({
                     }}
                     onPrepareWorkspace={() => prepareE2eMutation.mutate()}
                     onPreflight={() => preflightE2eMutation.mutate()}
-                    onAuthor={() => setExecuteTarget({
+                    onAuthor={() => requestPhaseExecution({
                       phaseId: "verification",
                       verificationAction: "author_e2e",
                     })}
                     onReviewScript={() => setE2eScriptReviewOpen(true)}
-                    onExecute={() => setExecuteTarget({
+                    onExecute={() => requestPhaseExecution({
                       phaseId: "verification",
                       verificationAction: "run_e2e",
                     })}
@@ -598,17 +800,22 @@ export function RunPage({
                   />
                 ) : undefined}
               />
-              <EventTimeline phase={selectedPhase} />
+              <EventTimeline
+                phase={selectedPhase}
+                sessionAudit={sessionAudit}
+                sessionRoutePending={sessionRouteUnverified}
+              />
             </div>
           ) : null}
 
-          {executePhase ? (
+          {!sessionRouteUnverified && !sessionAudit && executePhase ? (
             <ExecuteDialog
               runId={runId}
               runTitle={run.title}
               phase={executePhase}
               phases={phases}
               hasChangeContract={Boolean(run.changeContract)}
+              allowMissingUpstreamInputs={run.executionModel === "flexible" && run.targetPhaseId === executePhase.phaseId}
               outputKeysByPhase={outputKeysByPhase}
               workType={run.changeContract?.workType}
               hasEvidenceRefs={Boolean(run.changeContract?.evidenceRefs.length)}
@@ -640,18 +847,19 @@ export function RunPage({
                 FALLBACK_PHASES[0]
               }
               decisionGate={reviewDecisionGate}
+              readOnly={sessionRunCompleted}
               open
               onOpenChange={(open) => !open && setReviewTarget(undefined)}
               onRerunArtifact={(artifactKey) => {
                 setReviewTarget(undefined);
-                setExecuteTarget({
+                requestPhaseExecution({
                   phaseId: reviewPhase.phaseId,
                   initialOutputKeys: [artifactKey],
                 });
               }}
               onRerunOutputs={(artifactKeys) => {
                 setReviewTarget(undefined);
-                setExecuteTarget({
+                requestPhaseExecution({
                   phaseId: reviewPhase.phaseId,
                   initialOutputKeys: artifactKeys,
                 });
@@ -660,7 +868,7 @@ export function RunPage({
               onDecisionSaved={(phaseId) => {
                 setReviewTarget(undefined);
                 setSelectedPhaseId(phaseId);
-                setExecuteTarget({ phaseId });
+                requestPhaseExecution({ phaseId });
               }}
             />
           ) : null}
@@ -704,6 +912,123 @@ function workspaceStateLabel(state: NonNullable<WorkflowRun["workspaceState"]>):
     destroyed: "已回收",
   };
   return labels[state];
+}
+
+function RunResultReceiptCard({ receipt }: { receipt: RunResultReceipt }) {
+  const outcomeLabels: Record<RunResultReceipt["outcome"], string> = {
+    pending: "已就绪",
+    running: "执行中",
+    blocked: "等待复核",
+    failed: "执行失败",
+    completed: "已完成",
+  };
+  const outcomeVariants: Record<
+    RunResultReceipt["outcome"],
+    "muted" | "info" | "warning" | "danger" | "success"
+  > = {
+    pending: "muted",
+    running: "info",
+    blocked: "warning",
+    failed: "danger",
+    completed: "success",
+  };
+  const changedPathCount = receipt.files.created.length
+    + receipt.files.modified.length
+    + receipt.files.deleted.length;
+  const pathGroups = [
+    ["新增", receipt.files.created],
+    ["修改", receipt.files.modified],
+    ["删除", receipt.files.deleted],
+  ] as const;
+  const receiptMetrics = [
+    { label: "项目路径", value: changedPathCount, icon: GitBranch },
+    { label: "阶段产物", value: receipt.artifacts.length, icon: FileText },
+    { label: "执行记录", value: receipt.executions.length, icon: TerminalSquare },
+    { label: "验证执行", value: receipt.tests.totalExecutions, icon: FlaskConical },
+  ];
+
+  return (
+    <Card className="overflow-hidden border-teal-100 bg-gradient-to-br from-white via-white to-teal-50/60 shadow-sm">
+      <CardHeader className="flex-row items-start justify-between gap-4 border-b border-teal-100/80 p-5 sm:p-6">
+        <div>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <FileCheck2 className="h-4 w-4 text-teal-700" aria-hidden />
+            Result Receipt
+          </CardTitle>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{receipt.summary}</p>
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          <Badge variant={outcomeVariants[receipt.outcome]}>{outcomeLabels[receipt.outcome]}</Badge>
+          <span className="text-[10px] text-slate-400">v{receipt.resultReceiptVersion}</span>
+        </div>
+      </CardHeader>
+      <CardContent className="p-5 sm:p-6">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {receiptMetrics.map(({ label, value, icon: Icon }) => (
+            <div key={label} className="rounded-xl border border-slate-200 bg-white/85 p-3">
+              <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
+                <Icon className="h-3.5 w-3.5 text-teal-700" aria-hidden />
+                {label}
+              </div>
+              <div className="mt-2 text-xl font-bold text-slate-950">{value}</div>
+            </div>
+          ))}
+        </div>
+
+        {changedPathCount > 0 ? (
+          <div className="mt-4 grid gap-3 lg:grid-cols-3">
+            {pathGroups.map(([label, paths]) => (
+              <div key={label} className="rounded-xl border border-slate-200 bg-white/75 p-3">
+                <div className="text-xs font-semibold text-slate-700">{label} · {paths.length}</div>
+                <div className="mt-2 space-y-1">
+                  {paths.slice(0, 5).map((filePath) => (
+                    <div key={filePath} className="truncate font-mono text-[10px] text-slate-500" title={filePath}>
+                      {filePath}
+                    </div>
+                  ))}
+                  {paths.length > 5 ? (
+                    <div className="text-[10px] text-slate-400">另有 {paths.length - 5} 项</div>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+          <div className="rounded-xl border border-slate-200 bg-white/75 p-4">
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+              <ShieldCheck className="h-4 w-4 text-teal-700" aria-hidden />
+              风险与环境
+            </div>
+            <p className="mt-2 text-xs leading-5 text-slate-500">
+              Workspace：{receipt.environment.workspaceState
+                ? workspaceStateLabel(receipt.environment.workspaceState)
+                : "未请求独立环境"}
+            </p>
+            {receipt.risks.length > 0 ? (
+              <div className="mt-2 space-y-1 text-xs leading-5 text-amber-800">
+                {receipt.risks.map((risk) => <div key={risk}>• {risk}</div>)}
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-emerald-700">当前没有已记录风险。</p>
+            )}
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white/75 p-4">
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+              <ArrowRight className="h-4 w-4 text-teal-700" aria-hidden />
+              后续建议
+            </div>
+            <div className="mt-2 space-y-1 text-xs leading-5 text-slate-600">
+              {receipt.recommendations.map((recommendation) => (
+                <div key={recommendation}>• {recommendation}</div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 function e2eFlowErrorMessage(...errors: unknown[]): string | undefined {
@@ -918,9 +1243,11 @@ function normalizePhases(phases: PhaseRun[], definitions?: PhaseDefinition[]): P
 
 function HumanDecisionOverview({
   summary,
+  readOnly = false,
   onOpenPhase,
 }: {
   summary: HumanDecisionSummary;
+  readOnly?: boolean;
   onOpenPhase: (phaseId: HumanDecisionPhaseId) => void;
 }) {
   const visibleGates = summary.phases.filter(
@@ -942,9 +1269,13 @@ function HumanDecisionOverview({
                 <MessageSquare className="h-4 w-4" aria-hidden />
               </span>
               <div>
-                <CardTitle className="text-base">决定与待办</CardTitle>
+                <CardTitle className="text-base">
+                  {readOnly ? "未关闭的决定与待办历史" : "决定与待办"}
+                </CardTitle>
                 <p className="mt-0.5 text-xs leading-5 text-slate-600">
-                  这里才是你需要处理的入口。回答决定或进入来源阶段；底层 Markdown 会由对应角色更新。
+                  {readOnly
+                    ? "这条 Session Run 已完成；以下遗留项只用于审计查看，不能再处理、改写产物或重新打开流程。"
+                    : "这里才是你需要处理的入口。回答决定或进入来源阶段；底层 Markdown 会由对应角色更新。"}
                 </p>
               </div>
             </div>
@@ -961,7 +1292,10 @@ function HumanDecisionOverview({
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
             <span>
               发现旧流程不一致：{summary.inconsistentPhaseIds.map((phaseId) => HUMAN_DECISION_PHASE_LABELS[phaseId]).join("、")}
-              已显示为“通过”，但正式产物里仍有未关闭事项。请处理后让对应角色重新生成，不要继续向下游推进。
+              已显示为“通过”，但正式产物里仍有未关闭事项。
+              {readOnly
+                ? " 这条记录现仅保留为完成态审计历史。"
+                : " 请处理后让对应角色重新生成，不要继续向下游推进。"}
             </span>
           </div>
         ) : null}
@@ -974,6 +1308,7 @@ function HumanDecisionOverview({
           <button
             key={gate.phaseId}
             type="button"
+            aria-label={`${readOnly ? "查看未关闭历史" : "处理决定与待办"} · ${HUMAN_DECISION_PHASE_LABELS[gate.phaseId]}`}
             onClick={() => onOpenPhase(gate.phaseId)}
             className={cn(
               "rounded-xl border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500",
@@ -1005,6 +1340,11 @@ function HumanDecisionOverview({
             )}>
               {humanDecisionGateHeadline(gate)}
             </p>
+            {readOnly ? (
+              <div className="mt-2 text-[10px] font-semibold text-slate-500">
+                查看未关闭历史 · 只读
+              </div>
+            ) : null}
             <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
               {gate.decisionCount > 0 ? <Badge variant="warning">你决定 {gate.decisionCount}</Badge> : null}
               {gate.workCount > 0 ? <Badge variant="info">角色补做 {gate.workCount}</Badge> : null}
@@ -1091,7 +1431,7 @@ function WorkflowBoard({
                   <div className="mt-0.5 truncate text-[11px] text-slate-500">{role?.name ?? definition.owner}</div>
                   <div className="mt-3 flex items-center gap-1.5 text-[10px] font-semibold text-slate-600">
                     <span className={cn("h-1.5 w-1.5 rounded-full", style.dot, phase.status === "running" && "animate-pulse")} />
-                    {STATUS_LABELS[phase.status] ?? phase.status}
+                    {phaseStatusLabel(phase.status, phase.executions[0]?.command)}
                   </div>
                   {phase.resolution ? (
                     <div className="mt-2 truncate rounded-md bg-white/75 px-2 py-1 text-[10px] font-semibold text-teal-700 ring-1 ring-slate-200/80">
@@ -1124,10 +1464,14 @@ function PhasePanel({
   phase,
   phases,
   hasChangeContract,
+  allowMissingUpstreamInputs = false,
   outputKeysByPhase,
   definition,
   role,
   decisionGate,
+  sessionAudit = false,
+  sessionRoutePending = false,
+  sessionRunCompleted = false,
   architectureImpactAvailable,
   routedImpactCheckAvailable,
   onExecute,
@@ -1142,10 +1486,14 @@ function PhasePanel({
   phase: PhaseRun;
   phases: PhaseRun[];
   hasChangeContract: boolean;
+  allowMissingUpstreamInputs?: boolean;
   outputKeysByPhase: Partial<Record<string, string[]>>;
   definition: PhaseDefinition;
   role: RoleDefinition;
   decisionGate?: PhaseHumanDecisionGate;
+  sessionAudit?: boolean;
+  sessionRoutePending?: boolean;
+  sessionRunCompleted?: boolean;
   architectureImpactAvailable?: boolean;
   routedImpactCheckAvailable?: boolean;
   onExecute: (initialOutputKeys?: string[]) => void;
@@ -1159,13 +1507,16 @@ function PhasePanel({
 }) {
   const Icon = roleIcons[role.id] ?? Bot;
   const style = statusStyle[phase.status] ?? statusStyle.pending;
-  const effectiveInputs = effectiveRequiredInputKeys(
-    definition.inputs,
-    phases,
-    { hasChangeContract, outputKeysByPhase },
-  );
+  const effectiveInputs = allowMissingUpstreamInputs
+    ? []
+    : effectiveRequiredInputKeys(
+      definition.inputs,
+      phases,
+      { hasChangeContract, outputKeysByPhase },
+    );
   const canExecute = ["ready", "changes_requested", "rejected", "failed"].includes(phase.status)
-    && !resolutionIsReadOnly(phase.resolution);
+    && !resolutionIsReadOnly(phase.resolution)
+    && !sessionRunCompleted;
   const canReview = phase.status === "awaiting_review";
   const canReviseArtifacts = [
     "ready",
@@ -1179,7 +1530,8 @@ function PhasePanel({
     phase.artifacts.length > 0
     && canReviseArtifacts
     && !resolutionIsReadOnly(phase.resolution)
-    && phase.architectureImpact?.mode !== "reuse";
+    && phase.architectureImpact?.mode !== "reuse"
+    && !sessionRunCompleted;
   const standardVerificationExecutionLocked = phase.phaseId === "verification"
     && standardVerificationLocked;
   const linkedVerificationReviewLocked = phase.phaseId === "verification"
@@ -1224,7 +1576,9 @@ function PhasePanel({
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <CardTitle className="text-lg">{getPhaseName(definition)}</CardTitle>
-                <Badge variant={style.badge}>{STATUS_LABELS[phase.status]}</Badge>
+                <Badge variant={style.badge}>
+                  {phaseStatusLabel(phase.status, phase.executions[0]?.command)}
+                </Badge>
               </div>
               <p className="mt-1 text-sm font-medium text-teal-700">{role.name}</p>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{role.mission}</p>
@@ -1232,15 +1586,27 @@ function PhasePanel({
           </div>
           <div className="flex flex-wrap justify-end gap-2">
             {canExecute && !standardVerificationExecutionLocked ? (
-              <Button variant="primary" onClick={() => onExecute()}>
-                {showsImpactAction ? (
+              <Button
+                variant="primary"
+                disabled={sessionRoutePending}
+                onClick={() => onExecute()}
+              >
+                {sessionRoutePending ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
+                ) : sessionAudit ? (
+                  <ArrowLeft className="h-4 w-4" aria-hidden />
+                ) : showsImpactAction ? (
                   <GitBranch className="h-4 w-4" />
                 ) : phase.status === "ready" ? (
                   <Play className="h-4 w-4" />
                 ) : (
                   <RotateCcw className="h-4 w-4" />
                 )}
-                {showsRoutedImpactAction
+                {sessionRoutePending
+                  ? "正在验证 Session 归属"
+                  : sessionAudit
+                  ? "返回 Session 继续"
+                  : showsRoutedImpactAction
                   ? phaseImpactActionLabel(phase.phaseId as RoutedImpactPhaseId)
                   : showsArchitectureImpactAction
                     ? "检查架构影响"
@@ -1273,9 +1639,21 @@ function PhasePanel({
               </Button>
             ) : null}
             {canRerun && !canExecute && !standardVerificationExecutionLocked ? (
-              <Button variant="outline" onClick={() => onExecute()}>
-                <RotateCcw className="h-4 w-4" aria-hidden />
-                {phase.phaseId === "implementation"
+              <Button
+                variant="outline"
+                disabled={sessionRoutePending}
+                onClick={() => onExecute()}
+              >
+                {sessionRoutePending
+                  ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
+                  : sessionAudit
+                  ? <ArrowLeft className="h-4 w-4" aria-hidden />
+                  : <RotateCcw className="h-4 w-4" aria-hidden />}
+                {sessionRoutePending
+                  ? "正在验证 Session 归属"
+                  : sessionAudit
+                  ? "返回 Session 继续"
+                  : phase.phaseId === "implementation"
                   ? "重新实施并刷新全部证据"
                   : phase.phaseId === "verification"
                     ? "普通重跑（无需真实浏览器 E2E）"
@@ -1287,7 +1665,13 @@ function PhasePanel({
       </CardHeader>
       <CardContent className="p-5 sm:p-6">
         {phase.phaseId === "implementation" ? (
-          <div className="mb-5"><EngineeringFlowGuide /></div>
+          <div className="mb-5">
+            <EngineeringFlowGuide
+              executorLabel={sessionAudit
+                ? "当前 Session Agent"
+                : sessionRoutePending ? "归属验证后的执行器" : undefined}
+            />
+          </div>
         ) : null}
         {phase.phaseId === "verification" ? (
           <div className="mb-5"><TesterFlowGuide /></div>
@@ -1350,9 +1734,20 @@ function PhasePanel({
                 审核设计并继续
               </Button>
             ) : canExecute ? (
-              <Button variant="outline" className="shrink-0 bg-white" onClick={() => onExecute()}>
-                <RotateCcw className="h-4 w-4" aria-hidden />
-                整理交接并进入审核
+              <Button
+                variant="outline"
+                className="shrink-0 bg-white"
+                disabled={sessionRoutePending}
+                onClick={() => onExecute()}
+              >
+                {sessionRoutePending
+                  ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
+                  : sessionAudit
+                  ? <ArrowLeft className="h-4 w-4" aria-hidden />
+                  : <RotateCcw className="h-4 w-4" aria-hidden />}
+                {sessionRoutePending
+                  ? "正在验证 Session 归属"
+                  : sessionAudit ? "返回 Session 继续" : "整理交接并进入审核"}
               </Button>
             ) : null}
           </div>
@@ -1376,23 +1771,48 @@ function PhasePanel({
             <div className="flex min-w-0 items-start gap-3">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
               <div>
-                <div className="font-semibold">{humanDecisionGateHeadline(decisionGate)}</div>
+                <div className="font-semibold">
+                  {sessionRunCompleted
+                    ? "已完成 Run 中仍有未关闭历史"
+                    : humanDecisionGateHeadline(decisionGate)}
+                </div>
                 <p className="mt-1 text-xs leading-5">
-                  {decisionGate.decisionCount > 0 ? `需要你决定 ${decisionGate.decisionCount} 项。` : ""}
-                  {decisionGate.workCount > 0 ? ` ${role.name} 还要补做 ${decisionGate.workCount} 项。` : ""}
-                  {decisionGate.dependencyCount > 0 ? ` 另有 ${decisionGate.dependencyCount} 项应回到上游处理。` : ""}
+                  {sessionRunCompleted ? (
+                    "这些条目只保留用于审计，不能再处理、重新运行角色或改写完成态历史。"
+                  ) : (
+                    <>
+                      {decisionGate.decisionCount > 0 ? `需要你决定 ${decisionGate.decisionCount} 项。` : ""}
+                      {decisionGate.workCount > 0 ? ` ${role.name} 还要补做 ${decisionGate.workCount} 项。` : ""}
+                      {decisionGate.dependencyCount > 0 ? ` 另有 ${decisionGate.dependencyCount} 项应回到上游处理。` : ""}
+                    </>
+                  )}
                 </p>
               </div>
             </div>
             <Button
               variant="outline"
               className="shrink-0 bg-white"
-              onClick={() => decisionActionRunsRole ? onExecute() : onReview()}
+              disabled={sessionRoutePending && decisionActionRunsRole}
+              onClick={() => sessionRunCompleted
+                ? onReview()
+                : decisionActionRunsRole ? onExecute() : onReview()}
             >
-              {decisionActionRunsRole
-                ? <RotateCcw className="h-4 w-4" aria-hidden />
+              {sessionRunCompleted
+                ? <Eye className="h-4 w-4" aria-hidden />
+                : decisionActionRunsRole
+                ? sessionRoutePending
+                  ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
+                  : sessionAudit
+                  ? <ArrowLeft className="h-4 w-4" aria-hidden />
+                  : <RotateCcw className="h-4 w-4" aria-hidden />
                 : <MessageSquare className="h-4 w-4" aria-hidden />}
-              {decisionActionRunsRole ? `运行 ${role.name} 处理清单` : "处理决定与待办"}
+              {sessionRunCompleted
+                ? "查看未关闭历史"
+                : decisionActionRunsRole
+                ? sessionRoutePending
+                  ? "正在验证 Session 归属"
+                  : sessionAudit ? "返回 Session 继续" : `运行 ${role.name} 处理清单`
+                : "处理决定与待办"}
             </Button>
           </div>
         ) : null}
@@ -1400,17 +1820,22 @@ function PhasePanel({
           <div className="mb-5 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
             <span>
-              上游变化已使旧处置失效。本版本保留历史审核与执行记录，因此本阶段当前只支持完整重跑；
-              如需重新 Skip / Reuse / Partial，请新建 Run 重新评估。
+              {sessionAudit
+                ? "上游变化已使旧处置失效。历史审核与执行记录仍会保留；请返回原 Session，让当前 Agent 完整更新本阶段。"
+                : "上游变化已使旧处置失效。本版本保留历史审核与执行记录，因此本阶段当前只支持完整重跑；如需重新 Skip / Reuse / Partial，请新建 Run 重新评估。"}
             </span>
           </div>
         ) : null}
         {phase.status === "running" ? (
           <div role="status" aria-live="polite" className="mb-5 flex items-center gap-3 rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-800">
             <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
-            {phase.phaseId === "implementation"
-              ? "Codex 正在写代码、补测试、运行检查并生成工程证据。页面会自动刷新状态和终端事件。"
-              : "Agent 正在隔离工作区中执行。页面会自动刷新状态和运行事件。"}
+            {sessionRoutePending
+              ? "正在验证 URL 中的 Agent Session 归属；确认完成前不会启用任何 Session 或独立执行入口。"
+              : sessionAudit
+              ? "当前 Agent Session 正沿用所选 Provider 与有界会话历史推进。页面会自动刷新状态和运行事件。"
+              : phase.phaseId === "implementation"
+                ? "Codex 正在写代码、补测试、运行检查并生成工程证据。页面会自动刷新状态和终端事件。"
+                : "Agent 正在隔离工作区中执行。页面会自动刷新状态和运行事件。"}
           </div>
         ) : null}
         {(phase.status === "changes_requested" || phase.status === "rejected")
@@ -1505,10 +1930,21 @@ function PhasePanel({
                         <Eye className="h-3.5 w-3.5" aria-hidden />
                         查看
                       </Button>
-                      {!isSuperseded && canReviseArtifacts && !isImpactReadOnly ? (
-                        <Button size="sm" variant="ghost" onClick={() => onExecute([artifactKey])}>
-                          <RotateCcw className="h-3.5 w-3.5" aria-hidden />
-                          仅重跑此产物
+                      {!sessionRunCompleted && !isSuperseded && canReviseArtifacts && !isImpactReadOnly ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={sessionRoutePending}
+                          onClick={() => onExecute([artifactKey])}
+                        >
+                          {sessionRoutePending
+                            ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                            : sessionAudit
+                            ? <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
+                            : <RotateCcw className="h-3.5 w-3.5" aria-hidden />}
+                          {sessionRoutePending
+                            ? "正在验证 Session 归属"
+                            : sessionAudit ? "返回 Session 继续" : "仅重跑此产物"}
                         </Button>
                       ) : null}
                     </div>
@@ -1604,7 +2040,15 @@ function ContractBlock({
   );
 }
 
-function EventTimeline({ phase }: { phase: PhaseRun }) {
+function EventTimeline({
+  phase,
+  sessionAudit = false,
+  sessionRoutePending = false,
+}: {
+  phase: PhaseRun;
+  sessionAudit?: boolean;
+  sessionRoutePending?: boolean;
+}) {
   const events = [...(phase.events ?? [])].sort((a, b) => {
     const byTime = String(b.createdAt ?? b.timestamp ?? "").localeCompare(
       String(a.createdAt ?? a.timestamp ?? ""),
@@ -1681,7 +2125,7 @@ function EventTimeline({ phase }: { phase: PhaseRun }) {
                   ) : null}
                   <span className="relative z-10 mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full border-2 border-white bg-teal-500 ring-1 ring-slate-200" />
                   <div className="min-w-0 flex-1">
-                    <div className="text-xs leading-5 text-slate-700">{eventMessage(event)}</div>
+                    <div className="text-xs leading-5 text-slate-700">{phaseRunEventMessage(event)}</div>
                     <div className="mt-1 flex items-center gap-1 text-[10px] text-slate-400">
                       <Clock3 className="h-3 w-3" aria-hidden />
                       {formatDate(event.createdAt || event.timestamp)}
@@ -1693,30 +2137,15 @@ function EventTimeline({ phase }: { phase: PhaseRun }) {
           ) : (
             <EmptyState
               title="等待执行事件"
-              description="运行这个角色后，Codex 的命令与阶段事件会显示在这里。"
+              description={sessionRoutePending
+                ? "正在验证 Agent Session 归属；确认后再显示对应执行上下文。"
+                : sessionAudit
+                ? "返回 Agent Session 继续后，Provider-native 阶段事件会显示在这里。"
+                : "运行这个角色后，Codex 的命令与阶段事件会显示在这里。"}
             />
           )}
         </div>
       </CardContent>
     </Card>
   );
-}
-
-function eventMessage(event: RunEvent) {
-  if (event.message) return event.message;
-  if (event.payload && typeof event.payload === "object") {
-    const payload = event.payload as Record<string, unknown>;
-    const candidate = payload.message || payload.text || payload.summary || payload.command;
-    if (typeof candidate === "string") return candidate;
-    if (payload.item && typeof payload.item === "object") {
-      const item = payload.item as Record<string, unknown>;
-      const itemText = item.text || item.command || item.name;
-      if (typeof itemText === "string") return itemText;
-      if (typeof item.type === "string") {
-        const status = typeof item.status === "string" ? ` · ${item.status}` : "";
-        return `${item.type}${status}`;
-      }
-    }
-  }
-  return event.eventType || event.type || "执行事件";
 }

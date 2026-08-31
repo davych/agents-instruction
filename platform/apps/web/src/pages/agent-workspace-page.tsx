@@ -23,6 +23,7 @@ import {
   MessageSquarePlus,
   PackageCheck,
   Play,
+  RefreshCw,
   Send,
   Settings2,
   ShieldAlert,
@@ -40,9 +41,14 @@ import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import { artifactReviewHeadKey, currentArtifactHeadIds } from "@/lib/artifact-review";
+import {
+  artifactReviewHeadKey,
+  currentArtifactHeadIds,
+  updateArchitectureSelectionMarker,
+} from "@/lib/artifact-review";
 import {
   conversationFailureEvents,
+  latestAgentSessionRunPointer,
   mergeDismissedAgentFailureEventIds,
   readDismissedAgentFailureEventIds,
   visibleConversationActivityEvents,
@@ -51,12 +57,14 @@ import {
 import type {
   AgentEvent,
   AgentHumanGate,
+  AgentRunPhaseId,
   AgentSession,
   Artifact,
   AskProviderId,
   AskProviderStatus,
   DeepWikiGeneration,
   McpInstallationSummary,
+  PhaseHumanDecisionGate,
   Project,
   ProjectAgentSettings,
   PhaseRun,
@@ -65,6 +73,18 @@ import type {
 } from "@/lib/types";
 import { cn, formatDate } from "@/lib/utils";
 import { providerEnabled, providerSelectionState } from "@/lib/provider-settings";
+import { humanDecisionKindLabel, isCurrentRoleRepairGate } from "@/lib/human-decisions";
+import { effectiveRequiredInputKeys } from "@/lib/phase-impact";
+import {
+  architectureOptionSummaries,
+  architectureSelectionFromReviews,
+  parseArchitectureSelectionId,
+} from "@/lib/phase-output-selection";
+import {
+  latestFailedPhaseExecutionError,
+  latestPhaseExecution,
+  latestPhaseExecutionProgress,
+} from "@/lib/session-run-failure";
 
 const SDLC_ROLES = [
   { phaseId: "discovery", role: "PM / BA", label: "需求确认", artifacts: "Change Contract、PRD、Stories", icon: FileText },
@@ -137,8 +157,13 @@ export function AgentWorkspacePage({
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const [archiveCandidate, setArchiveCandidate] = useState<AgentSession>();
   const [archiveError, setArchiveError] = useState<string>();
+  const [reviewAnnouncement, setReviewAnnouncement] = useState("");
+  const [failureAnnouncement, setFailureAnnouncement] = useState("");
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const conversationEndRef = useRef<HTMLDivElement>(null);
+  const runStatusRef = useRef<HTMLDivElement>(null);
+  const announcedReviewRef = useRef<string>();
+  const announcedFailureRef = useRef<string>();
   const creationRequestedRef = useRef(false);
   const createInFlightRef = useRef<string>();
   const createSessionIntentRef = useRef<{
@@ -407,37 +432,106 @@ export function AgentWorkspacePage({
     sendMutation.mutate(message);
   };
 
-  const runId = [...(session?.events ?? [])]
-    .reverse()
-    .find(({ workflowRunId }) => workflowRunId)?.workflowRunId ?? undefined;
+  const runPointer = latestAgentSessionRunPointer(session);
+  const runId = runPointer?.workflowRunId;
   const runQuery = useQuery({
     queryKey: ["run", runId],
     queryFn: () => api.getRun(runId!),
     enabled: Boolean(runId),
     refetchInterval: (query) => query.state.data?.run.status === "active" ? 2_000 : false,
   });
+  const runStatusSignature = runQuery.data
+    ? `${runQuery.data.run.status}:${runQuery.data.phases
+        .map(({ phaseId, status }) => `${phaseId}:${status}`)
+        .join("|")}`
+    : undefined;
+  useEffect(() => {
+    if (!sessionId || !runStatusSignature) return;
+    // A phase executes after the initiating chat turn has already become idle.
+    // Refresh the Session projection whenever Run state changes so the
+    // completion/failure and human-review events appear in this conversation.
+    void sessionQuery.refetch();
+    const settleRefresh = globalThis.setTimeout(() => {
+      void sessionQuery.refetch();
+    }, 750);
+    return () => globalThis.clearTimeout(settleRefresh);
+  }, [runStatusSignature, sessionId]);
+  const humanDecisionsQuery = useQuery({
+    queryKey: ["run", runId, "human-decisions"],
+    queryFn: () => api.getHumanDecisions(runId!),
+    enabled: Boolean(runId),
+    refetchInterval: runQuery.data?.run.status === "active" ? 2_000 : false,
+  });
   const awaitingReviewPhase = runQuery.data?.phases.find(
     ({ status }) => status === "awaiting_review",
   );
+  const visibleDecisionPhase = runQuery.data
+    ? sessionRunCurrentPhase(runQuery.data)
+    : undefined;
+  const currentDecisionGate = humanDecisionsQuery.data?.phases.find(
+    ({ phaseId }) => phaseId === visibleDecisionPhase?.phaseId,
+  );
+  const awaitingReviewKey = awaitingReviewPhase && runId
+    ? `${runId}:${awaitingReviewPhase.id ?? awaitingReviewPhase.phaseId}:${artifactHeadsSignature(awaitingReviewPhase.artifacts)}`
+    : undefined;
+  const failedPhase = runQuery.data
+    ? sessionRunCurrentPhase(runQuery.data)
+    : undefined;
+  const latestFailedExecution = failedPhase?.status === "failed"
+    ? latestPhaseExecution(failedPhase.executions ?? [])
+    : undefined;
+  const failedExecutionKey = failedPhase && latestFailedExecution && runId
+    ? `${runId}:${failedPhase.phaseId}:${latestFailedExecution.id}`
+    : undefined;
+  const canAdvanceRun = Boolean(
+    selectedProvider
+    && providerEnabled(selectedProvider)
+    && selectedProvider.capabilities.toolCalling,
+  );
 
-  const continueApprovedRun = async (approvedPhaseId: string) => {
+  useEffect(() => {
+    if (!awaitingReviewKey || announcedReviewRef.current === awaitingReviewKey) return;
+    announcedReviewRef.current = awaitingReviewKey;
+    const currentHeads = currentArtifactHeads(awaitingReviewPhase!.artifacts);
+    const revisions = currentHeads.map(({ revision }) => `v${revision ?? 1}`).join("、");
+    setReviewAnnouncement(
+      `${phaseRoleName(awaitingReviewPhase!.phaseId)} 已生成 ${currentHeads.length} 份产物${revisions ? `（${revisions}）` : ""}，正在等待你的审核。`,
+    );
+    runStatusRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [awaitingReviewKey, awaitingReviewPhase]);
+
+  useEffect(() => {
+    if (!failedExecutionKey || !failedPhase) return;
+    if (announcedFailureRef.current === failedExecutionKey) return;
+    announcedFailureRef.current = failedExecutionKey;
+    setFailureAnnouncement(
+      `${phaseRoleName(failedPhase.phaseId)} 执行失败；Run、此前产物与审计记录仍保留，可以在当前 Session 查看错误并重试。`,
+    );
+    runStatusRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [failedExecutionKey, failedPhase]);
+
+  const advanceSessionRun = async (expectedPhaseId: AgentRunPhaseId) => {
     if (!session || session.status !== "active" || !runId) throw new Error("当前会话或 Run 已变化，请刷新后继续。");
+    if (!selectedProviderId || !selectedProvider || !providerEnabled(selectedProvider) || !selectedProvider.capabilities.toolCalling) {
+      throw new Error("当前 Provider 不支持 Agent 工具调用。产物审核不受影响；请切换 Provider 后再继续 Run。");
+    }
     const latestSession = await api.getAgentSession(session.id);
     queryClient.setQueryData(["agent-session", latestSession.id], latestSession);
     if (latestSession.turnState !== "idle") {
-      throw new Error("会话正在处理另一条消息；阶段已经批准，请稍后发送“继续当前 Run”。");
+      throw new Error("会话正在处理另一项操作；阶段状态已保留，请稍后继续当前 Run。");
     }
-    const updated = await api.sendAgentMessage(latestSession.id, {
-      clientMessageId: crypto.randomUUID(),
-      expectedSequence: latestSession.lastMessageSequence,
-      content: `继续当前 Run。${approvedPhaseId} 已批准，请按固定顺序启动下一角色并沿用已批准产物，不要创建新 Run。`,
-      ...(selectedProviderId ? { providerId: selectedProviderId } : {}),
+    const result = await api.advanceAgentRun(latestSession.id, runId, {
+      expectedPhaseId,
+      providerId: selectedProviderId,
     });
-    queryClient.setQueryData(["agent-session", updated.id], updated);
     await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["agent-session", latestSession.id] }),
       queryClient.invalidateQueries({ queryKey: ["agent-sessions", projectId] }),
       queryClient.invalidateQueries({ queryKey: ["run", runId] }),
     ]);
+    if (result.state === "failed" || result.state === "blocked") {
+      throw new Error(result.reason || "当前阶段没有启动，请检查 Provider 与 Run 状态后重试。");
+    }
   };
 
   if (projectQuery.isLoading || sessionsQuery.isLoading || (sessionId && sessionQuery.isLoading)) {
@@ -672,17 +766,44 @@ export function AgentWorkspacePage({
               {session ? (
                 <ConversationActivity key={session.id} sessionId={session.id} events={session.events ?? []} />
               ) : null}
-              {sessionActive && runId && awaitingReviewPhase ? (
-                <InlinePhaseReviewCard
-                  key={`${awaitingReviewPhase.id ?? awaitingReviewPhase.phaseId}:${artifactHeadsSignature(awaitingReviewPhase.artifacts)}`}
-                  runId={runId}
-                  phase={awaitingReviewPhase}
-                  canContinue={Boolean(selectedProvider && providerEnabled(selectedProvider) && selectedProvider.capabilities.toolCalling)}
-                  conversationBusy={!sessionActive || session?.turnState !== "idle" || sendMutation.isPending}
-                  onBusyChange={setInlineReviewBusy}
-                  onContinue={() => continueApprovedRun(awaitingReviewPhase.phaseId)}
-                  onOpenRun={() => onOpenRun(runId)}
-                />
+              <span className="sr-only" aria-live="assertive">
+                {awaitingReviewKey ? reviewAnnouncement : ""}
+              </span>
+              <span className="sr-only" aria-live="assertive">
+                {failedExecutionKey ? failureAnnouncement : ""}
+              </span>
+              {runId ? (
+                <div ref={runStatusRef}>
+                  <SessionRunStatusCard
+                    key={runId}
+                    runId={runId}
+                    run={runQuery.data}
+                    loading={runQuery.isLoading}
+                    fetching={runQuery.isFetching}
+                    error={runQuery.isError ? runQuery.error : undefined}
+                    decisionGate={currentDecisionGate}
+                    decisionLoading={humanDecisionsQuery.isLoading}
+                    decisionError={humanDecisionsQuery.isError ? humanDecisionsQuery.error : undefined}
+                    canContinue={canAdvanceRun}
+                    providerLabel={selectedProvider
+                      ? `${selectedProvider.label} · ${selectedProvider.model ?? "未选择模型"}`
+                      : runPointer?.providerId ? PROVIDER_NAMES[runPointer.providerId] : "未选择 Provider"}
+                    conversationBusy={!sessionActive || session?.turnState !== "idle" || sendMutation.isPending}
+                    onBusyChange={setInlineReviewBusy}
+                    onContinue={advanceSessionRun}
+                    onRetry={() => void runQuery.refetch()}
+                    onRetryDecisions={() => void humanDecisionsQuery.refetch()}
+                    onOpenRun={() => onOpenRun(runId)}
+                    onOpenProviderSettings={onOpenProviderSettings}
+                  />
+                  <RoleTimeline
+                    compact
+                    session={session}
+                    run={runQuery.data}
+                    runId={runId}
+                    onOpenRun={onOpenRun}
+                  />
+                </div>
               ) : null}
               {(session?.humanGates ?? []).filter(({ status }) => status === "pending").map((gate) => (
                 <UnavailableCapabilityCard key={gate.id} gate={gate} />
@@ -786,6 +907,7 @@ export function AgentWorkspacePage({
         <RoleTimeline
           session={session}
           run={runQuery.data}
+          runId={runId}
           onOpenRun={onOpenRun}
         />
       </div>
@@ -1095,11 +1217,533 @@ function ConversationActivity({ sessionId, events }: { sessionId: string; events
   );
 }
 
+type SessionRunDisplayStatus = PhaseRun["status"] | "loading" | "error" | "completed";
+
+const SESSION_RUN_STATUS_META = {
+  loading: { label: "正在读取", badge: "muted" },
+  error: { label: "状态读取失败", badge: "danger" },
+  pending: { label: "等待上游", badge: "muted" },
+  locked: { label: "尚未解锁", badge: "muted" },
+  ready: { label: "可以继续", badge: "info" },
+  running: { label: "执行中", badge: "info" },
+  awaiting_review: { label: "等待审核", badge: "warning" },
+  approved: { label: "已批准", badge: "success" },
+  changes_requested: { label: "需要修改", badge: "danger" },
+  rejected: { label: "已退回", badge: "danger" },
+  failed: { label: "执行失败", badge: "danger" },
+  completed: { label: "Run 已完成", badge: "success" },
+} as const satisfies Record<SessionRunDisplayStatus, {
+  label: string;
+  badge: "muted" | "danger" | "info" | "warning" | "success";
+}>;
+
+export function sessionRunCurrentPhase(run: RunDetail): PhaseRun | undefined {
+  const position = (phase: PhaseRun) => phase.position
+    ?? SDLC_ROLES.findIndex(({ phaseId }) => phaseId === phase.phaseId);
+  const phases = [...run.phases].sort((left, right) => position(left) - position(right));
+  if (run.run.status === "completed") return phases.at(-1);
+  return phases.find(({ status }) => status !== "approved") ?? phases.at(-1);
+}
+
+export function sessionRunDescription(status: SessionRunDisplayStatus, role: string): string {
+  return {
+    loading: "正在读取后台 Run 的阶段、产物和审核状态。",
+    error: "后台 Run 已保留，但当前状态没有成功载入。",
+    pending: `${role} 正在等待上游产物通过，不能越级执行。`,
+    locked: `${role} 尚未解锁，需要先完成上游阶段。`,
+    ready: `${role} 已就绪，可以沿用当前 Session Provider 继续。`,
+    running: `${role} 正在生成本阶段产物，状态会自动刷新。`,
+    awaiting_review: `${role} 已交付当前产物，请在本对话中查看并决定。`,
+    approved: `${role} 的产物已经批准，可以继续固定顺序中的下一角色。`,
+    changes_requested: `${role} 已收到修改意见，可以在同一 Run 中继续修订。`,
+    rejected: `${role} 已被退回，可以在同一 Run 中重新处理。`,
+    failed: `${role} 上次执行失败；Run 和已有产物仍保留，可以安全重试。`,
+    completed: "六个角色都已通过审核；完整交付证据仍可从高级审计查看。",
+  }[status];
+}
+
+function sessionArchitectureWaiverInputArtifactIds(run: RunDetail): string[] | undefined {
+  const architectureDefinition = run.definition.phases.find(
+    ({ id }) => id === "architecture",
+  );
+  if (!architectureDefinition) return undefined;
+  const outputKeysByPhase = Object.fromEntries(
+    run.definition.phases.map(({ id, outputs }) => [id, outputs]),
+  );
+  const requiredKeys = effectiveRequiredInputKeys(
+    architectureDefinition.inputs,
+    run.phases,
+    {
+      hasChangeContract: Boolean(run.run.changeContract),
+      outputKeysByPhase,
+    },
+  );
+  const approvedHeadsByKey = new Map<string, Artifact>();
+  for (const candidate of run.phases) {
+    if (candidate.status !== "approved") continue;
+    for (const artifact of currentArtifactHeads(candidate.artifacts)) {
+      if (
+        artifact.artifactKey
+        && artifact.reviewStatus === "approved"
+        && requiredKeys.includes(artifact.artifactKey)
+      ) {
+        approvedHeadsByKey.set(artifact.artifactKey, artifact);
+      }
+    }
+  }
+  const selected = requiredKeys.map((key) => approvedHeadsByKey.get(key)?.id);
+  return selected.every((id): id is string => Boolean(id)) ? selected : undefined;
+}
+
+function SessionRunStatusCard({
+  runId,
+  run,
+  loading,
+  fetching,
+  error,
+  decisionGate,
+  decisionLoading,
+  decisionError,
+  canContinue,
+  providerLabel,
+  conversationBusy,
+  onBusyChange,
+  onContinue,
+  onRetry,
+  onRetryDecisions,
+  onOpenRun,
+  onOpenProviderSettings,
+}: {
+  runId: string;
+  run?: RunDetail;
+  loading: boolean;
+  fetching: boolean;
+  error?: unknown;
+  decisionGate?: PhaseHumanDecisionGate;
+  decisionLoading: boolean;
+  decisionError?: unknown;
+  canContinue: boolean;
+  providerLabel: string;
+  conversationBusy: boolean;
+  onBusyChange: (busy: boolean) => void;
+  onContinue: (expectedPhaseId: AgentRunPhaseId) => Promise<void>;
+  onRetry: () => void;
+  onRetryDecisions: () => void;
+  onOpenRun: () => void;
+  onOpenProviderSettings: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [continuing, setContinuing] = useState(false);
+  const [actionError, setActionError] = useState<string>();
+  const phase = run ? sessionRunCurrentPhase(run) : undefined;
+  const completed = Boolean(run && (
+    run.run.status === "completed"
+    || (run.phases.length > 0 && run.phases.every(({ status }) => status === "approved"))
+  ));
+  const displayStatus: SessionRunDisplayStatus = error
+    ? "error"
+    : loading || !run
+      ? "loading"
+      : completed
+        ? "completed"
+        : phase?.status ?? "loading";
+  const meta = SESSION_RUN_STATUS_META[displayStatus];
+  const role = completed ? "全部角色" : phase ? phaseRoleName(phase.phaseId) : "当前角色";
+  const latestExecutionError = latestFailedPhaseExecutionError(phase);
+  const executionProgress = latestPhaseExecutionProgress(phase);
+  const artifactCount = completed && run
+    ? run.phases.reduce((count, candidate) => count + currentArtifactHeads(candidate.artifacts).length, 0)
+    : phase ? currentArtifactHeads(phase.artifacts).length : 0;
+  const approvedCount = run?.phases.filter(({ status }) => status === "approved").length ?? 0;
+  const canStartCurrentPhase = Boolean(!completed && phase && [
+    "ready",
+    "approved",
+    "changes_requested",
+    "rejected",
+    "failed",
+  ].includes(phase.status));
+  const decisionAwarePhase = Boolean(
+    phase
+    && ["awaiting_review", "failed"].includes(phase.status)
+    && ["discovery", "design", "architecture"].includes(phase.phaseId),
+  );
+  const decisionAwareReview = phase?.status === "awaiting_review" && decisionAwarePhase;
+  const decisionsUnavailable = Boolean(decisionAwarePhase && (decisionLoading || decisionError));
+  const decisionsBlocking = Boolean(decisionAwarePhase && decisionGate && decisionGate.blockingCount > 0);
+  const currentRoleRepairOnly = phase?.status === "awaiting_review"
+    && isCurrentRoleRepairGate(decisionGate);
+  const approvalBlocked = decisionsUnavailable || decisionsBlocking;
+  const decisionActionLabel = phase?.phaseId === "architecture" && decisionGate?.decisionCount
+    ? "选择架构方案"
+    : "处理决定与待办";
+  const architectureWaiverInputIds = run
+    ? sessionArchitectureWaiverInputArtifactIds(run)
+    : undefined;
+  const canWaiveArchitecture = Boolean(
+    phase?.phaseId === "architecture"
+    && ["ready", "awaiting_review", "changes_requested", "failed"].includes(phase.status)
+    && !phase.resolution
+    && !phase.architectureImpact
+    && architectureWaiverInputIds,
+  );
+
+  const continueRun = async (phaseId: AgentRunPhaseId) => {
+    setContinuing(true);
+    setActionError(undefined);
+    onBusyChange(true);
+    try {
+      await onContinue(phaseId);
+    } catch (continueError) {
+      const message = continueError instanceof Error ? continueError.message : "Run 没有继续，请重试。";
+      setActionError(message);
+      throw continueError;
+    } finally {
+      setContinuing(false);
+      onBusyChange(false);
+    }
+  };
+
+  const waiveArchitecture = async () => {
+    if (!architectureWaiverInputIds) return;
+    setContinuing(true);
+    setActionError(undefined);
+    onBusyChange(true);
+    try {
+      await api.waiveArchitecture(
+        runId,
+        architectureWaiverInputIds,
+        "Human explicitly confirmed this is a repository content or presentation-layer layout change with no runtime service, API, data, integration, security, deployment, or operational architecture boundary. Prior Architect attempts remain only as superseded audit history.",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["run", runId] });
+      if (canContinue) await onContinue("implementation");
+    } catch (waiverError) {
+      setActionError(waiverError instanceof Error
+        ? waiverError.message
+        : "无需架构决定没有保存，请刷新后重试。");
+    } finally {
+      setContinuing(false);
+      onBusyChange(false);
+    }
+  };
+
+  return (
+    <section
+      className="overflow-hidden rounded-2xl border border-sky-200 bg-white shadow-sm"
+      aria-label="当前 Run 状态"
+      data-run-status={displayStatus}
+    >
+      <div className="border-b border-sky-100 bg-sky-50/70 px-4 py-3.5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-semibold text-slate-950">后台 Run</h3>
+              <Badge variant={meta.badge}>{meta.label}</Badge>
+              {fetching && !loading ? (
+                <span className="inline-flex items-center gap-1 text-[10px] text-sky-700">
+                  <LoaderCircle className="h-3 w-3 animate-spin" aria-hidden /> 刷新中
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-1 break-all font-mono text-[10px] text-slate-500">Run ID · {runId}</div>
+          </div>
+          <Button variant="outline" size="sm" className="bg-white" onClick={onOpenRun}>
+            高级审计 <ChevronRight className="h-3.5 w-3.5" aria-hidden />
+          </Button>
+        </div>
+      </div>
+
+      <div className="p-4">
+        {displayStatus === "loading" ? (
+          <div role="status" className="flex items-center gap-2 text-sm text-slate-600">
+            <LoaderCircle className="h-4 w-4 animate-spin text-sky-600" aria-hidden />
+            {sessionRunDescription("loading", role)}
+          </div>
+        ) : displayStatus === "error" ? (
+          <div role="alert" className="flex flex-col gap-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-sm text-rose-800 sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              {error instanceof Error ? error.message : sessionRunDescription("error", role)}
+            </span>
+            <Button variant="outline" size="sm" className="shrink-0 bg-white" onClick={onRetry}>
+              重试读取
+            </Button>
+          </div>
+        ) : (
+          <>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <RunStatusDatum label="当前角色" value={role} />
+              <RunStatusDatum label="阶段状态" value={meta.label} />
+              <RunStatusDatum label={completed ? "全部有效产物" : "当前角色产物"} value={`${artifactCount} 份`} />
+            </div>
+            <p className="mt-3 text-xs leading-5 text-slate-600">
+              {sessionRunDescription(displayStatus, role)}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-400">
+              <span>阶段进度 · 已批准 {approvedCount} / {run?.phases.length ?? SDLC_ROLES.length}</span>
+              <span>续跑 Provider · {providerLabel}</span>
+            </div>
+
+            {executionProgress && phase && ["running", "failed"].includes(phase.status) ? (
+              <div
+                role="status"
+                className="mt-4 rounded-xl border border-sky-200 bg-sky-50 px-3 py-3 text-xs leading-5 text-sky-950"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-semibold">本轮执行进度</span>
+                  <span className="text-sky-700">
+                    已返回 {executionProgress.finishedToolSteps} 个工具结果
+                    {executionProgress.failedToolSteps > 0
+                      ? ` · ${executionProgress.completedToolSteps} 成功 / ${executionProgress.failedToolSteps} 失败`
+                      : ""}
+                  </span>
+                </div>
+                <div className="mt-1 break-words text-sky-800 [overflow-wrap:anywhere]">
+                  最近动作：{executionProgress.latestMessage}
+                  {executionProgress.latestAt ? ` · ${formatDate(executionProgress.latestAt)}` : ""}
+                </div>
+              </div>
+            ) : null}
+
+            {latestExecutionError ? (
+              <div role="alert" className="mt-4 min-w-0 rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-rose-900">
+                <div className="text-xs font-semibold">最近一次执行错误</div>
+                <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 [overflow-wrap:anywhere]">
+                  {latestExecutionError}
+                </p>
+              </div>
+            ) : null}
+
+            {phase && ["implementation", "verification"].includes(phase.phaseId) ? (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs leading-5 text-amber-950">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                  <div>
+                    <div className="font-semibold">当前 Session Provider 尚未接入隔离检查 Runner</div>
+                    <p className="mt-1 text-amber-800">
+                      {phase.phaseId === "implementation"
+                        ? "它可以修改代码、测试源码和工程记录，但不能在本轮运行测试命令；缺少新鲜命令证据时会明确停止或标记 Pending / Blocked。"
+                        : "它可以检查测试源码并更新 Test Report，但不能在本轮运行测试命令或浏览器验证；缺少可信执行与 provenance 证据时，Verification 会保持 Blocked，不能批准。"}
+                    </p>
+                    <Button variant="outline" size="sm" className="mt-2 bg-white" onClick={onOpenRun}>
+                      查看证据要求 <ChevronRight className="h-3.5 w-3.5" aria-hidden />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {actionError ? (
+              <div role="alert" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700">
+                {actionError}
+              </div>
+            ) : null}
+
+            {canWaiveArchitecture ? (
+              <div className="mt-4 rounded-xl border border-teal-200 bg-teal-50 px-3 py-3 text-xs leading-5 text-teal-950">
+                <div className="font-semibold">这是轻量内容/布局变更，不需要完整架构包？</div>
+                <p className="mt-1 text-teal-800">
+                  记录为正式 Architecture skip 后会保留现有审计，但不再生成 Options、ADR、C4 或 NFR，直接进入 Software Engineer。这个动作不依赖 Provider 工具调用。
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2 bg-white"
+                  loading={continuing}
+                  disabled={conversationBusy || continuing}
+                  onClick={() => void waiveArchitecture()}
+                >
+                  <Check className="h-3.5 w-3.5" aria-hidden />
+                  {canContinue ? "记录无需架构并进入工程" : "记录无需架构"}
+                </Button>
+              </div>
+            ) : null}
+
+            {decisionAwarePhase && decisionLoading ? (
+              <div role="status" className="mt-4 flex items-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-3 text-xs text-sky-800">
+                <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
+                正在核对这个阶段的结构化决定与待办，核对完成前不会误批准。
+              </div>
+            ) : null}
+            {decisionAwarePhase && decisionError ? (
+              <div role="alert" className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-xs leading-5 text-rose-800">
+                <span>决定与待办状态暂时无法载入。当前产物仍可查看，但批准会保持关闭。</span>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" className="bg-white" onClick={onRetryDecisions}>重试读取</Button>
+                  <Button variant="outline" size="sm" className="bg-white" onClick={onOpenRun}>高级审计</Button>
+                </div>
+              </div>
+            ) : null}
+            {decisionsBlocking && decisionGate ? (
+              <div role="alert" className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-3 text-xs leading-5 text-amber-950">
+                <div className="font-semibold">
+                  {phase?.status === "failed"
+                    ? `本次不能批准；仍有 ${decisionGate.blockingCount} 项结构化决定或待办`
+                    : `批准前还有 ${decisionGate.blockingCount} 项结构化决定或待办`}
+                </div>
+                <div className="mt-1 text-amber-800">
+                  你决定 {decisionGate.decisionCount} 项 · 角色补做 {decisionGate.workCount} 项 · 上游依赖 {decisionGate.dependencyCount} 项。先处理这些门禁，当前产物和 Run 都会保留。
+                </div>
+                <ul className="mt-2 space-y-1 rounded-lg border border-amber-200 bg-white/70 px-3 py-2 text-[11px] leading-4 text-amber-950">
+                  {decisionGate.items.filter(({ blocking }) => blocking).slice(0, 5).map((item) => (
+                    <li key={item.id}>
+                      <span className="font-semibold">{humanDecisionKindLabel(item)}：</span>
+                      {item.prompt || item.title}
+                    </li>
+                  ))}
+                  {decisionGate.blockingCount > 5 ? (
+                    <li className="text-amber-700">另有 {decisionGate.blockingCount - 5} 项，请进入审核入口统一处理。</li>
+                  ) : null}
+                </ul>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {currentRoleRepairOnly && phase ? (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      loading={continuing}
+                      disabled={!canContinue || conversationBusy || continuing}
+                      onClick={() => void continueRun(phase.phaseId as AgentRunPhaseId).catch(() => undefined)}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+                      让 {role} 补做并重跑
+                    </Button>
+                  ) : null}
+                  <Button variant="outline" size="sm" className="bg-white" onClick={onOpenRun}>
+                    {currentRoleRepairOnly ? "查看补做原因" : decisionActionLabel}
+                    <ChevronRight className="h-3.5 w-3.5" aria-hidden />
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            {phase?.status === "awaiting_review" ? (
+              <div className="mt-4">
+                <InlinePhaseReviewCard
+                  key={`${phase.id ?? phase.phaseId}:${artifactHeadsSignature(phase.artifacts)}`}
+                  runId={runId}
+                  phase={phase}
+                  canContinue={canContinue}
+                  conversationBusy={conversationBusy || continuing}
+                  approvalBlocked={approvalBlocked}
+                  onBusyChange={onBusyChange}
+                  onContinue={() => continueRun(phase.phaseId as AgentRunPhaseId)}
+                  onOpenRun={onOpenRun}
+                />
+              </div>
+            ) : canStartCurrentPhase && phase ? (
+              <>
+                {phase.status === "failed" && currentArtifactHeads(phase.artifacts).length > 0 ? (
+                  <FailedPhaseArtifactsCard phase={phase} onOpenRun={onOpenRun} />
+                ) : null}
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                  {canContinue ? (
+                    <span className="text-xs leading-5 text-slate-600">
+                      继续后会在同一 Session 和 Run 中启动 {phaseRoleName(phase.phaseId)}。
+                    </span>
+                  ) : (
+                    <span className="text-xs leading-5 text-amber-800">
+                      阶段状态和已批准产物都已保留。请切换到支持工具调用的 Provider 后再继续。
+                    </span>
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    {canContinue || phase.status === "failed" ? (
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        loading={continuing}
+                        disabled={!canContinue || conversationBusy || continuing}
+                        onClick={() => void continueRun(phase.phaseId as AgentRunPhaseId).catch(() => undefined)}
+                      >
+                        <Play className="h-4 w-4" aria-hidden />
+                        {phase.status === "failed"
+                          ? "重试当前角色"
+                          : `继续运行 ${phaseRoleName(phase.phaseId)}`}
+                      </Button>
+                    ) : null}
+                    {!canContinue || phase.status === "failed" ? (
+                      <Button variant="outline" size="sm" className="bg-white" onClick={onOpenProviderSettings}>
+                        <Settings2 className="h-4 w-4" aria-hidden /> 模型设置
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              </>
+            ) : null}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function FailedPhaseArtifactsCard({
+  phase,
+  onOpenRun,
+}: {
+  phase: PhaseRun;
+  onOpenRun: () => void;
+}) {
+  const heads = currentArtifactHeads(phase.artifacts);
+  const [expandedHeads, setExpandedHeads] = useState<Set<string>>(() => new Set());
+  const [viewedHeads, setViewedHeads] = useState<Set<string>>(() => new Set());
+  return (
+    <section className="mt-4 rounded-2xl border border-rose-200 bg-rose-50/70 p-4" aria-label="失败后保留的产物">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-semibold text-rose-950">查看失败后保留的产物</h3>
+            <Badge variant="danger">只读 · 不能批准</Badge>
+          </div>
+          <p className="mt-1 text-xs leading-5 text-rose-800">
+            这里展示失败前已持久化的 {heads.length} 份当前版本；所选产物路径上未完成或未通过门禁的写入已回滚，不会混入审核基线。工程阶段的其他允许变更（如有）仍可在 Diff 中复核。可先查看，再按错误提示重试当前角色。
+          </p>
+        </div>
+        <Button variant="ghost" size="sm" onClick={onOpenRun}>
+          完整审计 <ChevronRight className="h-3.5 w-3.5" aria-hidden />
+        </Button>
+      </div>
+      <div className="mt-3 space-y-2">
+        <div className="flex items-center justify-between gap-3 text-[11px] text-rose-800">
+          <span>已查看 {viewedHeads.size} / {heads.length}</span>
+          <button
+            type="button"
+            className="font-semibold underline decoration-rose-300 underline-offset-2"
+            onClick={() => setExpandedHeads(new Set(heads.map(inlineArtifactHeadKey)))}
+          >
+            展开全部保留产物
+          </button>
+        </div>
+        {heads.map((artifact) => {
+          const headKey = inlineArtifactHeadKey(artifact);
+          return (
+            <InlineArtifactViewer
+              key={headKey}
+              artifact={artifact}
+              expanded={expandedHeads.has(headKey)}
+              viewed={viewedHeads.has(headKey)}
+              onToggle={() => setExpandedHeads((current) => toggleSetValue(current, headKey))}
+              onViewed={() => setViewedHeads((current) => addSetValue(current, headKey))}
+            />
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function RunStatusDatum({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{label}</div>
+      <div className="mt-1 text-xs font-semibold text-slate-800">{value}</div>
+    </div>
+  );
+}
+
 function InlinePhaseReviewCard({
   runId,
   phase,
   canContinue,
   conversationBusy,
+  approvalBlocked,
   onBusyChange,
   onContinue,
   onOpenRun,
@@ -1108,6 +1752,7 @@ function InlinePhaseReviewCard({
   phase: PhaseRun;
   canContinue: boolean;
   conversationBusy: boolean;
+  approvalBlocked: boolean;
   onBusyChange: (busy: boolean) => void;
   onContinue: () => Promise<void>;
   onOpenRun: () => void;
@@ -1121,30 +1766,89 @@ function InlinePhaseReviewCard({
   const allViewed = heads.length > 0 && heads.every((artifact) => (
     viewedHeads.has(inlineArtifactHeadKey(artifact))
   ));
+  const currentOptionsHead = heads.find(({ artifactKey }) => artifactKey === "architecture-options");
+  const currentDiscoveryHead = heads.find(
+    ({ artifactKey }) => artifactKey === "architecture-discovery-context",
+  );
+  const currentOptionsQuery = useQuery({
+    queryKey: ["artifact", currentOptionsHead?.id ?? "inline-architecture-options-missing"],
+    queryFn: () => api.getArtifact(currentOptionsHead!.id),
+    enabled: Boolean(currentOptionsHead?.id),
+    staleTime: 30_000,
+  });
+  const currentOptionsContent = currentOptionsQuery.data?.content
+    ?? currentOptionsHead?.content
+    ?? "";
+  const architectureOptions = useMemo(
+    () => architectureOptionSummaries(currentOptionsContent),
+    [currentOptionsContent],
+  );
+  const architectureSelection = phase.phaseId === "architecture"
+    ? phase.architectureImpact?.selection
+      ?? (
+        currentOptionsHead && currentDiscoveryHead
+          ? architectureSelectionFromReviews(
+              phase.reviews,
+              currentOptionsHead.id,
+              [currentOptionsHead.id, currentDiscoveryHead.id],
+            )
+          : undefined
+      )
+    : undefined;
+  const isArchitectureSelectionCheckpoint = phase.phaseId === "architecture"
+    && !architectureSelection;
+  const architectureSelectionId = parseArchitectureSelectionId(comment.trim());
+  const hasValidArchitectureSelection = Boolean(
+    architectureSelectionId
+    && architectureOptions.some(({ id }) => id === architectureSelectionId),
+  );
+  const architectureRulebookMarkerCount = currentOptionsContent
+    .split("<!-- ai-sdlc:architecture-rulebook:v1 -->").length - 1;
+  const architectureCheckpointNeedsRepair = isArchitectureSelectionCheckpoint
+    && currentOptionsQuery.isSuccess
+    && (
+      architectureOptions.length < 3
+      || architectureRulebookMarkerCount !== 1
+      || !/<!-- ai-sdlc:architecture-rulebook:v1 -->[ \t]*\r?\n```json[ \t]*\r?\n[\s\S]*?\r?\n```/u.test(currentOptionsContent)
+    );
 
   const reviewMutation = useMutation({
-    mutationFn: async (decision: "approve" | "request_changes") => {
+    mutationFn: async (action: {
+      decision: "approve" | "request_changes";
+      commentOverride?: string;
+      continueAfter?: boolean;
+    }) => {
       const expectedArtifactIds = currentArtifactHeadIds(heads);
       if (expectedArtifactIds.length !== heads.length || !allViewed) {
         throw new Error("产物列表已经变化，请重新展开并查看当前全部产物。");
       }
-      const reviewComment = decision === "approve"
+      const reviewComment = action.decision === "approve"
         ? "已在 Agent 工作台逐项查看当前全部产物，同意按固定顺序进入下一阶段。"
-        : comment.trim();
-      await api.reviewPhase(runId, phase.phaseId, decision, reviewComment, expectedArtifactIds);
-      if (decision === "approve") {
+        : action.commentOverride?.trim() || comment.trim();
+      await api.reviewPhase(
+        runId,
+        phase.phaseId,
+        action.decision,
+        reviewComment,
+        expectedArtifactIds,
+      );
+      if ((action.decision === "approve" || action.continueAfter) && canContinue) {
         try {
           await onContinue();
         } catch (continuationError) {
           const message = continuationError instanceof Error
             ? continuationError.message
-            : "下一角色未能启动";
-          throw new Error(`产物已经批准，但自动继续失败：${message}`);
+            : "后续执行未能启动";
+          throw new Error(
+            action.decision === "approve"
+              ? `产物已经批准，但自动继续失败：${message}`
+              : `决定已经保存，但 Architect 自动继续失败：${message}`,
+          );
         }
       } else {
         await queryClient.invalidateQueries({ queryKey: ["run", runId] });
       }
-      return decision;
+      return action.decision;
     },
     onMutate: () => {
       setError(undefined);
@@ -1213,13 +1917,83 @@ function InlinePhaseReviewCard({
         </div>
       )}
 
+      {isArchitectureSelectionCheckpoint ? (
+        <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs leading-5 text-sky-950">
+          <div className="flex items-center gap-2 font-semibold">
+            <GitBranch className="h-4 w-4" aria-hidden />
+            {architectureCheckpointNeedsRepair ? "当前检查点需要结构化补做" : "选择当前 options revision 的方向"}
+          </div>
+          {currentOptionsQuery.isLoading ? (
+            <p className="mt-1 text-sky-800">正在读取架构备选方案…</p>
+          ) : currentOptionsQuery.isError ? (
+            <p className="mt-1 text-rose-700">架构备选方案读取失败；为安全起见不能选型，请刷新后重试。</p>
+          ) : architectureCheckpointNeedsRepair ? (
+            <>
+              <p className="mt-1 text-sky-800">
+                这组旧产物缺少当前规则簿机器合同，不能用于选型。补做会在同一 Session 和 Run 中保留现有审计记录并生成新 revision，不会替你选择方案。
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                className="mt-3"
+                loading={reviewMutation.isPending}
+                disabled={!allViewed || !canContinue || approvalBlocked || conversationBusy || reviewMutation.isPending}
+                onClick={() => reviewMutation.mutate({
+                  decision: "request_changes",
+                  commentOverride: "请使用平台结构化 Architect 检查点工具，依据已批准输入和真实仓库证据重新生成 discovery、options、architecture，并通过当前规则簿语义校验；不要替人工选择 Option。",
+                  continueAfter: true,
+                })}
+              >
+                <RefreshCw className="h-4 w-4" aria-hidden /> 让 Architect 结构化补做并重跑
+              </Button>
+              {!allViewed ? <p className="mt-2 text-[11px] text-sky-700">请先展开并查看当前三份产物，平台才会绑定这次修改决定。</p> : null}
+            </>
+          ) : (
+            <>
+              <p className="mt-1 text-sky-800">
+                这里记录的是选型，不是批准。保存后 Architect 会按你选择的方向生成 ADR、C4、NFR 与对抗性复核，之后你再做最终批准。
+              </p>
+              <div className="mt-3 grid gap-2">
+                {architectureOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={cn(
+                      "rounded-lg border bg-white p-3 text-left transition",
+                      architectureSelectionId === option.id
+                        ? "border-teal-500 ring-2 ring-teal-500/20"
+                        : "border-sky-200 hover:border-teal-400",
+                    )}
+                    disabled={reviewMutation.isPending || approvalBlocked}
+                    onClick={() => setComment((current) => (
+                      updateArchitectureSelectionMarker(current, option.id)
+                    ))}
+                  >
+                    <span className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-slate-950">Option {option.id} · {option.title}</span>
+                      {option.recommended ? <Badge variant="success">Architect 推荐</Badge> : null}
+                    </span>
+                    {option.summary ? <span className="mt-1 block text-slate-700">{option.summary}</span> : null}
+                    {option.optimizes ? <span className="mt-1 block text-[11px] text-slate-600">优势：{option.optimizes}</span> : null}
+                    {option.givesUp ? <span className="block text-[11px] text-slate-600">代价：{option.givesUp}</span> : null}
+                    <span className="mt-2 block font-semibold text-teal-700">选择 Option {option.id}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      ) : null}
+
       <label className="mt-4 block text-xs font-semibold text-slate-700">
-        修改意见
+        {isArchitectureSelectionCheckpoint ? "选型条件 / 补充意见" : "修改意见"}
         <Textarea
           className="mt-1.5 min-h-20 bg-white text-sm"
           value={comment}
           maxLength={5_000}
-          placeholder="只有要求修改时必填：请直接说明哪里不对、希望怎么改。"
+          placeholder={isArchitectureSelectionCheckpoint
+            ? "点击上方方案后会写入 Selected option；你也可以补充验证条件。"
+            : "只有要求修改时必填：请直接说明哪里不对、希望怎么改。"}
           onChange={(event) => setComment(event.target.value)}
           disabled={reviewMutation.isPending}
         />
@@ -1227,7 +2001,7 @@ function InlinePhaseReviewCard({
 
       {!canContinue ? (
         <p className="mt-2 text-xs text-amber-800">
-          “批准并继续”需要先在输入框旁切换到支持工具调用的 Provider；这不会影响查看或要求修改。
+          当前 Provider 不支持 Agent 工具调用，但不影响本次审核。你可以先批准产物，再切换 Provider 并从上方 Run 状态卡继续下一角色。
         </p>
       ) : null}
       {error ? (
@@ -1243,21 +2017,38 @@ function InlinePhaseReviewCard({
         <Button
           variant="outline"
           size="sm"
-          loading={reviewMutation.isPending && reviewMutation.variables === "request_changes"}
-          disabled={!allViewed || !comment.trim() || conversationBusy || reviewMutation.isPending}
-          onClick={() => reviewMutation.mutate("request_changes")}
+          loading={reviewMutation.isPending && reviewMutation.variables?.decision === "request_changes"}
+          disabled={
+            !allViewed
+            || !comment.trim()
+            || conversationBusy
+            || reviewMutation.isPending
+            || Boolean(
+              isArchitectureSelectionCheckpoint
+              && architectureSelectionId
+              && (!hasValidArchitectureSelection || architectureCheckpointNeedsRepair || approvalBlocked)
+            )
+          }
+          onClick={() => reviewMutation.mutate({
+            decision: "request_changes",
+            continueAfter: Boolean(isArchitectureSelectionCheckpoint && hasValidArchitectureSelection),
+          })}
         >
-          要求修改
+          {isArchitectureSelectionCheckpoint && hasValidArchitectureSelection
+            ? <><GitBranch className="h-4 w-4" aria-hidden /> 记录 Option {architectureSelectionId} 并让 Architect 继续</>
+            : "要求修改"}
         </Button>
-        <Button
-          variant="success"
-          size="sm"
-          loading={reviewMutation.isPending && reviewMutation.variables === "approve"}
-          disabled={!allViewed || !canContinue || conversationBusy || reviewMutation.isPending}
-          onClick={() => reviewMutation.mutate("approve")}
-        >
-          <Check className="h-4 w-4" aria-hidden /> 批准并继续
-        </Button>
+        {!isArchitectureSelectionCheckpoint ? (
+          <Button
+            variant="success"
+            size="sm"
+            loading={reviewMutation.isPending && reviewMutation.variables?.decision === "approve"}
+            disabled={!allViewed || approvalBlocked || conversationBusy || reviewMutation.isPending}
+            onClick={() => reviewMutation.mutate({ decision: "approve" })}
+          >
+            <Check className="h-4 w-4" aria-hidden /> {approvalBlocked ? "先处理决定" : canContinue ? "批准并继续" : "仅批准产物"}
+          </Button>
+        ) : null}
       </div>
     </section>
   );
@@ -1311,8 +2102,19 @@ function InlineArtifactViewer({
               <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> 正在安全读取当前版本…
             </div>
           ) : artifactQuery.isError ? (
-            <div role="alert" className="text-xs leading-5 text-rose-700">
-              这份产物读取失败，暂时不能算作已查看：{artifactQuery.error instanceof Error ? artifactQuery.error.message : "请重试"}
+            <div role="alert" className="flex flex-wrap items-center justify-between gap-2 text-xs leading-5 text-rose-700">
+              <span>
+                这份产物读取失败，暂时不能算作已查看：{artifactQuery.error instanceof Error ? artifactQuery.error.message : "请重试"}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                loading={artifactQuery.isFetching}
+                onClick={() => void artifactQuery.refetch()}
+              >
+                <RefreshCw className="h-3.5 w-3.5" aria-hidden /> 重新读取
+              </Button>
             </div>
           ) : typeof content === "string" ? (
             <div className="max-h-80 overflow-y-auto rounded-lg bg-slate-50 px-3 py-2">
@@ -1401,24 +2203,26 @@ function UnavailableCapabilityCard({ gate }: { gate: AgentHumanGate }) {
 function RoleTimeline({
   session,
   run,
+  runId,
   onOpenRun,
+  compact = false,
 }: {
   session?: AgentSession;
   run?: RunDetail;
+  runId?: string;
   onOpenRun: (runId: string) => void;
+  compact?: boolean;
 }) {
   const events = session?.events ?? [];
-  const runEvent = [...events].reverse().find(({ kind }) => kind === "sdlc.run-created");
-  return (
-    <aside className="hidden border-l border-slate-200 bg-white xl:block">
-      <div className="sticky top-16 max-h-[calc(100vh-4rem)] overflow-y-auto p-5">
+  const content = (
+    <>
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-sm font-semibold text-slate-950">SDLC 角色进度</h2>
             <p className="mt-1 text-xs text-slate-500">产物按固定顺序传给下一角色</p>
           </div>
-          {runEvent?.workflowRunId ? (
-            <Button variant="ghost" size="sm" onClick={() => onOpenRun(runEvent.workflowRunId!)}>
+          {runId ? (
+            <Button variant="ghost" size="sm" onClick={() => onOpenRun(runId)}>
               高级审计 <ChevronRight className="h-3.5 w-3.5" />
             </Button>
           ) : null}
@@ -1426,12 +2230,16 @@ function RoleTimeline({
         <div className="mt-5 space-y-0">
           {SDLC_ROLES.map((item, index) => {
             const phase = run?.phases.find(({ phaseId }) => phaseId === item.phaseId);
-            const completed = events.some(({ kind, phaseId, status }) => (
-              kind === "sdlc.phase-completed" && phaseId === item.phaseId && status === "completed"
-            )) || phase?.status === "approved";
-            const running = events.some(({ kind, phaseId, status }) => (
+            const eventStarted = events.some(({ kind, phaseId, status }) => (
               kind === "sdlc.phase-started" && phaseId === item.phaseId && status === "started"
-            )) || phase?.status === "running" || phase?.status === "awaiting_review";
+            ));
+            const phaseStatus: PhaseRun["status"] = phase?.status ?? (eventStarted ? "running" : "pending");
+            const completed = phaseStatus === "approved";
+            const awaitingReview = phaseStatus === "awaiting_review";
+            const running = phaseStatus === "running";
+            const attention = ["changes_requested", "rejected", "failed"].includes(phaseStatus);
+            const ready = phaseStatus === "ready";
+            const statusMeta = SESSION_RUN_STATUS_META[phaseStatus];
             const Icon = item.icon;
             return (
               <div key={item.phaseId} className="relative flex gap-3 pb-5">
@@ -1441,22 +2249,51 @@ function RoleTimeline({
                 <span className={cn(
                   "relative z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border",
                   completed ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                    : running ? "border-sky-200 bg-sky-50 text-sky-700"
+                    : awaitingReview ? "border-amber-200 bg-amber-50 text-amber-700"
+                      : running || ready ? "border-sky-200 bg-sky-50 text-sky-700"
+                        : attention ? "border-rose-200 bg-rose-50 text-rose-700"
                     : "border-slate-200 bg-white text-slate-400",
                 )}>
-                  {completed ? <Check className="h-4 w-4" /> : running ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
+                  {completed ? <Check className="h-4 w-4" />
+                    : awaitingReview ? <Eye className="h-4 w-4" />
+                      : running ? <LoaderCircle className="h-4 w-4 animate-spin" />
+                        : attention ? <AlertTriangle className="h-4 w-4" />
+                          : ready ? <Play className="h-4 w-4" />
+                            : <Icon className="h-4 w-4" />}
                 </span>
                 <div className="min-w-0 pt-0.5">
-                  <div className="text-xs font-semibold text-slate-900">{item.role}</div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-xs font-semibold text-slate-900">{item.role}</span>
+                    {phase || eventStarted ? (
+                      <Badge variant={statusMeta.badge} className="px-1.5 py-0.5 text-[9px]">
+                        {statusMeta.label}
+                      </Badge>
+                    ) : null}
+                  </div>
                   <div className="mt-0.5 text-[11px] text-slate-500">{item.label}</div>
                   <div className="mt-1.5 text-[10px] leading-4 text-slate-400">产物：{item.artifacts}</div>
                   {(phase?.artifacts ?? []).length ? (
                     <div className="mt-2 space-y-1">
                       {phase!.artifacts.slice(0, 3).map((artifact) => (
-                        <div key={artifact.id} className="truncate rounded-md bg-slate-50 px-2 py-1 font-mono text-[10px] text-slate-500">
+                        <button
+                          key={artifact.id}
+                          type="button"
+                          className="block w-full truncate rounded-md bg-slate-50 px-2 py-1 text-left font-mono text-[10px] text-slate-500 transition hover:bg-teal-50 hover:text-teal-700"
+                          aria-label={`在高级审计查看 ${artifact.artifactKey ?? artifact.filePath ?? "artifact"}`}
+                          onClick={() => runId && onOpenRun(runId)}
+                        >
                           {artifact.artifactKey ?? artifact.filePath ?? "artifact"}
-                        </div>
+                        </button>
                       ))}
+                      {phase!.artifacts.length > 3 ? (
+                        <button
+                          type="button"
+                          className="text-[10px] font-semibold text-teal-700 hover:text-teal-800"
+                          onClick={() => runId && onOpenRun(runId)}
+                        >
+                          还有 {phase!.artifacts.length - 3} 份 · 查看全部
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
@@ -1472,6 +2309,23 @@ function RoleTimeline({
             对话里显示产物摘要、Diff、测试和风险；完整 Artifact、Review、Patch 与 Run 日志保留在高级审计。
           </p>
         </div>
+    </>
+  );
+  if (compact) {
+    return (
+      <details className="mt-3 overflow-hidden rounded-2xl border border-slate-200 bg-white xl:hidden">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-slate-900 [&::-webkit-details-marker]:hidden">
+          <span>六角色进度 · 查看每阶段状态与产物</span>
+          <ChevronDown className="h-4 w-4 text-slate-500" aria-hidden />
+        </summary>
+        <div className="border-t border-slate-100 p-4">{content}</div>
+      </details>
+    );
+  }
+  return (
+    <aside className="hidden border-l border-slate-200 bg-white xl:block">
+      <div className="sticky top-16 max-h-[calc(100vh-4rem)] overflow-y-auto p-5">
+        {content}
       </div>
     </aside>
   );
@@ -1717,7 +2571,7 @@ function RepositorySettingsDialog({
                 对话时仍可切换 Provider，只影响下一条消息，不会清空 Agent Session。
               </p>
               <p className="mt-1 text-[11px] leading-5 text-slate-500">
-                项目聊天 Provider 的凭据只留在服务端，不会进入消息、仓库、Sandbox，也不会传给阶段 Codex Worker；阶段 Worker 使用独立的低权限运行密钥。
+                当前会话所选 Provider 的凭据只由 API 的配置与内存边界读取，不会写入消息、仓库或 Sandbox；Sandbox 只接收服务端批准的受限工具定义与结果，不接收 Provider 凭据。
               </p>
             </section>
 

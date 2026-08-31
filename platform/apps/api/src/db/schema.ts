@@ -161,6 +161,12 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   change_contract jsonb,
   base_revision text,
   definition_version text,
+  execution_model text NOT NULL DEFAULT 'legacy' CHECK (execution_model IN ('legacy', 'flexible')),
+  target_phase_id text CHECK (target_phase_id IN ('discovery', 'design', 'architecture', 'implementation', 'verification', 'release')),
+  run_intent jsonb,
+  run_context_references jsonb,
+  run_environment_request jsonb,
+  result_receipt_version integer CHECK (result_receipt_version IS NULL OR result_receipt_version > 0),
   status text NOT NULL CHECK (status IN ('active', 'completed')),
   artifact_paths jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -172,6 +178,12 @@ ALTER TABLE workflow_runs
 ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS change_contract jsonb;
 ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS base_revision text;
 ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS definition_version text;
+ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS execution_model text NOT NULL DEFAULT 'legacy';
+ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS target_phase_id text;
+ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS run_intent jsonb;
+ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS run_context_references jsonb;
+ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS run_environment_request jsonb;
+ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS result_receipt_version integer;
 
 DO $workflow_run_cloud_checks$
 BEGIN
@@ -185,6 +197,37 @@ BEGIN
   END IF;
 END
 $workflow_run_cloud_checks$;
+
+DO $workflow_run_flexible_checks$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'workflow_runs'::regclass AND conname = 'workflow_runs_execution_model_check'
+  ) THEN
+    ALTER TABLE workflow_runs ADD CONSTRAINT workflow_runs_execution_model_check CHECK (
+      execution_model IN ('legacy', 'flexible')
+    );
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'workflow_runs'::regclass AND conname = 'workflow_runs_target_phase_id_check'
+  ) THEN
+    ALTER TABLE workflow_runs ADD CONSTRAINT workflow_runs_target_phase_id_check CHECK (
+      target_phase_id IS NULL OR target_phase_id IN (
+        'discovery', 'design', 'architecture', 'implementation', 'verification', 'release'
+      )
+    );
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'workflow_runs'::regclass AND conname = 'workflow_runs_result_receipt_version_check'
+  ) THEN
+    ALTER TABLE workflow_runs ADD CONSTRAINT workflow_runs_result_receipt_version_check CHECK (
+      result_receipt_version IS NULL OR result_receipt_version > 0
+    );
+  END IF;
+END
+$workflow_run_flexible_checks$;
 
 CREATE TABLE IF NOT EXISTS managed_workspaces (
   id uuid PRIMARY KEY,

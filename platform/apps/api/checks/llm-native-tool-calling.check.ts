@@ -154,7 +154,7 @@ test("native tool calls use each provider's documented wire shape and one normal
 
     const response = await provider.complete({
       ...TOOL_REQUEST,
-      toolChoice: "required",
+      toolChoice: { type: "function", name: "resolve_work_item" },
     });
     assert.deepEqual(response.toolCalls?.[0], {
       id: "chat_call_1",
@@ -165,7 +165,76 @@ test("native tool calls use each provider's documented wire shape and one normal
     const body = capture.calls[0]!.body;
     const tools = body.tools as Array<{ function?: { strict?: unknown } }>;
     assert.equal(tools[0]?.function?.strict, true);
+    assert.deepEqual(body.tool_choice, {
+      type: "function",
+      function: { name: "resolve_work_item" },
+    });
+    assert.equal(body.parallel_tool_calls, false);
+  });
+
+  await t.test("LM Studio scopes a named tool intent to its supported required wire shape", async () => {
+    const capture = captureJsonFetch({
+      model: "openai/gpt-oss-20b",
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: "lmstudio_call_1",
+            type: "function",
+            function: {
+              name: "resolve_work_item",
+              arguments: '{"adapterId":"jira","reference":"ENG-142","reason":"explicit"}',
+            },
+          }],
+        },
+      }],
+      usage: { prompt_tokens: 12, completion_tokens: 4 },
+    });
+    const provider = new OpenAiChatProvider({
+      id: "lmstudio",
+      label: "LM Studio",
+      protocol: "openai-chat",
+      dataBoundary: "local",
+      baseUrl: new URL("http://127.0.0.1:1234/v1"),
+      model: "openai/gpt-oss-20b",
+      structuredOutput: false,
+      toolCalling: true,
+      timeoutMs: 1_000,
+      maxResponseBytes: 32_000,
+      fetchImpl: capture.fetchImpl,
+    });
+
+    const response = await provider.complete({
+      ...TOOL_REQUEST,
+      tools: [
+        ...TOOL_REQUEST.tools!,
+        {
+          type: "function",
+          name: "list_files",
+          description: "List files.",
+          strict: true,
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            required: ["path"],
+            properties: { path: { type: "string" } },
+          },
+        },
+      ],
+      toolChoice: { type: "function", name: "resolve_work_item" },
+    });
+
+    assert.equal(response.toolCalls?.[0]?.name, "resolve_work_item");
+    const body = capture.calls[0]!.body;
     assert.equal(body.tool_choice, "required");
+    assert.deepEqual(
+      (body.tools as Array<{ function?: { name?: unknown } }>).map(
+        ({ function: definition }) => definition?.name,
+      ),
+      ["resolve_work_item"],
+    );
     assert.equal(body.parallel_tool_calls, false);
   });
 

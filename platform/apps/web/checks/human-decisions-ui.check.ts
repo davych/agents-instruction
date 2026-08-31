@@ -7,8 +7,11 @@ import {
   humanDecisionGateHeadline,
   humanDecisionKindLabel,
   humanDecisionNextAction,
+  isGenericHumanDecisionResponse,
+  isCurrentRoleRepairGate,
   isDeferredDesignHandoffCleanupGate,
   humanDecisionPresets,
+  visibleHumanReviewComment,
 } from "../src/lib/human-decisions.js";
 import type { PhaseHumanDecisionGate } from "../src/lib/types.js";
 import { readRunUiSource } from "./support/run-ui-source.ts";
@@ -163,6 +166,58 @@ test("AC-CLARITY-017: the next action asks only for real decisions and reruns st
   assert.equal(humanDecisionNextAction("pending", design), "select");
 });
 
+test("Session rerun is limited to blocking work owned by the current role", () => {
+  const repair = gate({
+    items: [{
+      ...gate().items[1]!,
+      actionPhaseId: "design",
+      kind: "work",
+      blocking: true,
+    }],
+    blockingCount: 1,
+    decisionCount: 0,
+    workCount: 1,
+    dependencyCount: 0,
+  });
+  assert.equal(isCurrentRoleRepairGate(repair), true);
+  assert.equal(isCurrentRoleRepairGate(gate()), false, "an upstream dependency cannot auto-rerun");
+});
+
+test("decision input rejects acknowledgement-only text but keeps concrete choices", async () => {
+  for (const response of ["同意同意同意", "yes, OK!!!", "Approved approved"]) {
+    assert.equal(isGenericHumanDecisionResponse(response), true, response);
+  }
+  assert.equal(
+    isGenericHumanDecisionResponse("同意使用红色主题，layout 可以调整。"),
+    false,
+  );
+
+  const source = await readRunUiSource();
+  assert.match(source, /只写“同意、确认、可以、好的、yes、agree、approved、ok”无法让角色更新正式产物/u);
+});
+
+test("decision audit comments keep readable answers but hide transport markers", () => {
+  const encoded = visibleHumanReviewComment([
+    "Human decisions captured; update the formal phase artifacts and remove only the blockers these answers actually resolve.",
+    "",
+    "- PRODUCT-QUESTION-V2-abc: Use cards.",
+    "",
+    "<!-- ai-sdlc:human-decisions:v1 eyJzY2hlbWFWZXJzaW9uIjoxfQ -->",
+  ].join("\n"));
+  assert.match(encoded, /已记录人工决定/u);
+  assert.match(encoded, /Use cards/u);
+  assert.doesNotMatch(encoded, /ai-sdlc:human-decisions|eyJzY2hlbWFWZXJzaW9u/u);
+
+  const legacy = visibleHumanReviewComment([
+    "Legacy readable decision.",
+    "<!-- ai-sdlc:human-decisions:v1 -->",
+    "```json",
+    '{"schemaVersion":1,"phaseId":"discovery","responses":[]}',
+    "```",
+  ].join("\n"));
+  assert.equal(legacy, "Legacy readable decision.");
+});
+
 test("AC-CLARITY-014/017: Run page exposes one decision inbox and a save-rerun handoff", async () => {
   const source = await readRunUiSource();
   assert.match(source, /决定与待办/u);
@@ -170,8 +225,11 @@ test("AC-CLARITY-014/017: Run page exposes one decision inbox and a save-rerun h
   assert.match(source, /通过状态不一致|已显示为“通过”/u);
   assert.match(source, /应回到上游处理/u);
   assert.match(source, /在本阶段处理/u);
-  assert.match(source, /保存决定并让/u);
-  assert.match(source, /立即打开当前角色的重新执行窗口/u);
+  assert.match(source, /一次保存 \$\{requiredDecisionItems\.length\} 项决定，返回 Session 继续/u);
+  assert.match(source, /下一步在后台 Run 卡片点击/u);
+  assert.match(source, /const responses = requiredDecisionItems\.map/u);
+  assert.match(source, /让 \$\{HUMAN_DECISION_ROLE_LABELS\[decisionGate\.phaseId\]\} 补做并重跑/u);
+  assert.match(source, /返回原 Session[\s\S]{0,240}沿用已选 Provider 和同一个 Run，不会另行调用 Codex 或新建 Run/u);
   assert.match(source, /api\.captureHumanDecisions/u);
   assert.match(source, /PHASE_HUMAN_DECISIONS_REQUIRED/u);
 });

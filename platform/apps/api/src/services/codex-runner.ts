@@ -6,6 +6,7 @@ import path from "node:path";
 
 import type {
   ArtifactDto,
+  AskProviderId,
   CodexReasoningEffort,
   FigmaTarget,
   PhaseDefinition,
@@ -15,16 +16,34 @@ import type {
 } from "@ai-sdlc/contracts";
 
 import { AppError } from "../domain/errors.js";
-import type { ArchitectureSelectionEvidence } from "../domain/workflow.js";
+import { assessDeferredDesignValidations } from "../domain/design-deferred-validation.js";
+import { assessPhaseHumanDecisionGate } from "../domain/human-decisions.js";
+import {
+  architectureOptionIds,
+  type ArchitectureSelectionEvidence,
+} from "../domain/workflow.js";
+import {
+  assessUserStoriesQualityEntries,
+  isUserStoriesBlockerDecisionScopeCovered,
+  parseUserStoriesBlockerEntries,
+  userStoriesBlockerDecisionFingerprint,
+  userStoriesBlockerDecisionScope,
+  type UserStoriesBlockerDecisionScope,
+  type UserStoriesQualityIssue,
+} from "../domain/user-story-quality.js";
 import type { ArtifactRecordInput, SelectionArtifact } from "../db/store.js";
 import {
   assertRuntimePath,
   readArtifactContent,
+  readArtifactTextEntries,
   withArtifactPathsRollbackOnError,
   withProtectedArtifactPaths,
   type ProtectedArtifactPath,
 } from "./artifact-workspace.js";
-import { loadArchitectureRulebookContext } from "./architecture-rulebook-runtime.js";
+import {
+  loadArchitectureRulebookContext,
+  validateArchitectureRulebookReview,
+} from "./architecture-rulebook-runtime.js";
 import { calculateArchitectureRulebookDigest } from "./architecture-rulebook-validator.js";
 import type { LoadedDefinition } from "./definition-loader.js";
 import type { TrustedProjectKnowledge } from "./project-knowledge.js";
@@ -49,6 +68,9 @@ export interface CodexRunRequest {
   selectedArtifacts: SelectionArtifact[];
   currentArtifacts?: Array<ArtifactDto & { content: string }>;
   revisionFeedback?: string[];
+  answeredUserStoriesBlockerFingerprints?: string[];
+  answeredUserStoriesBlockerScopes?: UserStoriesBlockerDecisionScope[];
+  productDecisionMaterializationRequired?: boolean;
   selectedOutputKeys?: string[];
   requireEverySelectedOutputUpdated?: boolean;
   architectureSelection?: ArchitectureSelectionEvidence;
@@ -71,6 +93,43 @@ export type ResolvedFigmaTarget =
 export interface CodexRunResult {
   exitCode: number;
   artifacts: ArtifactRecordInput[];
+}
+
+export interface ProviderNativeRunMetadata {
+  model: string;
+  modelCalls: number;
+  toolCalls: number;
+  durationMs: number;
+}
+
+export type ProviderNativeOutputValidation =
+  | { ready: true }
+  | {
+      ready: false;
+      feedback: string;
+      error: AppError;
+      audit?: {
+        reasonCode: string;
+        affectedArtifactKeys: readonly string[];
+        issueIds: readonly string[];
+      };
+      repairToolName?: string;
+      repairToolNames?: readonly string[];
+    };
+
+export type ProviderNativeOutputGate = () => Promise<ProviderNativeOutputValidation>;
+
+interface ProviderNativeOutputRepairState {
+  /**
+   * Once a finalization round has committed to repairing concrete Story
+   * content, later empty or Blocker-shaped writes in the same execution must
+   * not reopen the Blocker branch.
+   */
+  userStoriesStoryBranchCommitted: boolean;
+}
+
+export interface ProviderNativeGuardedRunResult extends CodexRunResult {
+  model: string;
 }
 
 export interface CodexRunnerOptions {
@@ -513,6 +572,43 @@ export class CodexTerminalRunner {
         "FIGMA_REQUIRES_REAL_RUNNER"
       );
     }
+    return this.runWithWorkspaceGuards(
+      request,
+      (effectiveRequest) => this.runUnprotected(effectiveRequest, onEvent),
+    );
+  }
+
+  async runProviderNative(
+    request: CodexRunRequest,
+    providerId: AskProviderId,
+    execute: (
+      effectiveRequest: CodexRunRequest,
+      outputGate: ProviderNativeOutputGate,
+    ) => Promise<ProviderNativeRunMetadata>,
+    onEvent: (eventType: string, payload: unknown) => Promise<void>,
+  ): Promise<ProviderNativeGuardedRunResult> {
+    if (request.figmaTarget || outputKeys(request).includes("figma-handoff")) {
+      throw new AppError(
+        "Provider-native 阶段执行暂不支持依赖桌面授权的 Figma 写入",
+        409,
+        "PROVIDER_PHASE_FIGMA_UNSUPPORTED",
+      );
+    }
+    return this.runWithWorkspaceGuards(
+      request,
+      (effectiveRequest) => this.runProviderNativeUnprotected(
+        effectiveRequest,
+        providerId,
+        execute,
+        onEvent,
+      ),
+    );
+  }
+
+  private async runWithWorkspaceGuards<T>(
+    request: CodexRunRequest,
+    operation: (effectiveRequest: CodexRunRequest) => Promise<T>,
+  ): Promise<T> {
     const selected = new Set(outputKeys(request));
     assertNoPlatformBackfillCollisions(request, selected);
     assertNonOverlappingOutputPaths(request.definition.artifacts);
@@ -607,7 +703,7 @@ export class CodexTerminalRunner {
         request.project.rootPath,
         architectureRulebookArtifacts,
         this.maxArtifactBytes,
-        () => this.runUnprotected(effectiveRequest, onEvent),
+        () => operation(effectiveRequest),
       )
     );
     const execute = (effectiveRequest: CodexRunRequest) => withProtectedArtifactPaths(
@@ -660,6 +756,68 @@ export class CodexTerminalRunner {
         ? executeWorkspaceReadOnly()
         : execute(request),
     );
+  }
+
+  private async runProviderNativeUnprotected(
+    request: CodexRunRequest,
+    providerId: AskProviderId,
+    execute: (
+      effectiveRequest: CodexRunRequest,
+      outputGate: ProviderNativeOutputGate,
+    ) => Promise<ProviderNativeRunMetadata>,
+    onEvent: (eventType: string, payload: unknown) => Promise<void>,
+  ): Promise<ProviderNativeGuardedRunResult> {
+    const baseline = await this.snapshotArtifactHashes(request);
+    await onEvent("runner.started", {
+      mode: "real",
+      runtime: "provider-native",
+      command: `provider-native:${providerId}`,
+      workingDirectory: "repository://run-workspace",
+      phaseId: request.phase.id,
+      selectedOutputKeys: outputKeys(request),
+      model: null,
+      requestedModel: request.model,
+      reasoningEffort: null,
+      workspaceRevisionToken: request.workspaceRevisionToken ?? null,
+      verificationGitState: isRemoteGitProject(request.project)
+        ? remoteVerificationGitStateForEvent(request.verificationGitState)
+        : request.verificationGitState ?? null,
+    });
+    const outputRepairState: ProviderNativeOutputRepairState = {
+      userStoriesStoryBranchCommitted: false,
+    };
+    const outputGate = () => this.validateProviderNativeOutputs(
+      request,
+      baseline,
+      outputRepairState,
+    );
+    const metadata = await execute(request, outputGate);
+    if (!metadata.model.trim() || metadata.model.length > 256) {
+      throw new AppError(
+        "Provider 没有返回可审计的实际模型",
+        502,
+        "AGENT_PROVIDER_MODEL_INVALID",
+      );
+    }
+    const artifacts = await this.collectArtifacts(request);
+    await assertProviderNativeOutputQuality(request, artifacts, this.maxArtifactBytes);
+    assertOutputsUpdated(
+      baseline,
+      artifacts,
+      outputKeys(request),
+      requiredUpdatedOutputKeys(request, baseline),
+    );
+    await onEvent("runner.completed", {
+      mode: "real",
+      runtime: "provider-native",
+      providerId,
+      model: metadata.model,
+      modelCalls: metadata.modelCalls,
+      toolCalls: metadata.toolCalls,
+      durationMs: metadata.durationMs,
+      phaseId: request.phase.id,
+    });
+    return { exitCode: 0, artifacts, model: metadata.model };
   }
 
   private async runUnprotected(
@@ -878,6 +1036,13 @@ export class CodexTerminalRunner {
     assertFigmaWriteAttempted(request, figmaCalls);
     const figmaWriteEvidence = assertFigmaDesignWriteCompleted(request, figmaCalls);
     const artifacts = await this.collectArtifacts(request);
+    if (request.productDecisionMaterializationRequired) {
+      // Reuse the same detailed Story validator as Provider-native runs. The
+      // materialization lock owns decision churn; Story syntax/structure must
+      // retain its field-level quality codes instead of collapsing into the
+      // generic PRODUCT-STORIES-NOT-REVIEWABLE work item.
+      await assertProviderNativeOutputQuality(request, artifacts, this.maxArtifactBytes);
+    }
     assertOutputsUpdated(baseline, artifacts, outputKeys(request), requiredUpdatedOutputKeys(request, baseline));
     assertFigmaExecutionEvidence(request, figmaWriteEvidence, artifacts);
     await onEvent("runner.completed", { exitCode });
@@ -988,13 +1153,155 @@ export class CodexTerminalRunner {
         );
       }
       throw new AppError(
-        `Codex 未生成所有必需产物：${missing.join(", ")}`,
+        `阶段执行未生成所有必需产物：${missing.join(", ")}`,
         422,
         "OUTPUT_ARTIFACTS_MISSING",
         { missing }
       );
     }
     return collected;
+  }
+
+  private async validateProviderNativeOutputs(
+    request: CodexRunRequest,
+    baseline: Map<string, string>,
+    repairState: ProviderNativeOutputRepairState,
+  ): Promise<ProviderNativeOutputValidation> {
+    try {
+      const artifacts = await this.collectArtifacts(request);
+      await assertProviderNativeOutputQuality(request, artifacts, this.maxArtifactBytes);
+      assertOutputsUpdated(
+        baseline,
+        artifacts,
+        outputKeys(request),
+        requiredUpdatedOutputKeys(request, baseline),
+      );
+      return { ready: true };
+    } catch (error) {
+      if (!(error instanceof AppError) || !recoverableProviderOutputErrorCodes.has(error.code)) {
+        throw error;
+      }
+      const affectedKeys = affectedOutputKeys(error, request);
+      const userStoriesIssues = providerOutputQualityIssues(error);
+      const userStoriesAffected = affectedKeys.includes("user-stories");
+      const designSpecIssues = providerDesignSpecQualityIssues(error);
+      const designSpecRepairRequired = providerDesignSpecRepairRequired(error);
+      const architectureCheckpointRepairRequired = providerArchitectureCheckpointRepairRequired(error);
+      const architectureRulebookIssues = providerArchitectureRulebookIssues(error);
+      const productDecisionMaterializationRepairRequired =
+        providerProductDecisionMaterializationRepairRequired(error);
+      const currentUserStoriesRepair = productDecisionMaterializationRepairRequired
+        && userStoriesAffected
+        ? {
+            mode: "story" as const,
+            instruction: [
+              "Discovery 已完成一轮结构化人工决定，本轮只能把答案物化为正式 PRD 与规范 Story。",
+              "先用 write_file + overwrite=true 移除根 README 中的 Blocker sentinel，再直接创建至少一个规范 story.md；不得调用 write_user_stories_blocker，也不得用新问题替换旧问题。",
+              "Story 必须使用稳定 US ID，并提供两个不同 AC，各自包含完整 Given/When/Then。",
+            ].join(" "),
+          }
+        : providerUserStoriesRepair(userStoriesIssues);
+      if (
+        userStoriesAffected
+        && currentUserStoriesRepair.mode === "story"
+        && (userStoriesIssues.length > 0 || productDecisionMaterializationRepairRequired)
+      ) {
+        repairState.userStoriesStoryBranchCommitted = true;
+      }
+      const userStoriesRepair = productDecisionMaterializationRepairRequired
+        && userStoriesAffected
+        ? currentUserStoriesRepair
+        : userStoriesAffected
+        && repairState.userStoriesStoryBranchCommitted
+        ? committedUserStoriesStoryRepair(userStoriesIssues, currentUserStoriesRepair)
+        : currentUserStoriesRepair;
+      const userStoriesStoryBranchLocked = userStoriesAffected
+        && repairState.userStoriesStoryBranchCommitted;
+      const affected = configuredOutputs(request)
+        .filter(({ id }) => affectedKeys.includes(id))
+        .map(({ id, relativePath }) => ({
+          artifactKey: id,
+          path: relativePath,
+          requiredMaterialization: providerOutputMaterializationRequirement(id, relativePath),
+            ...(id === "user-stories"
+              ? {
+                qualityRequirement: userStoriesStoryBranchLocked
+                  ? "at least one canonical Story with two distinct AC-owned complete Given/When/Then scenarios; this execution has committed to Story repair and cannot switch to Blocker"
+                  : "at least one canonical Story with two distinct AC-owned complete Given/When/Then scenarios, or one root README with the unique v1 Blocker sentinel, exact Blocked/Pending status, and substantive Missing facts, Open questions, Human owner, and Next step bullets",
+                qualityIssues: userStoriesIssues,
+                repairMode: userStoriesRepair.mode,
+                repairInstruction: userStoriesRepair.instruction,
+              }
+            : id === "design-spec" && designSpecRepairRequired
+              ? {
+                  qualityRequirement: "the file must start with one valid fenced JSON machine contract containing status plus explicit blockers, open_questions, and deferred_validations arrays",
+                  qualityIssues: designSpecIssues,
+                  repairInstruction: designSpecRepairInstruction(designSpecIssues),
+                }
+              : architectureCheckpointRepairRequired && [
+                "architecture-discovery-context",
+                "architecture-options",
+                "architecture",
+              ].includes(id)
+                ? {
+                    qualityRequirement: "the three Architect checkpoint files must be generated together by write_architecture_checkpoint and pass the current rulebook revision",
+                    qualityIssues: architectureRulebookIssues,
+                    repairInstruction: architectureCheckpointRepairInstruction(architectureRulebookIssues),
+                  }
+              : {}),
+        }));
+      return {
+        ready: false,
+        feedback: JSON.stringify({
+          platformFinalizationCheck: true,
+          accepted: false,
+          errorCode: error.code,
+          ...(productDecisionMaterializationRepairRequired
+            ? { repairReason: "PRODUCT_DECISION_MATERIALIZATION_REQUIRED" }
+            : {}),
+          affectedOutputs: affected,
+          instruction: [
+            "平台尚未接受本阶段结束。",
+            "继续使用本轮剩余的原生工具，在列出的仓库相对路径补齐或实际更新产物。",
+            productDecisionMaterializationRepairRequired
+              ? "当前是已答人工决定的物化执行：直接重写 PRD/Story，删除 Open Questions、Needs decision、TBD human decision 与 User Stories Blocker。不得新增或改写问题；人工授权最佳实践或放弃过度考虑时采用最小可逆默认值并落实为范围、规则、验收条件或显式假设。"
+              : designSpecRepairRequired
+              ? designSpecRepairInstruction(designSpecIssues)
+              : architectureCheckpointRepairRequired
+              ? architectureCheckpointRepairInstruction(architectureRulebookIssues)
+              : userStoriesStoryBranchLocked
+              ? "不要只回复解释；完成后再给最终说明。本轮已经锁定 Story 修复，不得通过清空文件或写 Blocker 降级分支。"
+              : "不要只回复解释；完成后再给最终说明。证据不足时写真实的 Pending/Blocked 状态、原因、human owner 和下一步，不能省略输出或编造结论。",
+          ].join(" "),
+        }),
+        error,
+        audit: {
+          reasonCode: productDecisionMaterializationRepairRequired
+            ? "PRODUCT_DECISION_MATERIALIZATION_REQUIRED"
+            : error.code,
+          affectedArtifactKeys: affectedKeys.slice(0, 8),
+          issueIds: providerOutputAuditIssueIds(error, userStoriesIssues),
+        },
+        ...(productDecisionMaterializationRepairRequired
+          ? { repairToolNames: ["write_file"] }
+        : designSpecRepairRequired
+          ? { repairToolNames: ["write_design_spec"] }
+        : architectureCheckpointRepairRequired
+          ? { repairToolNames: ["write_architecture_checkpoint"] }
+          : userStoriesRepair.mode === "blocker"
+          ? { repairToolNames: ["write_user_stories_blocker"] }
+          : userStoriesRepair.mode === "story" && (
+            userStoriesIssues.length > 0
+            || userStoriesStoryBranchLocked
+          )
+            ? { repairToolNames: providerStoryRepairToolNames(userStoriesIssues) }
+            : request.phase.id === "implementation"
+              && affectedKeys.length > 0
+              && hasCompleteEngineeringEvidencePack(request)
+              ? { repairToolNames: ["write_engineering_evidence_pack"] }
+              : {}),
+      };
+    }
   }
 
   private async snapshotArtifactHashes(request: CodexRunRequest): Promise<Map<string, string>> {
@@ -1010,6 +1317,771 @@ export class CodexTerminalRunner {
   }
 
 }
+
+function hasCompleteEngineeringEvidencePack(request: CodexRunRequest): boolean {
+  const configured = new Set(configuredOutputs(request).map(({ id }) => id));
+  return [
+    "implementation-notes",
+    "implementation-plan",
+    "implementation-tasks",
+    "engineering-session-log",
+    "engineering-test-evidence",
+    "engineering-review",
+    "engineering-provenance",
+  ].every((artifactKey) => configured.has(artifactKey));
+}
+
+const recoverableProviderOutputErrorCodes = new Set([
+  "OUTPUT_ARTIFACTS_MISSING",
+  "OUTPUT_ARTIFACTS_INVALID",
+  "SELECTED_OPTIONAL_OUTPUTS_UNCHANGED",
+  "SELECTED_OUTPUTS_UNCHANGED",
+  "OUTPUT_ARTIFACTS_UNCHANGED",
+]);
+
+function affectedOutputKeys(error: AppError, request: CodexRunRequest): string[] {
+  const selected = outputKeys(request);
+  if (error.code === "OUTPUT_ARTIFACTS_UNCHANGED") return selected;
+  const details = error.details as {
+    invalid?: unknown;
+    missing?: unknown;
+    unchanged?: unknown;
+  } | undefined;
+  const candidates = [
+    ...(Array.isArray(details?.invalid) ? details.invalid : []),
+    ...(Array.isArray(details?.missing) ? details.missing : []),
+    ...(Array.isArray(details?.unchanged) ? details.unchanged : []),
+  ].filter((value): value is string => typeof value === "string");
+  const matched = selected.filter((artifactKey) => candidates.some(
+    (candidate) => candidate === artifactKey || candidate.startsWith(`${artifactKey} (`),
+  ));
+  return matched.length > 0 ? matched : selected;
+}
+
+function providerOutputQualityIssues(error: AppError): UserStoriesQualityIssue[] {
+  const candidates = (error.details as { qualityIssues?: unknown } | undefined)?.qualityIssues;
+  if (!Array.isArray(candidates)) return [];
+  return [...new Set(candidates.filter(
+    (value): value is UserStoriesQualityIssue => (
+      typeof value === "string" && userStoriesQualityIssueCodes.has(value as UserStoriesQualityIssue)
+    ),
+  ))].slice(0, 20);
+}
+
+function providerProductDecisionMaterializationRepairRequired(error: AppError): boolean {
+  return (error.details as { reason?: unknown } | undefined)?.reason
+    === "PRODUCT_DECISION_MATERIALIZATION_REQUIRED";
+}
+
+const designSpecQualityIssueCodes = new Set([
+  "DESIGN_SPEC_MACHINE_CONTRACT_REQUIRED",
+  "DESIGN_SPEC_MACHINE_CONTRACT_INVALID",
+  "DESIGN_SPEC_VERSION_INVALID",
+  "DESIGN_SPEC_TITLE_REQUIRED",
+  "DESIGN_SPEC_MODE_INVALID",
+  "DESIGN_SPEC_EXTENDS_REQUIRED",
+  "DESIGN_SPEC_STATUS_INVALID",
+  "DESIGN_SPEC_DRAFT_NOT_FINAL",
+  "DESIGN_SPEC_SOURCE_ARRAY_REQUIRED",
+  "DESIGN_SPEC_SCREENS_REQUIRED",
+  "DESIGN_SPEC_COMPONENTS_ARRAY_REQUIRED",
+  "DESIGN_SPEC_ACCEPTANCE_CRITERIA_ARRAY_REQUIRED",
+  "DESIGN_SPEC_ACCEPTANCE_CRITERIA_REQUIRED",
+  "DESIGN_SPEC_ASSUMPTIONS_ARRAY_REQUIRED",
+  "DESIGN_SPEC_BLOCKERS_ARRAY_REQUIRED",
+  "DESIGN_SPEC_OPEN_QUESTIONS_ARRAY_REQUIRED",
+  "DESIGN_SPEC_DEFERRED_VALIDATIONS_INVALID",
+  "DESIGN_SPEC_READY_HAS_BLOCKERS",
+  "DESIGN_SPEC_BLOCKED_WITHOUT_BLOCKER",
+  "DESIGN_SPEC_HANDOFF_REQUIRED",
+  "DESIGN_SPEC_TEMPLATE_TOKEN_PRESENT",
+]);
+
+function providerDesignSpecQualityIssues(error: AppError): string[] {
+  const candidates = (error.details as { designSpecIssues?: unknown } | undefined)?.designSpecIssues;
+  if (!Array.isArray(candidates)) return [];
+  return [...new Set(candidates.filter((value): value is string => (
+    typeof value === "string" && designSpecQualityIssueCodes.has(value)
+  )))].slice(0, 20);
+}
+
+function providerDesignSpecRepairRequired(error: AppError): boolean {
+  return (error.details as { reason?: unknown } | undefined)?.reason
+    === "DESIGN_SPEC_MACHINE_CONTRACT_REQUIRED";
+}
+
+function designSpecRepairInstruction(issues: readonly string[]): string {
+  return [
+    "当前 design-spec 不能进入人工审核；这不是新的业务决定，而是 Designer 输出合同缺失或无效。",
+    "下一次必须直接调用 write_design_spec；只提交该工具声明的结构化设计字段，不要提交 path、Markdown 或 JSON 字符串，也不要改用 write_file。平台会确定性完整覆写所选 design-spec，并生成合法 fenced JSON 与 Handoff。",
+    "所有数组字段都必须显式提交；没有开放问题、blocker 或延后验证时分别提交 []。ready-for-engineering 必须配合 blockers=[]；blocked 必须列出至少一个真实 blocker。不要只回复解释。",
+    ...(issues.length > 0 ? [`平台检测项：${issues.join("、")}`] : []),
+  ].join(" ");
+}
+
+function providerArchitectureCheckpointRepairRequired(error: AppError): boolean {
+  return (error.details as { reason?: unknown } | undefined)?.reason
+    === "ARCHITECTURE_CHECKPOINT_CONTRACT_REQUIRED";
+}
+
+function providerArchitectureRulebookIssues(error: AppError): string[] {
+  const candidates = (
+    error.details as { architectureRulebookIssues?: unknown } | undefined
+  )?.architectureRulebookIssues;
+  if (!Array.isArray(candidates)) return [];
+  return [...new Set(candidates.filter((value): value is string => (
+    typeof value === "string" && /^[A-Z][A-Z0-9_]{1,126}$/u.test(value)
+  )))].slice(0, 20);
+}
+
+function architectureCheckpointRepairInstruction(issues: readonly string[]): string {
+  return [
+    "当前 Architect 检查点不能进入人工选型；这不是新的架构决定，而是三份产物没有绑定当前规则簿 revision 或跨产物语义不一致。",
+    "下一次必须直接调用 write_architecture_checkpoint，一次提交真实 scopes、applicablePackIds 和至少三个 options；不要提交 path、Markdown、JSON、digest、ruleId、scope id 或 option id，也不要改用 write_file/apply_patch。平台会确定性补全固定字段并完整覆写三份检查点。",
+    "applicablePackIds 只列确实适用的规则包；未列规则包由平台显式记录为 not_applicable。recommendedOptionNumber 使用从 1 开始的方案序号，且只表示 Architect 建议，不能代替人工选型。不要只回复解释。",
+    ...(issues.length > 0 ? [`平台检测项：${issues.join("、")}`] : []),
+  ].join(" ");
+}
+
+function providerOutputAuditIssueIds(
+  error: AppError,
+  userStoriesIssues: readonly UserStoriesQualityIssue[],
+): string[] {
+  const itemIds = (error.details as { itemIds?: unknown } | undefined)?.itemIds;
+  const safeItemIds = Array.isArray(itemIds)
+    ? itemIds.filter((value): value is string => (
+        typeof value === "string"
+        && value.length > 0
+        && value.length <= 128
+        && /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(value)
+      ))
+    : [];
+  return [...new Set([...userStoriesIssues, ...safeItemIds])].slice(0, 20);
+}
+
+function providerUserStoriesRepair(issues: readonly UserStoriesQualityIssue[]): {
+  mode: "story" | "blocker" | "story-or-blocker";
+  instruction: string;
+} {
+  if (issues.includes("BLOCKER_ANSWER_NOT_MATERIALIZED")) {
+    return {
+      mode: "story",
+      instruction: [
+        "当前 User Stories Blocker 对应的具体人工答案已经记录；这不是新的人工决定，而是 PM / BA 尚未把答案落实到正式产物。",
+        "先用 read_file 核对根 README.md；再用 write_file + overwrite=true 移除 Blocker sentinel，并依据 Change Contract、PRD 与 revision feedback 创建规范 story.md。",
+        "不得再次调用 write_user_stories_blocker、改写同一问题或要求用户重复回答；至少生成一个带稳定 US ID 的 Story，并提供两个不同 AC，各自包含完整 Given/When/Then。",
+      ].join(" "),
+    };
+  }
+  if (issues.includes("BLOCKER_OPEN_QUESTION_NOT_SPECIFIC")) {
+    return {
+      mode: "story-or-blocker",
+      instruction: [
+        "当前 Blocker 只是在泛问是否还有优先级、业务规则、要求、偏好或约束，没有指出一个可由人回答的具体决策维度，因此不能作为新的人工门禁。",
+        "重新依据 Change Contract、PRD 与 revision feedback 判断：已记录事实足够时移除旧 Blocker 并生成规范 Story；确有新的业务缺口时，必须提出一个具体、可选择或可确认且尚未被已有答案覆盖的问题。",
+        "不要重复询问主题、布局、指标或其他已记录决定，也不要把文件、工具、平台门禁或重试写成产品事实。",
+      ].join(" "),
+    };
+  }
+  if (issues.some((issue) => blockerMigrationRepairIssues.has(issue))) {
+    return {
+      mode: "story-or-blocker",
+      instruction: [
+        "当前 Blocker 把平台迁移顺序写成了产品事实，或在根 README/sentinel 上存在结构冲突；仅强制重写 canonical Blocker 不能保证清除其他冲突文件。",
+        "先检查 user-stories 目录；对仍含旧 sentinel 的冲突文件，用 write_file + overwrite=true 重写为不含 sentinel 的正常内容。不要把工具/文件错误、既存 Blocker 本身或清理动作写成新的业务 Blocker。",
+        "重新只依据 Change Contract、PRD 和用户提供的业务事实判断：事实足够时，先用 write_file + overwrite=true 重写 user-stories 根 README 并移除 sentinel，再创建或更新规范 Story；事实确实不足时，才调用 write_user_stories_blocker，并只填写真实缺失的目标用户、问题、outcome、业务规则或验收决策。",
+        "missingFacts、openQuestions 和 nextStep 不得引用已有 Blocker、README/Story 文件、路径、sentinel、工具、平台门禁、校验错误、重试或无法编辑等工作流机制；missingFacts 与 openQuestions 必须一次汇总当前全部真实未决项。",
+      ].join(" "),
+    };
+  }
+  if (issues.some((issue) => issue.startsWith("BLOCKER_"))) {
+    const targetedRepairs = issues.flatMap((issue) => {
+      switch (issue) {
+        case "BLOCKER_ROOT_README_REQUIRED":
+          return ["根目录只能有一个 README.md 承载 Blocker；不要把 Blocker 写进子目录或 Story 文件。"];
+        case "BLOCKER_SENTINEL_MUST_BE_UNIQUE":
+          return ["README.md 和整个 user-stories 目录中只能出现一次精确 sentinel `<!-- ai-sdlc:user-stories-blocker:v1 -->`。"];
+        case "BLOCKER_STATUS_MUST_BE_EXACT":
+          return ["删除其他 Status 写法，只保留唯一整行纯文本 `Status: Pending` 或 `Status: Blocked`；不要给状态值加粗、加列表符号或追加说明。"];
+        case "BLOCKER_MISSING_FACTS_REQUIRED":
+          return ["恰好保留一个 `## Missing facts`，并在其下写至少一个以 `- ` 开头、说明真实缺失事实的完整 bullet。"];
+        case "BLOCKER_OPEN_QUESTIONS_REQUIRED":
+          return ["恰好保留一个 `## Open questions`，并在其下写至少一个以 `- ` 开头、可由人回答的具体问题。"];
+        case "BLOCKER_HUMAN_OWNER_REQUIRED":
+          return ["恰好保留一个 `## Human owner`，并在其下用 `- ` bullet 写明真实人工角色。"];
+        case "BLOCKER_NEXT_STEP_REQUIRED":
+          return ["恰好保留一个 `## Next step`，并在其下用至少一个 `- ` bullet 写明该人工负责人接下来要完成的具体动作；标题后的普通段落不算 bullet。"];
+        case "BLOCKER_KNOWN_FACTS_INVALID":
+          return ["删除无效或重复的 `## Known facts`，或只保留一个并在其下写至少一个有事实内容的 `- ` bullet。"];
+        default:
+          return [];
+      }
+    });
+    return {
+      mode: "blocker",
+      instruction: [
+        "下一次响应必须调用平台指定的 write_user_stories_blocker；只提交结构化字段，不要再用 write_file 手写 README、路径、Markdown 或 sentinel，也不要新增虚构 Story。",
+        "status 只能是 Blocked 或 Pending；missingFacts、openQuestions 必须分别是基于当前 Change Contract/PRD 的 1-20 个实质完整字符串数组，并一次汇总当前全部未决项；humanOwner、nextStep 必须是实质完整字符串。所有字段都不能写 TBD、TODO、placeholder、模板 token 或空泛占位语；平台会确定性生成唯一 `<!-- ai-sdlc:user-stories-blocker:v1 -->`、标题、Status、H2 和 bullets。",
+        ...targetedRepairs,
+      ].join(" "),
+    };
+  }
+  if (issues.includes("STORY_NONCANONICAL_CONTENT_REQUIRES_STORY")) {
+    return {
+      mode: "story",
+      instruction: [
+        "user-stories 已有非空、非 Blocker 的 README/说明内容，这表示本轮已经选择生成 Story 分支，但仍没有规范 story.md；不能再以 prose、placeholder 或新 Blocker 结束。",
+        "下一步直接用 write_file 创建一个规范 story.md；不要把 user-stories 目录作为 read_file 参数。H1 使用稳定 US ID，并提供两个不同 AC，各自包含完整 Given/When/Then。",
+      ].join(" "),
+    };
+  }
+  if (issues.includes("STORY_CANONICAL_FILE_REQUIRED")) {
+    return {
+      mode: "story-or-blocker",
+      instruction: "事实足够时创建规范 Story；事实不足时改写根 README.md 为 versioned Blocker。不要再提交 placeholder 或只回复解释。",
+    };
+  }
+  if (
+    issues.includes("STORY_HEADING_INVALID")
+    || issues.includes("STORY_TWO_AC_SCENARIOS_REQUIRED")
+    || issues.includes("STORY_TEMPLATE_TOKEN_PRESENT")
+    || issues.includes("STORY_IDS_MUST_BE_UNIQUE")
+  ) {
+    const targetedRepairs = [
+      ...(issues.includes("STORY_HEADING_INVALID")
+        ? ["首行必须是 `# US-<three-or-more-digits>: <title>`，冒号不可省略，且 ID 必须与当前 story.md 的 Story ID 一致。"]
+        : []),
+      ...(issues.includes("STORY_TWO_AC_SCENARIOS_REQUIRED")
+        ? [
+            "同一份 Story 至少写两个不同 H3：`### US-<same-id>-AC-01: <title>` 与 `### US-<same-id>-AC-02: <title>`。",
+            "每个 AC 的 H3 下都必须各自包含一个独立的 fenced `gherkin` 代码块，并在该代码块中各有非空 `Given ...`、`When ...`、`Then ...` 三行；不能把两个 AC 共用一个场景。",
+          ]
+        : []),
+      ...(issues.includes("STORY_TEMPLATE_TOKEN_PRESENT")
+        ? ["删除 TBD、TODO、placeholder、`{{...}}` 与模板说明，改成基于当前 Change Contract/PRD 的实质内容。"]
+        : []),
+      ...(issues.includes("STORY_IDS_MUST_BE_UNIQUE")
+        ? ["每个 canonical story.md 使用唯一 US ID，目录、H1 与 AC 前缀保持一致。"]
+        : []),
+    ];
+    return {
+      mode: "story",
+      instruction: [
+        "下一次先 read_file 核对已创建的目标 story.md；随后优先调用 write_file 并使用 overwrite=true 一次完整重写该 Story，不要继续猜测 oldText 或重复 apply_patch，也不要改写成 Blocker。",
+        ...targetedRepairs,
+      ].join(" "),
+    };
+  }
+  return {
+    mode: "story-or-blocker",
+    instruction: "当前 user-stories 尚无可识别的非空 Story 或 Blocker 内容。事实足够时创建规范 Story；事实确实不足时调用结构化 Blocker 工具，不能只回复说明。",
+  };
+}
+
+function committedUserStoriesStoryRepair(
+  issues: readonly UserStoriesQualityIssue[],
+  current: ReturnType<typeof providerUserStoriesRepair>,
+): ReturnType<typeof providerUserStoriesRepair> {
+  return {
+    mode: "story",
+    instruction: [
+      "本次 finalization 已根据非空 Story 分支内容进入 Story-only 修复；该选择在本轮执行中保持锁定。后续把文件写空、改成 Blocker prose 或写入 Blocker sentinel，都不能重新开放 Blocker 分支。",
+      "若门禁指出仅缺 canonical story.md，下一步直接用 write_file 创建它；其他 Story 修复只能用 read_file 读取具体的 README.md 或已有 story.md，不能把 user-stories 目录作为 read_file 参数，再用 write_file 完整重写。H1 使用稳定 US ID，并提供两个不同 AC，各自包含完整 Given/When/Then。若当前 README 含 Blocker/sentinel，先重写为不含 sentinel 的普通说明，再继续写规范 story.md。",
+      ...(issues.length > 0 && current.mode === "story" ? [current.instruction] : []),
+    ].join(" "),
+  };
+}
+
+function providerStoryRepairToolNames(
+  issues: readonly UserStoriesQualityIssue[],
+): readonly string[] {
+  // A non-empty README with no canonical story.md has no Story file to read.
+  // Requiring read_file here points small local models at the directory itself,
+  // which the rooted host must reject. Require the actual materializing write;
+  // the deterministic output gate still validates structure and freshness.
+  return issues.includes("STORY_NONCANONICAL_CONTENT_REQUIRES_STORY")
+    ? ["write_file"]
+    : ["read_file", "write_file"];
+}
+
+const blockerMigrationRepairIssues = new Set<UserStoriesQualityIssue>([
+  "BLOCKER_ROOT_README_REQUIRED",
+  "BLOCKER_SENTINEL_MUST_BE_UNIQUE",
+  "BLOCKER_WORKFLOW_MECHANISM_FORBIDDEN",
+]);
+
+function providerOutputMaterializationRequirement(
+  artifactKey: string,
+  relativePath: string,
+): string {
+  if (artifactKey === "user-stories") {
+    return "directory-with-reviewable-story-files-or-structured-blocker";
+  }
+  if (artifactKey === "design-spec") {
+    return "non-empty-markdown-starting-with-valid-machine-json-contract";
+  }
+  return path.extname(relativePath)
+    ? "non-empty-file"
+    : "directory-with-at-least-one-non-empty-regular-file";
+}
+
+/**
+ * Once the complete Discovery decision batch has been answered, neither
+ * runtime may reopen it by moving the same pending work under an unrecognised
+ * PRD heading. This detector intentionally recognises decision-shaped
+ * structure, not incidental words: a Risks/Assumptions row that explains the
+ * literal token `TBD` or phrase `Needs decision` is not itself an open gate.
+ */
+function productDecisionMaterializationPrdIssueIds(content: string): string[] {
+  const issueIds = new Set<string>();
+  let fenced = false;
+  let pendingSectionLevel: number | null = null;
+  for (const sourceLine of content.split(/\r?\n/u)) {
+    const line = sourceLine.trim();
+    if (/^(?:```|~~~)/u.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced || !line || /^>/u.test(line)) continue;
+
+    const headingMatch = /^(#{1,6})\s+(.+?)\s*#*$/u.exec(line);
+    if (headingMatch?.[1] && headingMatch[2]) {
+      const headingLevel = headingMatch[1].length;
+      const heading = headingMatch[2];
+      if (pendingSectionLevel !== null && headingLevel <= pendingSectionLevel) {
+        pendingSectionLevel = null;
+      }
+      if (isPendingProductDecisionHeading(heading)) {
+        pendingSectionLevel = headingLevel;
+      } else if (
+        pendingSectionLevel !== null
+        && !isClosedPendingProductDecisionText(heading)
+      ) {
+        // A nested heading is content of the pending section. Only an explicit
+        // closed/none heading is non-substantive.
+        issueIds.add("PRODUCT-MATERIALIZATION-PRD-PENDING-SECTION");
+      }
+      continue;
+    }
+
+    const withoutInlineExamples = line
+      .replace(/`[^`\n]*`/gu, "")
+      .replace(/<!--[^]*?-->/gu, "")
+      .trim();
+    if (!withoutInlineExamples) continue;
+    if (
+      pendingSectionLevel !== null
+      && !isClosedPendingProductDecisionText(withoutInlineExamples)
+      && !isMarkdownScaffoldingLine(withoutInlineExamples)
+    ) {
+      issueIds.add("PRODUCT-MATERIALIZATION-PRD-PENDING-SECTION");
+    }
+    if (isExplicitPendingProductDecisionLine(withoutInlineExamples)) {
+      issueIds.add("PRODUCT-MATERIALIZATION-PRD-PENDING-STATEMENT");
+    }
+  }
+  return [...issueIds];
+}
+
+function isPendingProductDecisionHeading(heading: string): boolean {
+  const normalized = heading
+    .normalize("NFKC")
+    .replace(/[*_~]/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLocaleLowerCase("en-US");
+  if (
+    /\b(?:resolved|closed|decided|completed)\b/u.test(normalized)
+    || /\bno\s+(?:open|pending|unresolved)\s+(?:questions?|choices?|decisions?|items?)\b/u.test(normalized)
+    || /\b(?:open|pending|unresolved)\s+(?:questions?|choices?|decisions?|items?)\s*(?:[:：—-]|\()\s*(?:none|n\/a|not applicable|nothing)\b/u.test(normalized)
+    || /(?:已解决|已关闭|已决定|已决策|已确认|已完成)/u.test(normalized)
+    || /(?:开放问题|未决(?:问题|事项|选择|决定|决策)|待(?:确认|决定|决策|选择)(?:问题|事项|项)?)\s*[:：—-]\s*(?:无|暂无|没有|不适用)/u.test(normalized)
+  ) return false;
+  return /\b(?:open|pending|unresolved)\s+(?:product\s+)?(?:question|questions|choice|choices|decision|decisions|item|items)\b/u.test(normalized)
+    || /\b(?:question|questions|choice|choices|decision|decisions)\s+(?:needed|required|pending|unresolved)\b/u.test(normalized)
+    || /(?:开放问题|未决(?:问题|事项|选择|决定|决策)|待(?:确认|决定|决策|选择)(?:问题|事项|项)?|需(?:要)?(?:确认|决定|决策|选择)(?:问题|事项|项)?)/u.test(normalized);
+}
+
+function isClosedPendingProductDecisionText(line: string): boolean {
+  const normalized = line
+    .normalize("NFKC")
+    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+|\[[xX ]\]\s*)/u, "")
+    .replace(/[*_~]/gu, "")
+    .replace(/^\|\s*|\s*\|$/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return /^(?:none|n\/a|not applicable|nothing pending)(?:\s*(?:[.!;:()—-]|$))/iu.test(normalized)
+    || /^no\s+(?:(?:open|pending|unresolved)\s+)?(?:questions?|choices?|decisions?|items?)(?:\s*(?:[.!;:()—-]|$))/iu.test(normalized)
+    || /^(?:all|every)\s+(?:(?:prior|previous|recorded|product|human)\s+)*(?:questions?|choices?|decisions?|items?)\s+(?:(?:have|has)\s+been\s+|(?:are|is)\s+)?(?:resolved|closed|decided|answered|materialized|incorporated|completed)(?:\s*(?:[.!;:()—-]|$))/iu.test(normalized)
+    || /^(?:resolved|closed|completed)(?:\s*(?:[.!;:()—-]|$))/iu.test(normalized)
+    || /^(?:无|暂无|没有|不适用)(?:[。；;！!，,：:]|$)/u.test(normalized)
+    || /^(?:无|暂无|没有)(?:开放|未决|待确认|待决定|待决策|待选择|需要确认|需要决定|需要决策|需要选择)(?:问题|事项|选择|决定|决策|项)?(?:[。；;！!，,：:]|$)/u.test(normalized)
+    || /^(?:已全部|全部已|所有(?:问题|事项|选择|决定|决策)(?:均|都)?已)(?:解决|关闭|确认|决定|决策|答复|落实|物化|完成)(?:[。；;！!，,：:]|$)/u.test(normalized);
+}
+
+function isMarkdownScaffoldingLine(line: string): boolean {
+  if (/^[-:|\s]+$/u.test(line)) return true;
+  if (!/^\|.*\|$/u.test(line)) return false;
+  const cells = line
+    .slice(1, -1)
+    .split("|")
+    .map((cell) => cell.trim())
+    .filter(Boolean);
+  return cells.length > 0 && cells.every((cell) => (
+    /^:?-{3,}:?$/u.test(cell)
+    || /^(?:status|question|choice|decision|item|details?|notes?|状态|问题|选择|决定|决策|事项|详情|备注)$/iu.test(cell)
+  ));
+}
+
+function isExplicitPendingProductDecisionLine(line: string): boolean {
+  const normalized = line.normalize("NFKC").trim();
+  const listBody = normalized.replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/u, "");
+  if (
+    /^(?:TBD(?:\s*[—:-]\s*(?:human\s+decision)?)?|Needs?\s+(?:a\s+)?(?:human\s+)?decision|Pending\s+(?:human\s+)?(?:decision|choice)|To\s+be\s+decided)(?:\b|\s*[:：—-])/iu.test(listBody)
+    || /^(?:待(?:确认|决定|决策|选择)|需(?:要)?(?:确认|决定|决策|选择))(?:\s*[:：—-]|事项|问题|项)/u.test(listBody)
+    || /^(?:Decision|Choice|Open\s+question|Human\s+decision|Decision\s+status|Choice\s+status)\s*[:：]\s*(?:TBD|Pending|Open|Unresolved|Needs?\s+decision|Required)\b/iu.test(listBody)
+    || /^(?:决定|决策|选择|开放问题|人工决定|决定状态|决策状态)\s*[:：]\s*(?:待定|待确认|待决定|待决策|未决|需要决定|需要确认)/u.test(listBody)
+  ) return true;
+
+  if (!/^\|.*\|$/u.test(normalized)) return false;
+  const cells = normalized
+    .slice(1, -1)
+    .split("|")
+    .map((cell) => cell.trim())
+    .filter(Boolean);
+  const label = cells[0] ?? "";
+  if (/^(?:Risk|Risks|Assumption|Assumptions|风险|假设)$/iu.test(label)) return false;
+  const pendingValue = /^(?:TBD|Pending|Open|Unresolved|Needs?\s+decision|Required|待定|待确认|待决定|待决策|未决|需要决定|需要确认)(?:\b|\s|[:：—-]|$)/iu;
+  return (
+    /^(?:Decision|Choice|Open question|Human decision|Decision status|Choice status|决定|决策|选择|开放问题|人工决定|决定状态|决策状态)$/iu.test(label)
+    && pendingValue.test(cells.slice(1).join(" "))
+  ) || cells.slice(1).some((cell) => pendingValue.test(cell));
+}
+
+function assertProductDecisionMaterializationOutputQuality(
+  request: CodexRunRequest,
+  artifacts: readonly ArtifactRecordInput[],
+): void {
+  if (request.phase.id !== "discovery" || !request.productDecisionMaterializationRequired) return;
+
+  // The shared product parser historically treats any table row containing
+  // the literal words TBD/Needs decision as an incomplete field. Under the
+  // lock, use it for Story structure and apply the stricter structural PRD
+  // detector above so ordinary risk/example prose is not a false blocker.
+  const decisionGate = assessPhaseHumanDecisionGate({
+    phaseId: "discovery",
+    phaseStatus: "awaiting_review",
+    artifacts: artifacts.filter(({ artifactKey }) => artifactKey !== "prd"),
+    reviews: [],
+    enforceUserStoriesQuality: true,
+  });
+  const unresolvedMaterialization = decisionGate.items.filter(
+    ({ id, blocking, kind }) => (
+      blocking
+      && (kind === "decision" || kind === "work")
+      // Detailed Story validation runs immediately after this lock and owns
+      // exact issues such as H1/AC/Given-When-Then. Keeping this generic item
+      // here hides those actionable codes and sends small models to README.
+      && id !== "PRODUCT-STORIES-NOT-REVIEWABLE"
+    ),
+  );
+  const prd = artifacts.find(({ artifactKey }) => artifactKey === "prd");
+  const prdIssueIds = prd ? productDecisionMaterializationPrdIssueIds(prd.content) : [];
+  if (unresolvedMaterialization.length === 0 && prdIssueIds.length === 0) return;
+
+  throw new AppError(
+    "阶段产物不可审核：Discovery 已完成结构化人工决定，但 PM / BA 又新增或保留了产品开放问题、Blocker 或未完成角色工作；本轮必须把已记录答案落实到 PRD 与真实 Story，不能串行制造新的人工门禁",
+    422,
+    "OUTPUT_ARTIFACTS_INVALID",
+    {
+      invalid: [...new Set([
+        ...unresolvedMaterialization.map(({ artifactKey }) => artifactKey),
+        ...(prdIssueIds.length > 0 ? ["prd"] : []),
+      ])],
+      reason: "PRODUCT_DECISION_MATERIALIZATION_REQUIRED",
+      itemIds: [
+        ...unresolvedMaterialization.map(({ id }) => id),
+        ...prdIssueIds,
+      ],
+    },
+  );
+}
+
+/**
+ * Provider-native phases receive a bounded repair turn before their final is
+ * accepted. Keep this gate deterministic and deliberately narrow: the PM / BA
+ * story set must be actionable evidence, not a non-empty placeholder used only
+ * to satisfy directory materialization.
+ */
+async function assertProviderNativeOutputQuality(
+  request: CodexRunRequest,
+  artifacts: readonly ArtifactRecordInput[],
+  maxArtifactBytes: number,
+): Promise<void> {
+  if (request.phase.id === "architecture" && !request.architectureSelection) {
+    await assertProviderNativeArchitectureCheckpointQuality(request, artifacts);
+    return;
+  }
+  if (request.phase.id === "design") {
+    assertProviderNativeDesignSpecOutputQuality(request, artifacts);
+    return;
+  }
+  if (request.phase.id !== "discovery") return;
+  assertProductDecisionMaterializationOutputQuality(request, artifacts);
+  const stories = artifacts.find(({ artifactKey }) => artifactKey === "user-stories");
+  if (!stories) return;
+  const storiesPath = configuredOutputs(request)
+    .find(({ id }) => id === "user-stories")?.absolutePath;
+  if (!storiesPath) return;
+  const entries = await readArtifactTextEntries(storiesPath, maxArtifactBytes);
+  const quality = assessUserStoriesQualityEntries(entries);
+  if (quality.valid) {
+    const blocker = quality.kind === "blocker"
+      ? parseUserStoriesBlockerEntries(entries)!
+      : null;
+    const blockerFingerprint = blocker
+      ? userStoriesBlockerDecisionFingerprint(blocker)
+      : null;
+    const blockerScope = blocker
+      ? userStoriesBlockerDecisionScope(blocker)
+      : null;
+    if (
+      (
+        blockerFingerprint
+        && request.answeredUserStoriesBlockerFingerprints?.includes(blockerFingerprint)
+      )
+      || (
+        blockerScope
+        && request.answeredUserStoriesBlockerScopes?.some((answeredScope) => (
+          isUserStoriesBlockerDecisionScopeCovered(blockerScope, answeredScope)
+        ))
+      )
+    ) {
+      throw new AppError(
+        "阶段产物不可审核：当前 User Stories Blocker 已有具体人工答复，但 PM / BA 尚未把答案落实到 PRD 与真实 Story；本次选中产物变更将回滚",
+        422,
+        "OUTPUT_ARTIFACTS_INVALID",
+        {
+          invalid: ["user-stories"],
+          reason: "ANSWERED_USER_STORIES_BLOCKER_NOT_MATERIALIZED",
+          qualityIssues: ["BLOCKER_ANSWER_NOT_MATERIALIZED"],
+        },
+      );
+    }
+    return;
+  }
+  throw new AppError(
+    "阶段产物不可审核：artifact key: user-stories 必须包含至少一个可审核 Story（两个不同 AC 各有完整 Given/When/Then），或根 README 中唯一 versioned sentinel 与完整 Missing facts、问题、人工负责人和下一步；本次选中产物变更将回滚",
+    422,
+    "OUTPUT_ARTIFACTS_INVALID",
+    {
+      invalid: ["user-stories"],
+      reason: "USER_STORIES_STORY_OR_BLOCKER_REQUIRED",
+      qualityIssues: quality.issues,
+    },
+  );
+}
+
+async function assertProviderNativeArchitectureCheckpointQuality(
+  request: CodexRunRequest,
+  artifacts: readonly ArtifactRecordInput[],
+): Promise<void> {
+  const checkpointKeys = [
+    "architecture-discovery-context",
+    "architecture-options",
+    "architecture",
+  ] as const;
+  if (!checkpointKeys.every((artifactKey) => outputKeys(request).includes(artifactKey))) return;
+  const options = artifacts.find(({ artifactKey }) => artifactKey === "architecture-options");
+  if (!options) return;
+  try {
+    await validateArchitectureRulebookReview({
+      projectRoot: request.project.rootPath,
+      controlRoot: request.definition.controlRoot,
+      stage: "checkpoint",
+      artifacts: artifacts.map((artifact) => ({
+        artifactKey: artifact.artifactKey,
+        content: artifact.content,
+        filePath: artifact.filePath,
+        revisionSource: "ai" as const,
+      })),
+      documentedOptionIds: architectureOptionIds(options.content),
+    });
+  } catch (error) {
+    if (!(error instanceof AppError) || error.code !== "ARCHITECTURE_RULEBOOK_INVALID") throw error;
+    const issueCodes = [...new Set(
+      ((error.details as { issues?: unknown } | undefined)?.issues as Array<{ code?: unknown }> | undefined)
+        ?.map(({ code }) => code)
+        .filter((code): code is string => (
+          typeof code === "string" && /^[A-Z][A-Z0-9_]{1,126}$/u.test(code)
+        )) ?? [],
+    )].slice(0, 20);
+    throw new AppError(
+      "阶段产物不可审核：Architect 检查点没有通过当前规则簿语义校验；平台将在同一执行中要求结构化重写，不能把无效 options 交给人工选型",
+      422,
+      "OUTPUT_ARTIFACTS_INVALID",
+      {
+        invalid: [...checkpointKeys],
+        reason: "ARCHITECTURE_CHECKPOINT_CONTRACT_REQUIRED",
+        architectureRulebookIssues: issueCodes,
+        itemIds: issueCodes,
+      },
+    );
+  }
+}
+
+function assertProviderNativeDesignSpecOutputQuality(
+  request: CodexRunRequest,
+  artifacts: readonly ArtifactRecordInput[],
+): void {
+  if (!outputKeys(request).includes("design-spec")) return;
+  const spec = artifacts.find(({ artifactKey }) => artifactKey === "design-spec");
+  if (!spec) return;
+
+  const issues: string[] = [];
+  let finalStatus = "";
+  const match = /^\s*```json\s*([\s\S]*?)```/iu.exec(spec.content);
+  let envelope: Record<string, unknown> | null = null;
+  if (!match?.[1]) {
+    issues.push("DESIGN_SPEC_MACHINE_CONTRACT_REQUIRED");
+  } else {
+    try {
+      const parsed = JSON.parse(match[1]) as unknown;
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        envelope = parsed as Record<string, unknown>;
+      } else {
+        issues.push("DESIGN_SPEC_MACHINE_CONTRACT_INVALID");
+      }
+    } catch {
+      issues.push("DESIGN_SPEC_MACHINE_CONTRACT_INVALID");
+    }
+  }
+
+  if (envelope) {
+    const meaningfulText = (value: unknown): boolean => (
+      typeof value === "string" && value.trim().length > 0
+    );
+    const status = typeof envelope.status === "string"
+      ? envelope.status.trim().toLocaleLowerCase("en-US")
+      : "";
+    finalStatus = status;
+    const mode = typeof envelope.mode === "string"
+      ? envelope.mode.trim().toLocaleLowerCase("en-US")
+      : "";
+    const blockers = Array.isArray(envelope.blockers) ? envelope.blockers : null;
+    const {
+      // These values come from immutable platform context when the structured
+      // Designer tool is used. A legitimate Run title such as "TODO list"
+      // must not create a repair loop the model has no authority to resolve.
+      title: _platformTitle,
+      source: _platformSource,
+      extends: _platformExtends,
+      ...modelAuthoredEnvelope
+    } = envelope;
+    if (/(?:<[^>\n]+>|\{\{[^}\n]+\}\}|\b(?:TBD|TODO|placeholder)\b)/iu.test(JSON.stringify(modelAuthoredEnvelope))) {
+      issues.push("DESIGN_SPEC_TEMPLATE_TOKEN_PRESENT");
+    }
+    if (String(envelope.spec_version ?? "").trim() !== "1.0") {
+      issues.push("DESIGN_SPEC_VERSION_INVALID");
+    }
+    if (!meaningfulText(envelope.title)) issues.push("DESIGN_SPEC_TITLE_REQUIRED");
+    if (!new Set(["new", "change"]).has(mode)) issues.push("DESIGN_SPEC_MODE_INVALID");
+    if (mode === "change" && !meaningfulText(envelope.extends)) {
+      issues.push("DESIGN_SPEC_EXTENDS_REQUIRED");
+    }
+    if (!new Set(["draft", "blocked", "ready-for-engineering"]).has(status)) {
+      issues.push("DESIGN_SPEC_STATUS_INVALID");
+    }
+    if (status === "draft") issues.push("DESIGN_SPEC_DRAFT_NOT_FINAL");
+    if (!Array.isArray(envelope.source) || envelope.source.length === 0) {
+      issues.push("DESIGN_SPEC_SOURCE_ARRAY_REQUIRED");
+    }
+    if (!Array.isArray(envelope.screens) || envelope.screens.length === 0) {
+      issues.push("DESIGN_SPEC_SCREENS_REQUIRED");
+    }
+    if (!Array.isArray(envelope.components)) {
+      issues.push("DESIGN_SPEC_COMPONENTS_ARRAY_REQUIRED");
+    }
+    if (!Array.isArray(envelope.acceptance_criteria)) {
+      issues.push("DESIGN_SPEC_ACCEPTANCE_CRITERIA_ARRAY_REQUIRED");
+    } else if (status === "ready-for-engineering" && envelope.acceptance_criteria.length === 0) {
+      issues.push("DESIGN_SPEC_ACCEPTANCE_CRITERIA_REQUIRED");
+    }
+    if (!Array.isArray(envelope.assumptions)) {
+      issues.push("DESIGN_SPEC_ASSUMPTIONS_ARRAY_REQUIRED");
+    }
+    if (!blockers) issues.push("DESIGN_SPEC_BLOCKERS_ARRAY_REQUIRED");
+    if (!Array.isArray(envelope.open_questions)) {
+      issues.push("DESIGN_SPEC_OPEN_QUESTIONS_ARRAY_REQUIRED");
+    }
+    const deferredAssessment = assessDeferredDesignValidations(envelope.deferred_validations);
+    if (deferredAssessment.errors.length > 0) {
+      issues.push("DESIGN_SPEC_DEFERRED_VALIDATIONS_INVALID");
+    }
+    if (status === "ready-for-engineering" && blockers && blockers.length > 0) {
+      issues.push("DESIGN_SPEC_READY_HAS_BLOCKERS");
+    }
+    if (status === "blocked" && blockers && blockers.length === 0) {
+      issues.push("DESIGN_SPEC_BLOCKED_WITHOUT_BLOCKER");
+    }
+  }
+  const requiredHandoffSections = finalStatus === "ready-for-engineering"
+    ? [
+        "Build scope",
+        "Behavior to preserve",
+        "Do not infer",
+        "Allowed design flexibility",
+        "Validation evidence",
+        "Deferred verification",
+        "Open decisions and blockers",
+      ]
+    : finalStatus === "blocked"
+      ? ["Open decisions and blockers"]
+      : [];
+  if (
+    !/^##\s+Handoff to Software Engineer\s*$/imu.test(spec.content)
+    || !/^\*\*Next owner:\*\*\s*Software Engineer\s*$/imu.test(spec.content)
+    || requiredHandoffSections.some((heading) => (
+      !spec.content.split(/\r?\n/u).some((line) => line.trim() === `### ${heading}`)
+    ))
+  ) {
+    issues.push("DESIGN_SPEC_HANDOFF_REQUIRED");
+  }
+
+  const uniqueIssues = [...new Set(issues)];
+  if (uniqueIssues.length === 0) return;
+  throw new AppError(
+    "阶段产物不可审核：design-spec 必须从完整、有效的 machine-readable JSON 合同开始；平台将在同一 Designer 执行中要求修复，不能把结构错误交给人工审核",
+    422,
+    "OUTPUT_ARTIFACTS_INVALID",
+    {
+      invalid: ["design-spec"],
+      reason: "DESIGN_SPEC_MACHINE_CONTRACT_REQUIRED",
+      designSpecIssues: uniqueIssues,
+      itemIds: uniqueIssues,
+    },
+  );
+}
+
+const userStoriesQualityIssueCodes = new Set<UserStoriesQualityIssue>([
+  "STORY_CANONICAL_FILE_REQUIRED",
+  "STORY_HEADING_INVALID",
+  "STORY_IDS_MUST_BE_UNIQUE",
+  "STORY_TEMPLATE_TOKEN_PRESENT",
+  "STORY_TWO_AC_SCENARIOS_REQUIRED",
+  "STORY_NONCANONICAL_CONTENT_REQUIRES_STORY",
+  "BLOCKER_ROOT_README_REQUIRED",
+  "BLOCKER_SENTINEL_MUST_BE_UNIQUE",
+  "BLOCKER_STATUS_MUST_BE_EXACT",
+  "BLOCKER_MISSING_FACTS_REQUIRED",
+  "BLOCKER_OPEN_QUESTIONS_REQUIRED",
+  "BLOCKER_HUMAN_OWNER_REQUIRED",
+  "BLOCKER_NEXT_STEP_REQUIRED",
+  "BLOCKER_KNOWN_FACTS_INVALID",
+  "BLOCKER_OPEN_QUESTION_NOT_SPECIFIC",
+  "BLOCKER_ANSWER_NOT_MATERIALIZED",
+  "BLOCKER_WORKFLOW_MECHANISM_FORBIDDEN",
+]);
 
 function normalizeTrustedRepositoryUrl(value: string): string {
   let parsed: URL;
@@ -2411,6 +3483,12 @@ function buildOutputMaterializationContract(request: CodexRunRequest): string {
   if (request.requireEverySelectedOutputUpdated) {
     rules.push(
       "- 本次执行发生在有效人工选型之后。每一个 selected 输出都必须基于该选型实际更新；任一文件或目录聚合内容与执行前完全相同，平台都会拒绝整次执行并回滚。",
+    );
+  }
+  if (request.phase.owner === "pm-ba" && request.productDecisionMaterializationRequired) {
+    rules.push(
+      "- 本轮已进入人工决定物化锁：Discovery 已经完成过结构化人工答复。必须直接把权威答案落实为 PRD 的范围/规则/验收条件和规范 Story；不得新增、改写或保留 PRD Open Questions、Needs decision、TBD human decision 或 User Stories Blocker。",
+      "- 人工授权采用最佳实践、不要过度考虑或放弃某项时，选择最小、可逆、常规默认值并明确记录；不得把 Change Contract 未要求的外部集成、数量上限、模板或业务域选择升级为新的人工决定。 materially different scope 应另开 Run。",
     );
   }
   if (uncommittedWorkspaceOutputs.length > 0) {

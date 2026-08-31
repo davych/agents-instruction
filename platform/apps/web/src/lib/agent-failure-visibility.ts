@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentEventKind } from "./types";
+import type { AgentEvent, AgentEventKind, AskProviderId } from "./types";
 
 export const MAX_DISMISSED_AGENT_FAILURE_EVENTS = 200;
 
@@ -9,6 +9,8 @@ const CONVERSATION_ACTIVITY_KINDS = new Set<AgentEventKind>([
   "sandbox.ready",
   "sandbox.failed",
   "sdlc.run-created",
+  "sdlc.phase-started",
+  "sdlc.phase-completed",
   "turn.failed",
 ]);
 
@@ -24,6 +26,43 @@ export interface AgentFailureVisibilityStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
+}
+
+export interface AgentSessionRunPointer {
+  workflowRunId: string;
+  providerId?: AskProviderId;
+}
+
+interface AgentSessionRunAssociationLike {
+  workflowRunId: string;
+  providerId: AskProviderId;
+  createdAt: string;
+}
+
+/**
+ * The durable Session-to-Run association is the control-plane source of truth.
+ * Events remain a display/audit fallback for older API responses and projects.
+ */
+export function latestAgentSessionRunPointer(input?: {
+  runs?: ReadonlyArray<AgentSessionRunAssociationLike>;
+  events?: ReadonlyArray<Pick<AgentEvent, "workflowRunId">>;
+}): AgentSessionRunPointer | undefined {
+  const latestDurableRun = input?.runs?.reduce<AgentSessionRunAssociationLike | undefined>(
+    (latest, candidate) => !latest || candidate.createdAt >= latest.createdAt ? candidate : latest,
+    undefined,
+  );
+  if (latestDurableRun) {
+    return {
+      workflowRunId: latestDurableRun.workflowRunId,
+      providerId: latestDurableRun.providerId,
+    };
+  }
+  const fallbackEvent = [...(input?.events ?? [])]
+    .reverse()
+    .find(({ workflowRunId }) => Boolean(workflowRunId));
+  return fallbackEvent?.workflowRunId
+    ? { workflowRunId: fallbackEvent.workflowRunId }
+    : undefined;
 }
 
 export function agentFailureVisibilityStorageKey(sessionId: string): string {

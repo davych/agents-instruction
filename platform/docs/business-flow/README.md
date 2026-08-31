@@ -121,7 +121,7 @@ flowchart TD
 
 首次使用可以按下面的顺序理解：
 
-1. 运维者先完成平台部署、访问令牌、Git 凭据 Profile、Worker 和可选 MCP Adapter 配置；对话 Provider 不再要求写入服务器 `.env`。
+1. 运维者先完成平台部署、访问令牌、Git 凭据 Profile、Provider 和可选 MCP Adapter 配置；Docker Worker 仍用于旧的独立 Run/Codex 兼容路径，对话 Provider 不再要求写入服务器 `.env`。
 2. 用户在浏览器中输入部署级访问令牌。它是当前单租户部署的访问门禁，不是个人账号或组织身份。
 3. 用户点击“绑定仓库”，填写远端 Git HTTPS 地址。公共仓库不需要授权；私有仓库只能选择服务端已经配置好的 Credential Profile。
 4. 用户可选填分支、Tag 或 Commit；不填时使用远端默认分支。
@@ -151,14 +151,14 @@ flowchart TD
 | 设置 | 业务含义 | 重要边界 |
 |---|---|---|
 | Repo alias | 在对话中用 `@别名` 指向仓库 | 别名不是分支名，实际源码仍由服务端固定 revision |
-| 默认 Provider | 选择默认负责聊天、任务规划、只读工具选择和 DeepWiki 的模型服务 | 用户仍可在输入框为下一条消息切换 Provider，历史不会清空 |
+| 默认 Provider | 选择默认负责聊天、任务规划、只读工具选择、DeepWiki 和 Chat-first 六阶段的模型服务 | 用户仍可在输入框为下一条消息或下一阶段切换 Provider，历史不会清空；执行阶段要求原生 tool calling |
 | Sandbox 蓝图 | 选择执行代码任务时使用的固定运行环境说明 | 首次写代码时才启动；Session 固定源码版本和蓝图版本 |
 | 已安装 MCP | 激活管理员已经安装并授权的外部工作项读取能力 | 当前只开放只读 Work Item MCP，不开放任意外部写操作 |
 | DeepWiki | 为当前源码 revision 生成人可读的项目知识 | 必须手工触发，会消耗所选 Provider 额度；任务在服务端后台继续，失败不覆盖上一份已发布版本；同步后旧版本会标记为 stale |
 
-Provider 能聊天不等于能启动工作。要让 Agent 调用只读 MCP、创建 Run 或在批准后自动继续，所选 Provider 必须真实支持原生 tool calling。只支持文本的 Provider 仍可用于普通问答或 DeepWiki。
+Provider 能聊天不等于能启动工作。要让 Agent 调用只读 MCP、创建 Run 或在批准后自动继续，所选 Provider 必须真实支持原生 tool calling。只支持文本的 Provider 仍可用于普通问答或 DeepWiki；它不影响用户先保存一条产物审核决定。
 
-Provider Profile 是实例级能力，不要求每个仓库重复保存密钥。全局“模型设置”固定显示 OpenAI、LM Studio、Ollama 和 Custom 四张卡；可以编辑、检查、启用或停用。Secret 输入框不会回填，公开页面只显示“是否已保存”和脱敏后的 Host。配置存在 API 专属加密 Vault，不进入仓库、对话、DeepWiki、Sandbox 或阶段 Worker。
+Provider Profile 是实例级能力，不要求每个仓库重复保存密钥。全局“模型设置”固定显示 OpenAI、LM Studio、Ollama 和 Custom 四张卡；可以编辑、检查、启用或停用。Secret 输入框不会回填，公开页面只显示“是否已保存”和脱敏后的 Host。配置存在 API 专属加密 Vault，只由 Registry 发起固定 Provider 请求时使用，不进入仓库、对话、DeepWiki、Sandbox、Provider-native 文件工具或兼容 Worker。
 
 平台升级后，如果原来的 LM Studio 卡片从“已启用”变成“已停用”，通常是旧 Responses 配置已经自动迁移成固定的 Chat Completions。地址、模型、密钥和工具调用选择仍然保留，只需在同一张卡片重新测试并启用。若 `openai/gpt-oss-20b` 等模型仍没有通过 JSON 检查，先确认模型已经在 LM Studio 中加载，再升级 LM Studio 和推理运行时；仍不通过时换用支持结构化 JSON 的模型。平台会自动处理协议，也不会假定所有版本或所有模型都支持所需格式。
 
@@ -185,7 +185,7 @@ Provider Profile 是实例级能力，不要求每个仓库重复保存密钥。
 - 各自固定到精确 revision；
 - 每轮最多引用 4 个；
 - 只把经过校验、受大小限制的 Repository Manifest 路径线索交给 Planner 和六角色；
-- 不把附加仓库挂载到 Worker，不发送整仓正文，也不给写权限；
+- 不把附加仓库暴露给 Provider-native 文件工具或挂载到兼容 Worker，不发送整仓正文，也不给写权限；
 - 会被写入不可变 Change Contract，使后续角色看到同一份跨仓上下文。
 
 需要新增或替换一个 Run 的仓库上下文时，应新建 Agent Session。输入 `involve Architect` 或 `involve Tester` 只表示希望该角色重点关注，不会改变固定顺序，也不会跳过任何阶段门禁。
@@ -210,13 +210,17 @@ Provider Profile 是实例级能力，不要求每个仓库重复保存密钥。
 
 ## 6. 人工审阅和返工
 
-每个角色交付后，对话会进入“等待决定”：
+对话中央的 Run 状态卡会持续显示正在读取、执行中、等待审核、要求修改、执行失败、可以继续和已完成；这些反馈在窄窗口也可见，不依赖右侧高级角色栏。每个角色交付后，对话会进入“等待决定”：
 
 1. 审阅人先展开并成功读取该阶段全部当前产物。产物为空、读取失败或不是当前产物头时，平台不会允许批准。
-2. 选择“批准并继续”，当前产物头和审阅决定会被保存，下一角色只消费已批准的上游证据。
+2. 选择“批准并继续”，当前产物头和审阅决定先被保存，再由确定性的 Session Run 推进接口校验当前阶段并启动下一角色；不会伪造一条聊天消息或重新理解任务。下一角色只消费已批准的上游证据。
 3. 选择“要求修改”时必须写清具体意见；Run 留在当前阶段，角色根据意见产生新的产物 revision，旧版本保留为历史而不是被悄悄覆盖。
 4. 如果后续发现上游范围、设计、架构或实现有问题，问题会退回真正的责任角色。受影响的下游批准失效，相关角色读取新产物后再验证；不相关的工作不必机械重做。
 5. 阶段显示 Blocked 表示缺少决定、证据、环境或权限。正确做法是补齐责任方信息并重试，而不是用聊天里的口头承诺绕过门禁。
+
+如果当前 Provider 已停用或不支持工具调用，审阅本身仍可保存；Run 会停在清楚的“可以继续”状态，用户切换到可用 Provider 后从同一张状态卡推进。刷新页面时，平台从持久化 Session → Run 关联恢复这张卡，事件时间线只作为历史审计，不是唯一定位依据。
+
+Session-owned Run 一旦完成，就进入不可重新打开的只读审计状态。用户仍能查看 Artifact、Review、事件、Changeset 和 Patch，但不能再提交人工 revision、Review 或结构化决定，也不能从旧入口审核 E2E script、重试或推进。需要继续改动时应在新的 Session/Run 中形成新的 Change Contract；独立 standalone Run 保持原有语义。
 
 人始终保留产品范围与政策、重大设计选择、架构方案与风险接受、验证例外、CI 与分支保护、提交与 PR、合并、部署、回滚以及最终 go / no-go 的决定权。“批准阶段产物”只批准这批证据，不等于授权任何外部副作用。
 
@@ -246,8 +250,10 @@ Provider Profile 是实例级能力，不要求每个仓库重复保存密钥。
 | Provider 未配置、不可达或模型不可用 | 明确区分配置、认证、网络、模型和协议问题 | 在页面“模型设置”中修改并重新检查，或切换到已启用 Provider；无需改 `.env` 或重启 API |
 | LM Studio 升级后显示停用，或 JSON 检查失败 | 旧 Responses 配置会自动迁移到固定的 Chat Completions，并让旧检查失效；检查失败时不会误启用 | 先确认模型已加载，再升级 LM Studio 和推理运行时；仍失败就换用支持结构化 JSON 的模型。回到原卡片重新测试并启用，协议会自动处理，endpoint 和已保存密钥不需要重填 |
 | Provider 只能文本对话 | 可以问答或生成 DeepWiki，但不会伪造工具调用来启动工作 | 切换到真实支持 tool calling 的 Provider，再发起或继续工作 |
+| 审核已保存，但下一角色没有启动 | Review 与 Run 状态保留，不会回滚成未审核，也不会重新跑 Planner | 切换到可执行 Provider，从中央 Run 状态卡继续；过期阶段请求会要求刷新 |
 | MCP 读取失败 | 不猜测 Jira / Linear 内容，不启动一个依据不明的任务 | 修复管理员 Adapter / 授权，或把任务内容手工写进聊天框 |
-| Sandbox 或阶段执行失败 | 记录失败事件，不自动越过当前阶段 | 运维者修复 Worker 镜像、执行信任、容量或环境后重试；恢复仍使用 Session 固定 revision |
+| Sandbox 或 Provider-native 阶段执行失败 | 记录失败和真实阶段状态，不自动越过；所选输出失败回滚 | 修正 Provider、范围、容量或产物要求后，从状态卡在同一 Run 重试；恢复仍使用 Session 固定 revision |
+| 独立 Run/Codex Worker 失败 | 兼容 Execution 标记失败，不回退宿主执行 | 运维者修复 Worker 镜像、执行信任或环境后在独立 Run 重试 |
 | API 重启时有消息、工具或 DeepWiki 正在运行 | 消息和工具会标记失败且不自动重放；DeepWiki 会给可能仍由另一实例执行的新任务 10 分钟安全窗口，超时后由页面轮询明确标记失败 | 检查事件或 DeepWiki 失败提示后明确重试；不会一直停在“生成中” |
 | DeepWiki 模型输出格式不完整 | 服务端会自动做一次有界格式整理；仍不合格就保留旧版本并显示安全错误 | 直接重试，或在页面切换到结构化输出更稳定、上下文更合适的模型 |
 | 当前产物为空或读取失败 | 审阅按钮保持受限，不把“看不到”当成“已看过” | 重试读取；仍失败时进入高级审计检查产物和 Run 日志 |
@@ -264,12 +270,14 @@ Provider Profile 是实例级能力，不要求每个仓库重复保存密钥。
 
 - 不提供多租户用户、组织、RBAC、计费和强租户隔离；
 - 不自动 commit、push、创建 PR、merge、配置分支保护、deploy、release 或执行生产 rollback；
-- 不把 Git Token、对话 Provider 密钥、平台令牌、数据库凭据或 Docker socket 交给 Worker；浏览器只在保存时提交新 Provider Secret，之后永远不会从 API 取回它；
+- 不把 Git Token、Provider 密钥、平台令牌、数据库凭据或 Docker socket 放进 Workspace、Provider-native 文件工具或兼容 Worker；浏览器只在保存时提交新 Provider Secret，之后永远不会从 API 取回它；
+- 不让 Provider-native 工具读取符号链接、硬链接或常见敏感目录，也不让任何阶段写未选注册产物和平台控制目录；Implementation 的源码写权限不包含这些路径。Provider 返回的原始 tool-call ID 不落库，审计只保存平台 ID 和受限 hash；
 - 不开放通用外部写操作或带副作用 MCP，当前 Work Item MCP 只读；
 - 不让额外 `@repo` 变成第二个可写仓库，也不把附加仓整仓正文塞进 Prompt；
 - 不因 `involve` 指令改动六阶段顺序、跳过上游角色或绕过人工门禁；
 - 不在绑定仓库时自动花模型额度生成 DeepWiki，也不宣称提供完整语义图谱或无限上下文；
-- 不替远端仓库自动创作一整套新的浏览器 E2E 基础设施；Cloud Tester 只运行仓库中已经存在且可在 Worker 执行的测试，缺少验收必需证据时会明确 Blocked；
+- 不替远端仓库自动创作一整套新的浏览器 E2E 基础设施。Chat-first Provider-native 阶段当前没有 check Runner，不能声称运行了测试；独立 Run/Codex 兼容路径也只运行仓库中已经存在且符合 Worker 合同的测试。缺少验收必需证据时会明确 Blocked；
+- 不向 Provider-native 阶段开放任意 Shell、命令、网络或 Desktop Figma；检查合同只允许 Blueprint allowlist `checkId`，而本版生产接线尚未注入检查 Runner；
 - 不把 Fake / Demo 执行当作真实 Agent、测试或发布证据；
 - 不提供耐久任务队列、暂停/取消和多 API 实例协同；
 - 不在平台模板升级时静默改写旧 Project、Session 或 Run。

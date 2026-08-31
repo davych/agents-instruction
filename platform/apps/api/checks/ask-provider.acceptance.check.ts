@@ -882,7 +882,8 @@ test("ASK-AC-04/09: Provider HTTP enforces caller cancellation, timeout, and max
         fetchImpl: abortAwareNeverFetch((signal) => { downstreamSignal = signal; }),
       }),
       (error: unknown) => error instanceof AskProviderError
-        && error.code === "ASK_PROVIDER_TIMEOUT",
+        && error.code === "ASK_PROVIDER_TIMEOUT"
+        && /等待上限 1 秒/u.test(error.message),
     );
     assert.equal(downstreamSignal?.aborted, true);
   });

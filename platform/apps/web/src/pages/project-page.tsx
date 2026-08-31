@@ -47,10 +47,24 @@ import type {
   CreateRunInput,
   ResolveWorkItemInput,
   WorkItemDraft,
+  WorkflowPhaseId,
   WorkflowRun,
 } from "@/lib/types";
 import { cn, formatDate, initials, truncate } from "@/lib/utils";
 import { FALLBACK_PHASES, FALLBACK_ROLES, getPhaseName } from "@/lib/workflow";
+
+const RUN_PHASE_OPTIONS: Array<{
+  id: WorkflowPhaseId;
+  label: string;
+  description: string;
+}> = [
+  { id: "discovery", label: "需求探索", description: "澄清目标、范围与验收条件。" },
+  { id: "design", label: "产品设计", description: "直接处理交互、内容与体验方案。" },
+  { id: "architecture", label: "架构设计", description: "直接评估技术边界与实现方案。" },
+  { id: "implementation", label: "工程实现", description: "从明确任务直接开始代码修改。" },
+  { id: "verification", label: "验证测试", description: "直接运行测试、审查与验收。" },
+  { id: "release", label: "发布交付", description: "直接准备发布证据与交付动作。" },
+];
 
 export function ProjectPage({
   projectId,
@@ -430,6 +444,7 @@ function CreateRunDialog({
   const [externalReference, setExternalReference] = useState("");
   const [resolvedWorkItem, setResolvedWorkItem] = useState<WorkItemDraft>();
   const [title, setTitle] = useState("");
+  const [targetPhaseId, setTargetPhaseId] = useState<WorkflowPhaseId>("discovery");
   const [draft, setDraft] = useState<ChangeContractDraft>({ ...EMPTY_CHANGE_CONTRACT_DRAFT });
   const [error, setError] = useState<string>();
   const adaptersQuery = useQuery({
@@ -445,6 +460,7 @@ function CreateRunDialog({
     setExternalReference("");
     setResolvedWorkItem(undefined);
     setTitle("");
+    setTargetPhaseId("discovery");
     setDraft({ ...EMPTY_CHANGE_CONTRACT_DRAFT, sourceRunIds: [] });
     setError(undefined);
     resolveMutation.reset();
@@ -529,6 +545,25 @@ function CreateRunDialog({
       title: title.trim(),
       objective: changeContractObjective(contract),
       changeContract: contract,
+      targetPhaseId,
+      runIntent: {
+        kind: "single-stage",
+        summary: contract.summary,
+      },
+      runContextReferences: {
+        sourceRunIds: contract.sourceRunIds ?? [],
+        artifactIds: [],
+        filePaths: [],
+        externalReferences: contract.evidenceRefs,
+      },
+      runEnvironmentRequest: {
+        strategy: targetPhaseId === "implementation"
+          || targetPhaseId === "verification"
+          || targetPhaseId === "release"
+          ? "create"
+          : "none",
+        keepAlive: false,
+      },
       ...(baseRevision ? { baseRevision } : {}),
     });
   };
@@ -541,11 +576,42 @@ function CreateRunDialog({
         onOpenChange(nextOpen);
       }}
       title="创建交付任务"
-      description="手工写一个工作项，或从管理员配置的 Jira / Linear MCP 来源读取；确认清楚后再进入固定六阶段。"
+      description="确认任务上下文后，可直接从任一阶段开始；六阶段定义与角色归属保持不变。"
       className="h-[calc(100dvh-2rem)] max-h-[58rem] max-w-4xl"
     >
       <form onSubmit={submit} className="min-h-0 overflow-y-auto p-6">
         <div className="space-y-5">
+          <fieldset>
+            <legend className="text-sm font-medium text-slate-700">从哪个阶段开始</legend>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {RUN_PHASE_OPTIONS.map((phase) => (
+                <label key={phase.id} className="cursor-pointer">
+                  <input
+                    type="radio"
+                    name="target-phase"
+                    value={phase.id}
+                    checked={targetPhaseId === phase.id}
+                    disabled={mutation.isPending}
+                    onChange={() => {
+                      setTargetPhaseId(phase.id);
+                      setError(undefined);
+                    }}
+                    className="peer sr-only"
+                  />
+                  <span className={cn(
+                    "block h-full rounded-xl border px-4 py-3 transition peer-focus-visible:ring-2 peer-focus-visible:ring-teal-500 peer-focus-visible:ring-offset-2",
+                    targetPhaseId === phase.id
+                      ? "border-teal-400 bg-teal-50/60 ring-1 ring-teal-100"
+                      : "border-slate-200 bg-white hover:border-slate-300",
+                  )}>
+                    <span className="block text-sm font-semibold text-slate-900">{phase.label}</span>
+                    <span className="mt-1 block text-xs leading-5 text-slate-500">{phase.description}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
           <fieldset>
             <legend className="text-sm font-medium text-slate-700">工作项从哪里来</legend>
             <div className="mt-2 grid gap-2 sm:grid-cols-2">

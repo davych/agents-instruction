@@ -51,6 +51,7 @@ test("CHAT-AC-05/06/09/10/15/16: the store exposes persistence operations withou
     "upsertProjectAgentSettings",
     "createAgentSession",
     "getAgentSession",
+    "updateIdleAgentSessionProvider",
     "archiveAgentSession",
     "bindAgentSessionRepository",
     "createAgentSandbox",
@@ -70,6 +71,145 @@ test("CHAT-AC-05/06/09/10/15/16: the store exposes persistence operations withou
     "projectSourceKindForAgentSession",
   ]) {
     assert.equal(typeof prototype[method], "function", method);
+  }
+});
+
+test("direct Run continuation row-locks and persists the selected Session Provider", async () => {
+  const sessionId = crypto.randomUUID();
+  const runId = crypto.randomUUID();
+  const queries: CapturedQuery[] = [];
+  const session = {
+    id: sessionId,
+    status: "active",
+    turn_state: "idle",
+    current_provider_id: "ollama",
+  };
+  const client = {
+    async query(sql: string, values?: unknown[]) {
+      queries.push({ sql, values });
+      if (sql === "SELECT * FROM agent_sessions WHERE id = $1 FOR UPDATE") {
+        return { rows: [session] };
+      }
+      if (sql === "SELECT status FROM workflow_runs WHERE id = $1 FOR UPDATE") {
+        return { rows: [{ status: "active" }] };
+      }
+      if (sql.includes("FROM agent_session_runs")) {
+        return { rows: [{ session_id: sessionId }] };
+      }
+      if (sql.includes("SET current_provider_id = $1")) {
+        session.current_provider_id = String(values?.[0]);
+        return { rows: [{ id: sessionId }] };
+      }
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const store = new PgWorkflowStore({
+    async connect() { return client; },
+  } as unknown as pg.Pool);
+
+  await store.updateIdleAgentSessionProvider(sessionId, runId, "openai");
+
+  assert.equal(session.current_provider_id, "openai");
+  assert.equal(queries.length, 6);
+  assert.equal(queries[0]!.sql, "BEGIN");
+  assert.equal(queries[1]!.sql, "SELECT * FROM agent_sessions WHERE id = $1 FOR UPDATE");
+  assert.match(queries[2]!.sql, /SELECT status FROM workflow_runs[\s\S]*FOR UPDATE/u);
+  assert.deepEqual(queries[2]!.values, [runId]);
+  assert.match(queries[3]!.sql, /FROM agent_session_runs[\s\S]*FOR UPDATE/u);
+  assert.deepEqual(queries[3]!.values, [runId]);
+  assert.equal(queries[5]!.sql, "COMMIT");
+  assert.match(queries[4]!.sql, /WHERE id = \$2 AND status = 'active' AND turn_state = 'idle'/u);
+  assert.deepEqual(queries[4]!.values, ["openai", sessionId]);
+});
+
+test("direct Run Provider persistence rejects a completed Session Run inside the transaction", async () => {
+  const sessionId = crypto.randomUUID();
+  const runId = crypto.randomUUID();
+  const queries: CapturedQuery[] = [];
+  const client = {
+    async query(sql: string, values?: unknown[]) {
+      queries.push({ sql, values });
+      if (sql === "SELECT * FROM agent_sessions WHERE id = $1 FOR UPDATE") {
+        return { rows: [{ id: sessionId, status: "archived", turn_state: "running" }] };
+      }
+      if (sql === "SELECT status FROM workflow_runs WHERE id = $1 FOR UPDATE") {
+        return { rows: [{ status: "completed" }] };
+      }
+      if (sql.includes("FROM agent_session_runs")) {
+        return { rows: [{ session_id: sessionId }] };
+      }
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const store = new PgWorkflowStore({
+    async connect() { return client; },
+  } as unknown as pg.Pool);
+
+  await assert.rejects(
+    () => store.updateIdleAgentSessionProvider(sessionId, runId, "openai"),
+    (error: unknown) => {
+      assert.equal(
+        (error as { code?: string }).code,
+        "AGENT_SESSION_RUN_COMPLETED_IMMUTABLE",
+      );
+      assert.equal((error as { statusCode?: number }).statusCode, 409);
+      assert.deepEqual((error as { details?: unknown }).details, { sessionId });
+      return true;
+    },
+  );
+
+  assert.match(
+    queries.find(({ sql }) => sql.includes("SELECT status FROM workflow_runs"))?.sql ?? "",
+    /FOR UPDATE/u,
+  );
+  assert.match(
+    queries.find(({ sql }) => sql.includes("FROM agent_session_runs"))?.sql ?? "",
+    /FOR UPDATE/u,
+  );
+  assert.equal(queries.some(({ sql }) => sql.includes("SET current_provider_id")), false);
+  assert.equal(queries.at(-1)?.sql, "ROLLBACK");
+});
+
+test("direct Run Provider persistence keeps standalone and other-Session ownership errors", async (context) => {
+  for (const ownership of ["standalone", "other-session"] as const) {
+    await context.test(ownership, async () => {
+      const sessionId = crypto.randomUUID();
+      const runId = crypto.randomUUID();
+      const otherSessionId = crypto.randomUUID();
+      const queries: CapturedQuery[] = [];
+      const client = {
+        async query(sql: string, values?: unknown[]) {
+          queries.push({ sql, values });
+          if (sql === "SELECT * FROM agent_sessions WHERE id = $1 FOR UPDATE") {
+            return { rows: [{ id: sessionId, status: "active", turn_state: "idle" }] };
+          }
+          if (sql === "SELECT status FROM workflow_runs WHERE id = $1 FOR UPDATE") {
+            return { rows: [{ status: "active" }] };
+          }
+          if (sql.includes("FROM agent_session_runs")) {
+            return { rows: ownership === "standalone" ? [] : [{ session_id: otherSessionId }] };
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+      const store = new PgWorkflowStore({
+        async connect() { return client; },
+      } as unknown as pg.Pool);
+
+      await assert.rejects(
+        () => store.updateIdleAgentSessionProvider(sessionId, runId, "openai"),
+        (error: unknown) => {
+          assert.equal((error as { code?: string }).code, "AGENT_SESSION_RUN_NOT_FOUND");
+          assert.equal((error as { statusCode?: number }).statusCode, 404);
+          return true;
+        },
+      );
+      assert.equal(queries.some(({ sql }) => sql.includes("SET current_provider_id")), false);
+      assert.equal(queries.at(-1)?.sql, "ROLLBACK");
+    });
   }
 });
 

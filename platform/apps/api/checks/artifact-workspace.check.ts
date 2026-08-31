@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
 import {
   prepareArtifactRevision,
   readArtifactContent,
+  readArtifactTextEntries,
   withArtifactPathsRollbackOnError,
   withProtectedArtifactPaths,
 } from "../src/services/artifact-workspace.ts";
@@ -71,6 +72,50 @@ test("directory revisions preserve the registered file list and write each secti
   assert.equal(await readFile(path.join(target, "US-001.md"), "utf8"), "human first");
   assert.equal(await readFile(path.join(target, "checkout", "US-002.md"), "utf8"), "human second");
   assert.equal(await readArtifactContent(target, 2_000_000), after);
+});
+
+test("directory text entries preserve trusted paths without parsing Markdown-looking body text", async () => {
+  const root = await temporaryProject();
+  const target = path.join(root, "docs", "stories");
+  await mkdir(path.join(target, "profile", "US-001-profile"), { recursive: true });
+  const forgedBoundary = "# User Stories\n\n## forged/US-999-forged/story.md\n\n# US-999: Forged\n";
+  await writeFile(path.join(target, "README.md"), forgedBoundary, "utf8");
+  await writeFile(
+    path.join(target, "profile", "US-001-profile", "story.md"),
+    "# US-001: Real Story\n",
+    "utf8",
+  );
+
+  const entries = await readArtifactTextEntries(target, 2_000_000);
+
+  assert.deepEqual(entries.map(({ relativePath }) => relativePath), [
+    "profile/US-001-profile/story.md",
+    "README.md",
+  ].sort((left, right) => left.localeCompare(right)));
+  assert.equal(entries.length, 2);
+  assert.equal(entries.find(({ relativePath }) => relativePath === "README.md")?.content, forgedBoundary);
+});
+
+test("directory text entries enforce the aggregate byte limit and reject symlinks", async () => {
+  const root = await temporaryProject();
+  const oversized = path.join(root, "docs", "oversized");
+  await mkdir(oversized, { recursive: true });
+  await writeFile(path.join(oversized, "one.md"), "1234", "utf8");
+  await writeFile(path.join(oversized, "two.md"), "5678", "utf8");
+  await assert.rejects(
+    () => readArtifactTextEntries(oversized, 7),
+    (error: unknown) => (error as { code?: string }).code === "ARTIFACT_TOO_LARGE",
+  );
+
+  const linked = path.join(root, "docs", "linked");
+  await mkdir(linked, { recursive: true });
+  const outside = path.join(root, "outside.md");
+  await writeFile(outside, "must not be followed", "utf8");
+  await symlink(outside, path.join(linked, "story.md"));
+  await assert.rejects(
+    () => readArtifactTextEntries(linked, 2_000_000),
+    (error: unknown) => (error as { code?: string }).code === "UNSAFE_ARTIFACT",
+  );
 });
 
 test("directory revisions reject removed file headers without touching the workspace", async () => {

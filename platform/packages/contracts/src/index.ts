@@ -423,6 +423,15 @@ export const agentSessionRepositorySchema = z.object({
 }).strict();
 export type AgentSessionRepositoryDto = z.infer<typeof agentSessionRepositorySchema>;
 
+export const agentSessionRunSchema = z.object({
+  sessionId: z.string().uuid(),
+  triggerMessageId: z.string().uuid(),
+  workflowRunId: z.string().uuid(),
+  providerId: askProviderIdSchema,
+  createdAt: z.string().datetime(),
+}).strict();
+export type AgentSessionRunDto = z.infer<typeof agentSessionRunSchema>;
+
 export const agentSandboxStateSchema = z.enum([
   "starting",
   "ready",
@@ -871,6 +880,32 @@ export const readOnlyRepositoryContextsSchema = z.array(readOnlyRepositoryContex
     "只读仓库摘要总长度不能超过 24000 字符",
   );
 
+export const runExecutionModelSchema = z.enum(["legacy", "flexible"]);
+export type RunExecutionModel = z.infer<typeof runExecutionModelSchema>;
+
+export const runIntentSchema = z.object({
+  kind: z.enum(["full-flow", "single-stage", "quick-change"]),
+  summary: changeContractTextSchema.max(2_000),
+}).strict();
+export type RunIntent = z.infer<typeof runIntentSchema>;
+
+export const runContextReferencesSchema = z.object({
+  sourceRunIds: z.array(z.string().uuid()).max(50).default([]),
+  artifactIds: z.array(z.string().uuid()).max(200).default([]),
+  filePaths: z.array(safeRepositoryRelativePathSchema).max(200).default([]),
+  externalReferences: z.array(
+    z.string().trim().min(1).max(2_000)
+      .regex(/^[^\u0000]*$/u, "外部引用不能包含空字符"),
+  ).max(100).default([]),
+}).strict();
+export type RunContextReferences = z.infer<typeof runContextReferencesSchema>;
+
+export const runEnvironmentRequestSchema = z.object({
+  strategy: z.enum(["none", "reuse", "create"]),
+  keepAlive: z.boolean().default(false),
+}).strict();
+export type RunEnvironmentRequest = z.infer<typeof runEnvironmentRequestSchema>;
+
 /**
  * The immutable, run-scoped contract for one unit of work. Product/design/
  * architecture roles may be routed around, but this evidence is never skipped.
@@ -927,7 +962,17 @@ const linkedCreateRunSchema = z.object({
   baseRevision: gitRevisionSchema.optional(),
 }).strict();
 
-export const createRunSchema = z.union([linkedCreateRunSchema, legacyCreateRunSchema]);
+const flexibleCreateRunFields = {
+  targetPhaseId: phaseIdSchema.optional(),
+  runIntent: runIntentSchema.optional(),
+  runContextReferences: runContextReferencesSchema.optional(),
+  runEnvironmentRequest: runEnvironmentRequestSchema.optional(),
+};
+
+export const createRunSchema = z.union([
+  linkedCreateRunSchema.extend(flexibleCreateRunFields),
+  legacyCreateRunSchema.extend(flexibleCreateRunFields),
+]);
 export type CreateRunInput = z.infer<typeof createRunSchema>;
 
 export const createArtifactRevisionSchema = z.object({
@@ -962,6 +1007,81 @@ export const codexModelSchema = z.string()
   .min(1)
   .max(128)
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/u, "Codex model 标识无效");
+
+export const agentSdlcRoleIdSchema = z.enum([
+  "pm-ba",
+  "designer",
+  "architect",
+  "software-engineer",
+  "tester",
+  "devops",
+]);
+export type AgentSdlcRoleId = z.infer<typeof agentSdlcRoleIdSchema>;
+
+export const advanceAgentRunSchema = z.object({
+  expectedPhaseId: phaseIdSchema,
+  providerId: askProviderIdSchema,
+}).strict();
+export type AdvanceAgentRunInput = z.infer<typeof advanceAgentRunSchema>;
+
+const agentRunExecutionSchema = z.object({
+  id: z.string().uuid(),
+  phaseRunId: z.string().uuid(),
+  status: z.enum(["queued", "running", "completed", "failed"]),
+  selectedArtifactIds: z.array(z.string().uuid()),
+  selectedOutputKeys: z.array(artifactKeySchema),
+  runnerMode: codexRunnerModeSchema.nullable(),
+  model: agentModelIdSchema.nullable(),
+  reasoningEffort: codexReasoningEffortSchema.nullable(),
+  command: z.string(),
+  exitCode: z.number().int().nullable(),
+  error: z.string().nullable(),
+  startedAt: z.string().datetime().nullable(),
+  finishedAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+}).strict();
+
+const agentRunProgressResultFields = {
+  runId: z.string().uuid(),
+  phaseId: phaseIdSchema,
+  roleId: agentSdlcRoleIdSchema,
+  artifactKeys: z.array(artifactKeySchema),
+  reason: z.string().trim().min(1).max(2_000),
+};
+
+export const agentRunAdvanceResultSchema = z.discriminatedUnion("state", [
+  z.object({
+    state: z.literal("started"),
+    runId: z.string().uuid(),
+    phaseId: phaseIdSchema,
+    roleId: agentSdlcRoleIdSchema,
+    execution: agentRunExecutionSchema.optional(),
+    selectedArtifactIds: z.array(z.string().uuid()),
+  }).strict(),
+  z.object({
+    state: z.literal("running"),
+    ...agentRunProgressResultFields,
+  }).strict(),
+  z.object({
+    state: z.literal("awaiting_review"),
+    ...agentRunProgressResultFields,
+  }).strict(),
+  z.object({
+    state: z.literal("blocked"),
+    ...agentRunProgressResultFields,
+  }).strict(),
+  z.object({
+    state: z.literal("failed"),
+    ...agentRunProgressResultFields,
+  }).strict(),
+  z.object({
+    state: z.literal("completed"),
+    runId: z.string().uuid(),
+    artifactKeys: z.array(artifactKeySchema),
+    reason: z.string().trim().min(1).max(2_000),
+  }).strict(),
+]);
+export type AgentRunAdvanceResultDto = z.infer<typeof agentRunAdvanceResultSchema>;
 
 export const e2ePackageManagerSchema = z.literal("npm");
 export type E2ePackageManager = z.infer<typeof e2ePackageManagerSchema>;
@@ -1128,10 +1248,31 @@ export type ReviewPhaseInput = z.infer<typeof reviewPhaseSchema>;
 export const humanDecisionPhaseIdSchema = z.enum(["discovery", "design", "architecture"]);
 export type HumanDecisionPhaseId = z.infer<typeof humanDecisionPhaseIdSchema>;
 
+/**
+ * A decision must carry the choice itself. Bare acknowledgements cannot be
+ * replayed safely into a later role because they depend on UI-only context.
+ * Keep this predicate exported so persisted legacy captures can apply the
+ * same rule when selecting authoritative feedback.
+ */
+export function isGenericHumanDecisionResponse(value: string): boolean {
+  const compact = value
+    .trim()
+    .toLocaleLowerCase("en-US")
+    .replace(/[\s\p{P}\p{S}]+/gu, "");
+  return compact.length === 0
+    || /^(?:(?:同意|确认|可以|好的|yes|agree|approved|ok))+$/iu.test(compact);
+}
+
+export const humanDecisionResponseSchema = z.string().trim().min(3).max(5_000)
+  .refine(
+    (response) => !isGenericHumanDecisionResponse(response),
+    "decision response 必须包含具体决定，不能只有同意、确认、可以、好的、yes、agree、approved、ok 或标点",
+  );
+
 export const captureHumanDecisionsSchema = z.object({
   responses: z.array(z.object({
     id: z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u),
-    response: z.string().trim().min(3).max(5_000),
+    response: humanDecisionResponseSchema,
   }).strict()).min(1).max(50)
     .refine((responses) => new Set(responses.map(({ id }) => id)).size === responses.length, "decision ids 不能重复"),
   expectedArtifactIds: z.array(z.string().uuid()).min(1).max(100)
@@ -1378,7 +1519,7 @@ export const assessDesignImpactSchema = z.discriminatedUnion("mode", [
 ]);
 export type AssessDesignImpactInput = z.infer<typeof assessDesignImpactSchema>;
 
-/** Explicit no-architecture-work decision for bugs/technical work without a baseline. */
+/** Explicit human no-architecture-impact decision without a reusable baseline. */
 export const assessArchitectureWaiverSchema = z.object({
   mode: z.literal("skip"),
   rationale: z.string().trim().min(10).max(2_000),
@@ -2193,8 +2334,77 @@ export interface WorkflowRunDto {
   baseRevision?: GitRevision | null;
   /** Immutable platform Control Pack version selected for this Run. */
   definitionVersion?: string | null;
+  /** Legacy Runs preserve the original ordered-flow semantics. */
+  executionModel?: RunExecutionModel | null;
+  /** Direct entry point for flexible Runs; the canonical phase order is unchanged. */
+  targetPhaseId?: PhaseId | null;
+  runIntent?: RunIntent | null;
+  runContextReferences?: RunContextReferences | null;
+  runEnvironmentRequest?: RunEnvironmentRequest | null;
+  resultReceiptVersion?: number | null;
   /** Public lifecycle only; server filesystem paths are never part of this DTO. */
   workspaceState?: "provisioning" | "ready" | "busy" | "failed" | "destroyed" | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type RunResultOutcome = "pending" | "running" | "blocked" | "failed" | "completed";
+
+export interface RunResultArtifactDto {
+  phaseId: PhaseId;
+  artifactId: string;
+  artifactKey: string;
+  filePath: string;
+  reviewStatus: ArtifactDto["reviewStatus"];
+  contentHash: string;
+  revision: number;
+}
+
+export interface RunResultExecutionDto {
+  phaseId: PhaseId;
+  executionId: string;
+  status: ExecutionDto["status"];
+  command: string;
+  exitCode: number | null;
+  durationMs: number | null;
+  runnerMode: CodexRunnerMode | null;
+  model: string | null;
+  error: string | null;
+}
+
+export interface RunResultReceiptDto {
+  runId: string;
+  resultReceiptVersion: number;
+  title: string;
+  objective: string;
+  status: WorkflowRunDto["status"];
+  outcome: RunResultOutcome;
+  targetPhaseId: PhaseId | null;
+  summary: string;
+  intent: RunIntent | null;
+  contextReferences: RunContextReferences | null;
+  files: {
+    created: string[];
+    modified: string[];
+    deleted: string[];
+  };
+  artifacts: RunResultArtifactDto[];
+  executions: RunResultExecutionDto[];
+  environment: {
+    request: RunEnvironmentRequest | null;
+    workspaceState: WorkflowRunDto["workspaceState"];
+  };
+  tests: {
+    totalExecutions: number;
+    passedExecutions: number;
+    failedExecutions: number;
+    pendingExecutions: number;
+  };
+  git: ChangesetDto | null;
+  externalOperations: string[];
+  permissionDecisions: string[];
+  risks: string[];
+  recommendations: string[];
   createdAt: string;
   updatedAt: string;
 }

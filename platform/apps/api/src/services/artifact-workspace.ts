@@ -40,6 +40,11 @@ export interface PreparedArtifactRevision {
   rollback(): Promise<void>;
 }
 
+export interface ArtifactTextEntry {
+  relativePath: string;
+  content: string;
+}
+
 /**
  * Runs work while preserving every protected path exactly. If the work touches
  * one of those paths, its byte-level tree is restored before control returns.
@@ -340,9 +345,33 @@ export async function readArtifactContent(target: string, maxBytes: number): Pro
     return readFile(target, "utf8");
   }
   if (!stats.isDirectory()) throw new AppError("产物必须是普通文件或目录", 422, "INVALID_ARTIFACT");
+  const entries = await readArtifactTextEntries(target, maxBytes);
+  return entries
+    .map(({ relativePath, content }) => `## ${relativePath}\n\n${content}`)
+    .join("\n\n");
+}
+
+/**
+ * Reads an artifact tree without encoding file boundaries into Markdown.
+ * Callers that make structural decisions must use these trusted entries rather
+ * than reparsing the human-editable aggregate returned by readArtifactContent.
+ */
+export async function readArtifactTextEntries(
+  target: string,
+  maxBytes: number,
+): Promise<ArtifactTextEntry[]> {
+  const stats = await lstat(target);
+  if (stats.isSymbolicLink()) throw new AppError("产物不能是符号链接", 422, "UNSAFE_ARTIFACT");
+  if (stats.isFile()) {
+    if (stats.size > maxBytes) {
+      throw new AppError(`产物超过 ${maxBytes} 字节限制`, 422, "ARTIFACT_TOO_LARGE");
+    }
+    return [{ relativePath: path.basename(target), content: await readFile(target, "utf8") }];
+  }
+  if (!stats.isDirectory()) throw new AppError("产物必须是普通文件或目录", 422, "INVALID_ARTIFACT");
   const files = await listArtifactFiles(target);
   let consumed = 0;
-  const parts: string[] = [];
+  const entries: ArtifactTextEntry[] = [];
   for (const file of files) {
     const fileStats = await lstat(file);
     if (fileStats.isSymbolicLink() || !fileStats.isFile()) {
@@ -353,9 +382,9 @@ export async function readArtifactContent(target: string, maxBytes: number): Pro
       throw new AppError(`产物目录超过 ${maxBytes} 字节限制`, 422, "ARTIFACT_TOO_LARGE");
     }
     const relativePath = path.relative(target, file).split(path.sep).join("/");
-    parts.push(`## ${relativePath}\n\n${await readFile(file, "utf8")}`);
+    entries.push({ relativePath, content: await readFile(file, "utf8") });
   }
-  return parts.join("\n\n");
+  return entries;
 }
 
 export async function assertRuntimePath(projectRoot: string, target: string): Promise<void> {

@@ -108,7 +108,7 @@ export async function postProviderJson(request: ProviderJsonRequest): Promise<un
       throw new AskProviderError(
         request.providerId,
         "ASK_PROVIDER_TIMEOUT",
-        "模型服务响应超时，请检查服务状态或稍后重试",
+        `模型服务响应超时（等待上限 ${Math.ceil(request.timeoutMs / 1_000)} 秒）；请确认模型已加载且服务没有排队，或切换 Provider 后重试`,
         "unreachable",
         504,
         true,

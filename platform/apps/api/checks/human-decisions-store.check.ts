@@ -16,7 +16,7 @@ test("AC-CLARITY-017/018: an approved legacy phase can record a decision and inv
   const client = {
     async query(sql: string, values?: unknown[]) {
       queries.push({ sql, values });
-      if (sql.includes("SELECT * FROM phase_runs")) {
+      if (sql.includes("FROM phase_runs pr")) {
         return { rows: [{ id: phaseRunId, phase_id: "discovery", position: 0, status: "approved" }] };
       }
       if (sql.includes("SELECT a.id, a.artifact_key")) {

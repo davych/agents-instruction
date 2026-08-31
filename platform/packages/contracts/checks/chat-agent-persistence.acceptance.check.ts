@@ -4,11 +4,14 @@ import test from "node:test";
 import type { ZodTypeAny } from "zod";
 
 import {
+  advanceAgentRunSchema,
   agentEventSchema,
   agentHumanGateSchema,
   agentMessageSchema,
   agentProviderCapabilitiesSchema,
+  agentRunAdvanceResultSchema,
   agentSessionRepositorySchema,
+  agentSessionRunSchema,
   agentSessionSchema,
   agentToolCallSchema,
   bindRemoteRepositorySchema,
@@ -24,6 +27,7 @@ import {
 const publicSchemas: Array<[string, ZodTypeAny]> = [
   ["ProjectAgentSettings", projectAgentSettingsSchema],
   ["AgentSessionRepository", agentSessionRepositorySchema],
+  ["AgentSessionRun", agentSessionRunSchema],
   ["AgentSession", agentSessionSchema],
   ["AgentMessage", agentMessageSchema],
   ["AgentEvent", agentEventSchema],
@@ -37,6 +41,7 @@ const inputSchemas: Array<[string, ZodTypeAny]> = [
   ["UpdateProjectAgentSettings", updateProjectAgentSettingsSchema],
   ["CreateAgentSession", createAgentSessionSchema],
   ["SendAgentMessage", sendAgentMessageSchema],
+  ["AdvanceAgentRun", advanceAgentRunSchema],
   ["GenerateDeepWiki", generateDeepWikiSchema],
 ];
 
@@ -102,6 +107,14 @@ test("CHAT-AC-05/06/09/15/16: public persistence DTOs retain the required audit 
     "repositories",
     "sandbox",
   ]);
+  assertKeys(agentSessionRunSchema, [
+    "sessionId",
+    "triggerMessageId",
+    "workflowRunId",
+    "providerId",
+    "createdAt",
+  ]);
+  assertKeys(advanceAgentRunSchema, ["expectedPhaseId", "providerId"]);
   assertKeys(deepWikiGenerationSchema, [
     "revision",
     "providerId",
@@ -128,6 +141,88 @@ test("CHAT-AC-07: Provider capability contract distinguishes chat, DeepWiki, and
   assert.equal(keys.has("chat"), true);
   assert.equal(keys.has("deepWiki"), true);
   assert.equal(keys.has("toolCalling"), true);
+});
+
+test("Agent Session Run associations retain the trigger, workflow Run, and selected Provider", () => {
+  const association = {
+    sessionId: "11111111-1111-4111-8111-111111111111",
+    triggerMessageId: "22222222-2222-4222-8222-222222222222",
+    workflowRunId: "33333333-3333-4333-8333-333333333333",
+    providerId: "ollama",
+    createdAt: "2026-08-29T08:00:00.000Z",
+  };
+
+  assert.deepEqual(agentSessionRunSchema.parse(association), association);
+  assert.equal(agentSessionRunSchema.safeParse({ ...association, providerId: "codex" }).success, false);
+  assert.equal(agentSessionRunSchema.safeParse({ ...association, rootPath: "/private/repo" }).success, false);
+});
+
+test("Agent Run advance input pins both the observed phase and the configured Provider", () => {
+  const input = { expectedPhaseId: "implementation", providerId: "openai" };
+
+  assert.deepEqual(advanceAgentRunSchema.parse(input), input);
+  assert.equal(advanceAgentRunSchema.safeParse({ providerId: "openai" }).success, false);
+  assert.equal(advanceAgentRunSchema.safeParse({ ...input, expectedPhaseId: "done" }).success, false);
+  assert.equal(advanceAgentRunSchema.safeParse({ ...input, providerId: "codex" }).success, false);
+  assert.equal(advanceAgentRunSchema.safeParse({ ...input, startCurrentRole: true }).success, false);
+});
+
+test("Agent Run advance result covers every observable orchestration state", () => {
+  const runId = "33333333-3333-4333-8333-333333333333";
+  const progress = {
+    runId,
+    phaseId: "design",
+    roleId: "designer",
+    artifactKeys: ["design-spec"],
+    reason: "等待体验审阅。",
+  };
+
+  for (const state of ["running", "awaiting_review", "blocked", "failed"] as const) {
+    assert.equal(agentRunAdvanceResultSchema.safeParse({ state, ...progress }).success, true, state);
+  }
+  assert.equal(agentRunAdvanceResultSchema.safeParse({
+    state: "started",
+    runId,
+    phaseId: "design",
+    roleId: "designer",
+    selectedArtifactIds: [],
+  }).success, true);
+  assert.equal(agentRunAdvanceResultSchema.safeParse({
+    state: "started",
+    runId,
+    phaseId: "design",
+    roleId: "designer",
+    selectedArtifactIds: [],
+    execution: {
+      id: "44444444-4444-4444-8444-444444444444",
+      phaseRunId: "55555555-5555-4555-8555-555555555555",
+      status: "running",
+      selectedArtifactIds: [],
+      selectedOutputKeys: ["design-spec"],
+      runnerMode: "real",
+      model: "organization/model preview",
+      reasoningEffort: "high",
+      command: "codex exec",
+      exitCode: null,
+      error: null,
+      startedAt: "2026-08-29T08:01:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-08-29T08:01:00.000Z",
+    },
+  }).success, true);
+  assert.equal(agentRunAdvanceResultSchema.safeParse({
+    state: "completed",
+    runId,
+    artifactKeys: ["release-runbook"],
+    reason: "六个阶段均已完成。",
+  }).success, true);
+
+  assert.equal(agentRunAdvanceResultSchema.safeParse({ state: "running", ...progress, reason: "" }).success, false);
+  assert.equal(agentRunAdvanceResultSchema.safeParse({ state: "paused", ...progress }).success, false);
+  assert.equal(agentRunAdvanceResultSchema.safeParse({ state: "completed", ...progress }).success, false);
+  for (const definition of objectDefinitions(agentRunAdvanceResultSchema)) {
+    assert.equal(definition.unknownKeys, "strict", "advance result variants must reject unknown fields");
+  }
 });
 
 function assertKeys(schema: ZodTypeAny, expected: string[]): void {
