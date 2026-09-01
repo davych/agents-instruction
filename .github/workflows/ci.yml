@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  initializer:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -19,19 +19,3 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm pack --dry-run
-
-  platform:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: platform
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 20
-      - run: corepack enable
-      - run: yarn install --immutable
-      - run: yarn typecheck
-      - run: yarn test
-      - run: yarn build
