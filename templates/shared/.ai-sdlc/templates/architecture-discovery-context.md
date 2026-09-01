@@ -9,12 +9,12 @@
 
 ## Four-layer context
 
-| Layer | Confirmed context | Architecture effect | Evidence | Open question |
+| Layer | Confirmed context | Architecture effect | Evidence | Known information gap |
 |---|---|---|---|---|
-| Business | <Outcome, pressure, owner, or measure> | <Effect> | <Source> | <Question or None> |
-| Product | <User, journey, channel, or scope> | <Effect> | <Source> | <Question or None> |
-| Engineering | <Current systems, integrations, data ownership, team, or operating limit> | <Effect> | <Source> | <Question or None> |
-| Regulation and policy | <Named rule or None confirmed> | <Specific effect or Unknown> | <Source> | <Question or None> |
+| Business | <Outcome, pressure, owner, or measure> | <Effect> | <Source> | <Missing fact or None> |
+| Product | <User, journey, channel, or scope> | <Effect> | <Source> | <Missing fact or None> |
+| Engineering | <Current systems, integrations, data ownership, team, or operating limit> | <Effect> | <Source> | <Missing fact or None> |
+| Regulation and policy | <Named rule or None confirmed> | <Specific effect or Unknown> | <Source> | <Missing fact or None> |
 
 ## Current system and change mode
 
@@ -24,14 +24,14 @@
 
 ## Architecture concerns
 
-| Concern | Applies | Evidence | Decision needed |
+| Concern | Applies | Evidence | Resolved decision |
 |---|---|---|---|
-| API | <Yes / No / Unknown> | <Evidence> | <Question or None> |
-| Data | <Yes / No / Unknown> | <Evidence> | <Question or None> |
-| Integration | <Yes / No / Unknown> | <Evidence> | <Question or None> |
-| Security | <Yes / No / Unknown> | <Evidence> | <Question or None> |
-| Observability | <Yes / No / Unknown> | <Evidence> | <Question or None> |
-| Frontend | <Yes / No / Unknown> | <Evidence> | <Question or None> |
+| API | <Yes / No / Unknown> | <Evidence> | <Selected answer or Not required> |
+| Data | <Yes / No / Unknown> | <Evidence> | <Selected answer or Not required> |
+| Integration | <Yes / No / Unknown> | <Evidence> | <Selected answer or Not required> |
+| Security | <Yes / No / Unknown> | <Evidence> | <Selected answer or Not required> |
+| Observability | <Yes / No / Unknown> | <Evidence> | <Selected answer or Not required> |
+| Frontend | <Yes / No / Unknown> | <Evidence> | <Selected answer or Not required> |
 
 ## Assumptions and missing evidence
 

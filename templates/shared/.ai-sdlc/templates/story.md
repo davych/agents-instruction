@@ -48,6 +48,12 @@ When <user action or business event>
 Then <observable handling or recovery>
 ```
 
-## Assumptions and open decisions
+## Assumptions
 
-- <Assumption, decision, or None>
+- <Assumption or None>
+
+## Decision record
+
+| Topic | Selected option | Decided by | Source |
+|---|---|---|---|
+| <Topic or None> | <Selected answer> | <Person> | <Conversation or link> |

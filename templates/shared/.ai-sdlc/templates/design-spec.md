@@ -28,7 +28,7 @@
 
 | Need | Reuse or component | Source | Notes |
 |---|---|---|---|
-| <UI need> | <Local pattern, existing shadcn component, registry item, or custom> | <Project path, components.json, MCP result, or approved reference> | <Props, state, asset, or reason> |
+| <UI need> | <Local pattern, configured UI-system component, approved addition, or custom> | <Project path, project profile, official component source, or approved reference> | <Props, state, asset, or reason> |
 
 ## Accessibility and content
 
@@ -46,6 +46,12 @@
 
 - <Rendered viewport, screenshot, approved comparison, Figma file/node, or Not checked>
 
-## Assumptions and open decisions
+## Assumptions
 
-- <Assumption, decision, blocker, or None>
+- <Assumption or blocker, or None>
+
+## Decision record
+
+| Topic | Selected option | Decided by | Source |
+|---|---|---|---|
+| <Topic or None> | <Selected answer> | <Person> | <Conversation or link> |

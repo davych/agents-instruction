@@ -17,7 +17,7 @@
 
 ## Concern summary
 
-| Concern | Applies | Current decision or open question | Evidence |
+| Concern | Applies | Current decision or known gap | Evidence |
 |---|---|---|---|
 | API | <Yes / No / Unknown> | <Contract, versioning, status, envelope, pagination, OpenAPI> | <Pattern, ADR, spec, or source> |
 | Data | <Yes / No / Unknown> | <Ownership, transactions, migration, cache, consistency> | <C4, ADR, pattern, or source> |
@@ -47,6 +47,14 @@ List only pack files that exist.
 |---|---|---|---|
 | <Link> | <Proposed / Accepted / Superseded> | <Short decision> | <Affected repositories or boundaries> |
 
-## Open decisions and risks
+## Decision record and open risks
 
-- <Decision or risk, owner, needed evidence, or None>
+### Decisions
+
+| Topic | Selected option | Decided by | Source |
+|---|---|---|---|
+| <Topic or None> | <Selected answer> | <Person> | <Conversation or link> |
+
+### Open risks
+
+- <Risk, owner, needed evidence, or None>

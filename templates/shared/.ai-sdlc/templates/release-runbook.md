@@ -26,6 +26,12 @@
 2. <Rollback step>
 3. <Recovery check>
 
-## Open risks and decisions
+## Open risks
 
-- <Risk or decision owner, or None>
+- <Risk and owner, or None>
+
+## Release decision record
+
+- **Decision:** <Selected answer>
+- **Decided by:** <Person>
+- **Source:** <Conversation or link>

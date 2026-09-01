@@ -34,8 +34,8 @@ Use this file when the change is multi-step, risky, or spans important areas or 
 |---|---|---|
 | <ID or item> | <Area> | <Test or review> |
 
-## Risks and open decisions
+## Risks and decision record
 
-| Item | Impact | Response or decision needed | Owner |
+| Item | Impact | Response or selected decision | Owner and source |
 |---|---|---|---|
-| <Risk or decision> | <Impact> | <Action> | <Owner> |
+| <Risk or resolved decision> | <Impact> | <Action or selected answer> | <Owner and conversation or link> |

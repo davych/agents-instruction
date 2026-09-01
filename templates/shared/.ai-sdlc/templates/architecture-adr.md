@@ -2,8 +2,8 @@
 
 **Status:** <Proposed / Accepted / Rejected / Superseded>
 **Date:** <YYYY-MM-DD>
-**Decision owner:** <Human owner or Unassigned>
-**Decision evidence:** <Approval link or Not accepted>
+**Decision owner:** <Human owner>
+**Decision evidence:** <Question response or approval link>
 **Scope:** <Affected repositories, systems, or boundaries>
 **Related C4 elements:** <Names or None>
 **Related patterns:** <Pattern IDs or None>

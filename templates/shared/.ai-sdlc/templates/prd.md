@@ -35,7 +35,7 @@
 
 | ID | Rule | Evidence | Status |
 |---|---|---|---|
-| BR-001 | <Business rule> | <Source> | <Confirmed / Assumed / Needs decision> |
+| BR-001 | <Business rule> | <Source> | <Confirmed / Assumed> |
 
 ## Acceptance criteria
 
@@ -49,14 +49,16 @@ Use this section only when a small change does not need a separate story file. O
 
 | ID | Story | Priority |
 |---|---|---|
-| US-001 | [<Story title>](./stories/US-001-<title>.md) | <Human-confirmed value or TBD> |
+| US-001 | [<Story title>](./stories/US-001-<title>.md) | <Human-confirmed value> |
 
 ## Assumptions
 
 | ID | Assumption | Impact if wrong | Confirmation needed |
 |---|---|---|---|
-| A-001 | <Assumption> | <Impact> | <Decision or evidence> |
+| A-001 | <Assumption> | <Impact> | <Evidence to check> |
 
-## Open decisions
+## Decision record
 
-- [ ] <Question, why it matters, and owner>
+| Topic | Selected option | Decided by | Source |
+|---|---|---|---|
+| <Topic or None> | <Selected answer> | <Person> | <Conversation or link> |

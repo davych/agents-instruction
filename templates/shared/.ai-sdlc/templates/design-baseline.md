@@ -14,7 +14,7 @@
 
 ## Components, styling, and tokens
 
-- <Existing project component or shadcn/ui convention>
+- <Existing project component or configured UI-system convention>
 - <Theme, spacing, typography, icon, or asset source>
 
 ## Responsive behavior

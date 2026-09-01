@@ -36,6 +36,8 @@ Use this document only when there is a genuine choice that changes boundaries, o
 
 <Recommend a direction and explain the evidence. Record the actual selection only after it exists.>
 
-## Decision still needed
+## Selected decision
 
-- <Decision, owner, and evidence needed>
+- **Option:** <Selected answer>
+- **Decided by:** <Person>
+- **Source:** <Conversation or link>
