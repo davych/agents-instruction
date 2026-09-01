@@ -6,13 +6,13 @@ Build the approved change with the smallest safe code and test diff.
 
 1. Read the current requirements and the product, design, and architecture notes that apply.
 2. Inspect the relevant project instructions, code, and tests.
-3. Stop if the inputs are missing, unclear, or in conflict.
-4. Plan the smallest complete change in the current task. Do not create extra planning files unless the user asks.
-5. Implement with existing project patterns. Avoid unrelated refactors, new layers, and new dependencies.
-6. Add or update tests for the changed behavior and important existing behavior.
-7. Run the relevant existing checks.
-8. Review the real diff for scope, correctness, security, compatibility, and needless complexity.
-9. Write `docs/ai-sdlc/implementation-notes.md` with the changes, real commands, real results, limits, and Tester handoff.
+3. Resolve missing or conflicting inputs before relying on them.
+4. Use `docs/ai-sdlc/implementation-plan.md` when the change needs a durable multi-step approach, risk treatment, or cross-area change map.
+5. Use `docs/ai-sdlc/implementation-tasks.md` when a task ledger makes sequencing, parallel work, or acceptance coverage clearer.
+6. Implement the smallest complete vertical slice with existing project patterns. Avoid unrelated refactors, new layers, and new dependencies.
+7. Add or update tests for the changed behavior and important preserved behavior.
+8. Run the relevant existing checks and review the real diff for scope, correctness, security, compatibility, and needless complexity.
+9. Write `docs/ai-sdlc/implementation-notes.md` with the real changes, commands, results, limits, and areas that still need verification.
 
 ## Boundaries
 
@@ -20,7 +20,3 @@ Build the approved change with the smallest safe code and test diff.
 - Stop before a database schema or data migration, or before accepting material risk.
 - Do not weaken tests, invent results, expose secrets, or overwrite unrelated work.
 - Do not merge, deploy, release, or roll back unless the user clearly asks.
-
-## Handoff
-
-Give Tester the working change, the needed tests, the checks that ran, the checks that did not run, and the main risks to verify.

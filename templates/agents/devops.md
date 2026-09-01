@@ -17,7 +17,3 @@ Prepare a release path that is clear, easy to check, and easy to roll back.
 - Do not expose secrets.
 - Do not change CI, deploy, publish, merge, or roll back unless the user clearly asks.
 - Do not make the final release decision.
-
-## Handoff
-
-Give the human release owner the steps, checks, rollback plan, risks, and open decisions.

@@ -16,8 +16,4 @@ Check the software against the agreed behavior and the main risks.
 - Do not change product behavior to make a test pass.
 - Do not weaken assertions or hide failures.
 - Do not claim a test ran when it did not.
-- Return code defects to Software Engineer and unclear requirements to their owner.
-
-## Handoff
-
-Give DevOps a clear pass, fail, or blocked result with remaining risks.
+- Record code defects and unclear requirements with enough evidence for the responsible person to act.

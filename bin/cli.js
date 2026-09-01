@@ -29,6 +29,17 @@ const aiTools = {
     label: "GitHub Copilot",
     instructionsPath: ".github/copilot-instructions.md",
     agentsDirectory: ".github/agents",
+    mcpPath: ".vscode/mcp.json",
+    mcpContent: [
+      "{",
+      '  "servers": {',
+      '    "shadcn": {',
+      '      "command": "npx",',
+      '      "args": ["shadcn@latest", "mcp"]',
+      "    }",
+      "  }",
+      "}",
+    ].join("\n"),
     roleFileName: (roleId) => `${roleId}.agent.md`,
     renderRole: renderMarkdownAgent,
   },
@@ -36,6 +47,17 @@ const aiTools = {
     label: "Claude Code",
     instructionsPath: "CLAUDE.md",
     agentsDirectory: ".claude/agents",
+    mcpPath: ".mcp.json",
+    mcpContent: [
+      "{",
+      '  "mcpServers": {',
+      '    "shadcn": {',
+      '      "command": "npx",',
+      '      "args": ["shadcn@latest", "mcp"]',
+      "    }",
+      "  }",
+      "}",
+    ].join("\n"),
     roleFileName: (roleId) => `${roleId}.md`,
     renderRole: renderMarkdownAgent,
   },
@@ -43,6 +65,12 @@ const aiTools = {
     label: "Codex",
     instructionsPath: "AGENTS.md",
     agentsDirectory: ".codex/agents",
+    mcpPath: ".codex/config.toml",
+    mcpContent: [
+      "[mcp_servers.shadcn]",
+      'command = "npx"',
+      'args = ["shadcn@latest", "mcp"]',
+    ].join("\n"),
     roleFileName: (roleId) => `${roleId}.toml`,
     renderRole: renderCodexAgent,
   },
@@ -93,6 +121,7 @@ export async function run(args = process.argv.slice(2), context = {}) {
     output(`Tool: ${tool.label}\n`);
     output(`Instructions: ${tool.instructionsPath}\n`);
     output(`Role agents: ${tool.agentsDirectory}\n`);
+    output(`shadcn MCP: ${tool.mcpPath}\n`);
     return 0;
   } finally {
     terminal?.close();
@@ -153,6 +182,7 @@ async function buildEntries(projectName, projectSummary, tool) {
 
   return [
     { path: tool.instructionsPath, content: projectInstructions },
+    { path: tool.mcpPath, content: tool.mcpContent },
     ...sharedEntries,
     ...roleEntries,
   ];

@@ -8,6 +8,10 @@
 
 **Blockers:** <None or clear blocker and owner>
 
+**Plan:** <Relative link or None>
+
+**Tasks:** <Relative link or None>
+
 ## Scope
 
 - **Implemented:** <Approved behavior>
@@ -15,9 +19,13 @@
 
 ## Changes
 
-| Path | What changed | Why |
-|---|---|---|
-| <path> | <change> | <requirement or reason> |
+| Repository | Path | What changed | Why |
+|---|---|---|---|
+| <repository> | <path> | <change> | <requirement or reason> |
+
+## Decisions used
+
+- <Design decision, ADR, pattern, or local implementation choice>
 
 ## Checks
 
@@ -31,7 +39,7 @@
 
 - <Known limit, risk, or None>
 
-## Tester handoff
+## Verification notes
 
 - **Requirements covered:** <IDs or short list>
 - **Areas to verify:** <Behavior and paths>
