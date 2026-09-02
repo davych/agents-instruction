@@ -6,6 +6,9 @@
 
 - Keep the fixed phase order: discovery, design, architecture, implementation, verification, release.
 - Keep the role owners: PM / BA, Designer, Architect, Software Engineer, Tester, DevOps.
+- Let the user initialize any subset of role agents. A missing local role is not a missing phase or a hard dependency.
+- Leave technology choices out of initialization. The Architect creates the technology profile when architecture work first needs it.
+- Generate the repository artifact bridge Skill and host registry every time. Keep the bridge read-only and do not add MCP, cloning, copying, or synchronization to it.
 - Keep one main Markdown source for each role in `templates/agents/`.
 - Generate files only for the AI tool selected by the user.
 - Do not add a web app, server, database, dashboard, or system that runs the workflow.

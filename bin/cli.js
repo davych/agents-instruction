@@ -15,146 +15,79 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const templateRoot = path.join(packageRoot, "templates");
-const coreRoleIds = [
-  "pm-ba",
-  "designer",
-  "architect",
-];
-const developmentRoleIds = [
-  "software-engineer",
-  "tester",
-  "devops",
-];
-const roleIds = [...coreRoleIds, ...developmentRoleIds];
-
-const developmentProfiles = {
-  none: {
-    label: "No development",
-    roleIds: coreRoleIds,
-    activePhases: ["Discovery", "Design", "Architecture"],
-    stackIds: [],
-    defaultStack: null,
-  },
-  frontend: {
-    label: "Frontend",
-    roleIds,
-    activePhases: [
-      "Discovery",
-      "Design",
-      "Architecture",
-      "Implementation",
-      "Verification",
-      "Release",
+const roleDefinitions = [
+  {
+    id: "pm-ba",
+    label: "PM / BA",
+    phase: "Discovery",
+    purpose: "product discovery and requirements",
+    artifactPaths: [
+      "/docs/ai-sdlc/prd.md",
+      "/docs/ai-sdlc/stories/",
     ],
-    stackIds: ["react-shadcn", "react-antd", "react-mui", "frontend-existing"],
-    defaultStack: "react-shadcn",
   },
-  backend: {
-    label: "Backend",
-    roleIds,
-    activePhases: [
-      "Discovery",
-      "Design",
-      "Architecture",
-      "Implementation",
-      "Verification",
-      "Release",
+  {
+    id: "designer",
+    label: "Designer",
+    phase: "Design",
+    purpose: "experience and interaction design",
+    artifactPaths: [
+      "/docs/ai-sdlc/design-baseline.md",
+      "/docs/ai-sdlc/design-spec.md",
     ],
-    stackIds: ["java-spring", "node-typescript", "python-fastapi", "backend-existing"],
-    defaultStack: "java-spring",
   },
-};
-
-const stackProfiles = {
-  "react-shadcn": {
-    development: "frontend",
-    label: "React + Vite + Tailwind + shadcn/ui",
-    uiSystem: "shadcn/ui",
-    uiMcp: "shadcn",
-    validationFocus: "For frontend work, prioritize configured type checks, lint, unit or component tests, and the production build.",
+  {
+    id: "architect",
+    label: "Architect",
+    phase: "Architecture",
+    purpose: "system architecture and technology planning",
+    artifactPaths: [
+      "/docs/ai-sdlc/technology-profile.md",
+      "/docs/ai-sdlc/architecture.md",
+      "/docs/ai-sdlc/architecture-discovery-context.md",
+      "/docs/ai-sdlc/architecture-options.md",
+      "/docs/ai-sdlc/architecture-c4-context.mmd",
+      "/docs/ai-sdlc/architecture-c4-containers.mmd",
+      "/docs/ai-sdlc/architecture-patterns.md",
+      "/docs/ai-sdlc/architecture-nfrs.md",
+      "/docs/ai-sdlc/architecture-risk-review.md",
+      "/docs/ai-sdlc/adrs/",
+    ],
   },
-  "react-antd": {
-    development: "frontend",
-    label: "React + Vite + Ant Design",
-    uiSystem: "Ant Design",
-    uiMcp: null,
-    validationFocus: "For frontend work, prioritize configured type checks, lint, unit or component tests, and the production build.",
+  {
+    id: "software-engineer",
+    label: "Software Engineer",
+    phase: "Implementation",
+    purpose: "software implementation",
+    artifactPaths: [
+      "/docs/ai-sdlc/implementation-plan.md",
+      "/docs/ai-sdlc/implementation-tasks.md",
+      "/docs/ai-sdlc/implementation-notes.md",
+    ],
   },
-  "react-mui": {
-    development: "frontend",
-    label: "React + Vite + Material UI",
-    uiSystem: "Material UI",
-    uiMcp: null,
-    validationFocus: "For frontend work, prioritize configured type checks, lint, unit or component tests, and the production build.",
+  {
+    id: "tester",
+    label: "Tester",
+    phase: "Verification",
+    purpose: "verification and quality evidence",
+    artifactPaths: ["/docs/ai-sdlc/test-report.md"],
   },
-  "frontend-existing": {
-    development: "frontend",
-    label: "Use the existing frontend stack",
-    uiSystem: "Follow existing project conventions",
-    uiMcp: null,
-    validationFocus: "For frontend work, follow the project's configured build, type, lint, and test conventions.",
+  {
+    id: "devops",
+    label: "DevOps",
+    phase: "Release",
+    purpose: "release and operations",
+    artifactPaths: ["/docs/ai-sdlc/release-runbook.md"],
   },
-  "java-spring": {
-    development: "backend",
-    label: "Java + Spring Boot",
-    uiSystem: "Not applicable",
-    uiMcp: null,
-    validationFocus: "For Java backend work, prioritize the configured build, unit or service tests, and API or OpenAPI contract checks.",
-  },
-  "node-typescript": {
-    development: "backend",
-    label: "Node.js + TypeScript",
-    uiSystem: "Not applicable",
-    uiMcp: null,
-    validationFocus: "For Node.js backend work, prioritize configured type checks, lint, unit or API tests, and contract checks.",
-  },
-  "python-fastapi": {
-    development: "backend",
-    label: "Python + FastAPI",
-    uiSystem: "Not applicable",
-    uiMcp: null,
-    validationFocus: "For Python backend work, prioritize configured lint or type checks, unit or API tests, and contract checks.",
-  },
-  "backend-existing": {
-    development: "backend",
-    label: "Use the existing backend stack",
-    uiSystem: "Not applicable",
-    uiMcp: null,
-    validationFocus: "For backend work, follow the project's configured build, lint, type, test, and contract conventions.",
-  },
-};
-
-const validationProfiles = {
-  lean: {
-    label: "Lean",
-    guidance: "Use the smallest existing build, type, lint, or test checks that cover the changed behavior.",
-  },
-  standard: {
-    label: "Standard",
-    guidance: "Use relevant tests plus the project's normal build, type, lint, and contract checks.",
-  },
-  thorough: {
-    label: "Thorough",
-    guidance: "Start with Standard and add relevant integration, end-to-end, security, or compatibility checks when the project supports them.",
-  },
-};
+];
+const roleIds = roleDefinitions.map(({ id }) => id);
+const roleById = new Map(roleDefinitions.map((role) => [role.id, role]));
 
 const aiTools = {
   copilot: {
     label: "GitHub Copilot",
     instructionsPath: ".github/copilot-instructions.md",
     agentsDirectory: ".github/agents",
-    mcpPath: ".vscode/mcp.json",
-    mcpContent: [
-      "{",
-      '  "servers": {',
-      '    "shadcn": {',
-      '      "command": "npx",',
-      '      "args": ["shadcn@latest", "mcp"]',
-      "    }",
-      "  }",
-      "}",
-    ].join("\n"),
     roleFileName: (roleId) => `${roleId}.agent.md`,
     renderRole: renderMarkdownAgent,
   },
@@ -162,17 +95,6 @@ const aiTools = {
     label: "Claude Code",
     instructionsPath: "CLAUDE.md",
     agentsDirectory: ".claude/agents",
-    mcpPath: ".mcp.json",
-    mcpContent: [
-      "{",
-      '  "mcpServers": {',
-      '    "shadcn": {',
-      '      "command": "npx",',
-      '      "args": ["shadcn@latest", "mcp"]',
-      "    }",
-      "  }",
-      "}",
-    ].join("\n"),
     roleFileName: (roleId) => `${roleId}.md`,
     renderRole: renderMarkdownAgent,
   },
@@ -180,12 +102,6 @@ const aiTools = {
     label: "Codex",
     instructionsPath: "AGENTS.md",
     agentsDirectory: ".codex/agents",
-    mcpPath: ".codex/config.toml",
-    mcpContent: [
-      "[mcp_servers.shadcn]",
-      'command = "npx"',
-      'args = ["shadcn@latest", "mcp"]',
-    ].join("\n"),
     roleFileName: (roleId) => `${roleId}.toml`,
     renderRole: renderCodexAgent,
   },
@@ -243,15 +159,10 @@ export async function run(args = process.argv.slice(2), context = {}) {
     output(`Tool: ${tool.label}\n`);
     output(`Instructions: ${tool.instructionsPath}\n`);
     output("Profile: .ai-sdlc/project-profile.md\n");
-    output(`Development work: ${configuration.development === "none" ? "No" : "Yes"}\n`);
-    output(`Development area: ${configuration.development === "none" ? "Not applicable" : configuration.developmentProfile.label}\n`);
-    if (configuration.stack) output(`Stack: ${configuration.stack.label}\n`);
-    if (configuration.validation) output(`Validation: ${configuration.validation.label}\n`);
-    output(`Role agents: ${tool.agentsDirectory}\n`);
-    output(`Dedicated agents: ${configuration.roleIds.join(", ")}\n`);
-    if (configuration.stack?.uiMcp === "shadcn") {
-      output(`shadcn MCP: ${tool.mcpPath}\n`);
-    }
+    output("Artifact hosts: .ai-sdlc/artifact-hosts.json\n");
+    output("Artifact bridge: .agents/skills/sdlc-artifact-bridge/SKILL.md\n");
+    output(`Role agents: ${configuration.roleIds.length > 0 ? tool.agentsDirectory : "None"}\n`);
+    output(`Selected roles: ${formatList(configuration.roleIds)}\n`);
     return 0;
   } finally {
     terminal?.close();
@@ -294,160 +205,42 @@ function needsInteractiveInput(options) {
   return !options.name
     || !options.summary
     || !options.tool
-    || !options.development
-    || (options.development !== "none" && (!options.stack || !options.validation));
+    || options.roles === null;
 }
 
 async function resolveConfiguration(options, prompt, output, detected) {
-  let development = options.development;
-
-  if (!development) {
-    const enabled = await askForDevelopmentWork(prompt, output, detected);
-    development = enabled
-      ? await askForDevelopmentArea(prompt, output, detected)
-      : "none";
-  }
-
-  const developmentProfile = developmentProfiles[development];
-  if (development === "none") {
-    if (options.stack) {
-      throw new Error("--stack cannot be used when --development is none.");
-    }
-    if (options.validation) {
-      throw new Error("--validation cannot be used when --development is none.");
-    }
-    return {
-      development,
-      developmentProfile,
-      stackId: "none",
-      stack: null,
-      validationId: "not-applicable",
-      validation: null,
-      roleIds: [...developmentProfile.roleIds],
-      activePhases: [...developmentProfile.activePhases],
-      detected,
-    };
-  }
-
-  const stackId = options.stack
-    ?? await askForStack(prompt, output, development, detected);
-  const stack = stackProfiles[stackId];
-  if (stack?.development !== development) {
-    throw new Error(`Stack ${stackId} is not valid for ${development} development.`);
-  }
-
-  const validationId = options.validation ?? await askForValidation(prompt, output);
-  const validation = validationProfiles[validationId];
+  const selectedRoleIds = options.roles ?? await askForRoles(prompt, output);
   return {
-    development,
-    developmentProfile,
-    stackId,
-    stack,
-    validationId,
-    validation,
-    roleIds: [...developmentProfile.roleIds],
-    activePhases: [...developmentProfile.activePhases],
+    roleIds: [...selectedRoleIds],
+    activePhases: selectedRoleIds.map((roleId) => roleById.get(roleId).phase),
     detected,
   };
 }
 
-async function askForDevelopmentWork(prompt, output, detected) {
-  if (!prompt) throw new Error("--development is required.");
-  const detectedNote = detected.recommendedDevelopment
-    ? ` Detected ${detected.recommendedDevelopment} project evidence.`
-    : "";
-  const question = [
-    `Will this project perform code development?${detectedNote}`,
-    "  1. Yes",
-    "  2. No - product, design, and architecture work only",
-    "Enter 1 or 2: ",
-  ].join("\n");
+async function askForRoles(prompt, output) {
+  if (!prompt) throw new Error("--roles is required.");
+  const selected = [];
 
-  while (true) {
-    const answer = String(await ask(prompt, question)).toLowerCase();
-    if (["1", "yes", "y"].includes(answer)) return true;
-    if (["2", "no", "n"].includes(answer)) return false;
-    output("Choose 1 or 2.\n");
+  for (const role of roleDefinitions) {
+    const question = [
+      `Initialize the ${role.label} role for ${role.purpose}?`,
+      "  1. Yes",
+      "  2. No",
+      "Enter 1 or 2: ",
+    ].join("\n");
+
+    while (true) {
+      const answer = String(await ask(prompt, question)).toLowerCase();
+      if (["1", "yes", "y"].includes(answer)) {
+        selected.push(role.id);
+        break;
+      }
+      if (["2", "no", "n"].includes(answer)) break;
+      output("Choose 1 or 2.\n");
+    }
   }
-}
 
-async function askForDevelopmentArea(prompt, output, detected) {
-  if (!prompt) throw new Error("--development is required.");
-  const mark = (value) => detected.recommendedDevelopment === value
-    ? " (detected; recommended)"
-    : "";
-  const question = [
-    "What development work does this project own?",
-    `  1. Frontend${mark("frontend")}`,
-    `  2. Backend${mark("backend")}`,
-    "Enter 1 or 2: ",
-  ].join("\n");
-
-  while (true) {
-    const answer = normalizeDevelopment(await ask(prompt, question));
-    if (answer === "frontend" || answer === "backend") return answer;
-    output("Choose 1 or 2.\n");
-  }
-}
-
-async function askForStack(prompt, output, development, detected) {
-  if (!prompt) throw new Error(`--stack is required for ${development} development.`);
-  const profile = developmentProfiles[development];
-  const detectedStack = detected.recommendedStacks[development];
-  const recommended = profile.stackIds.includes(detectedStack)
-    ? detectedStack
-    : profile.defaultStack;
-  const choices = profile.stackIds.map((stackId, index) => {
-    const suffix = stackId === recommended
-      ? detectedStack === stackId ? " (project evidence; recommended)" : " (recommended)"
-      : "";
-    return `  ${index + 1}. ${stackProfiles[stackId].label}${suffix}`;
-  });
-  const answerRange = choiceRange(profile.stackIds.length);
-  const question = [
-    `Choose a ${development} stack preference:`,
-    ...choices,
-    `Enter ${answerRange}: `,
-  ].join("\n");
-
-  while (true) {
-    const raw = await ask(prompt, question);
-    const numeric = Number.parseInt(raw, 10);
-    const stackId = Number.isInteger(numeric) && String(numeric) === raw
-      ? profile.stackIds[numeric - 1]
-      : normalizeStack(raw);
-    if (profile.stackIds.includes(stackId)) return stackId;
-    output(`Choose ${answerRange}.\n`);
-  }
-}
-
-function choiceRange(count) {
-  const choices = Array.from({ length: count }, (_, index) => String(index + 1));
-  return choices.length === 2
-    ? `${choices[0]} or ${choices[1]}`
-    : `${choices.slice(0, -1).join(", ")}, or ${choices.at(-1)}`;
-}
-
-async function askForValidation(prompt, output) {
-  if (!prompt) throw new Error("--validation is required when development is enabled.");
-  const ids = ["standard", "lean", "thorough"];
-  const question = [
-    "Choose a validation preference:",
-    "  1. Standard - normal tests and project checks (recommended)",
-    "  2. Lean - smallest checks for the changed behavior",
-    "  3. Thorough - add relevant integration or end-to-end checks",
-    "Enter 1, 2, or 3: ",
-  ].join("\n");
-
-  while (true) {
-    const raw = await ask(prompt, question);
-    const numeric = Number.parseInt(raw, 10);
-    const validationId = Number.isInteger(numeric) && String(numeric) === raw
-      ? ids[numeric - 1]
-      : normalizeValidation(raw);
-    if (validationId) return validationId;
-    output("Choose 1, 2, or 3.\n");
-  }
+  return selected;
 }
 
 async function buildEntries(projectName, projectSummary, tool, configuration) {
@@ -474,10 +267,8 @@ async function buildEntries(projectName, projectSummary, tool, configuration) {
 
   const entries = [
     { path: tool.instructionsPath, content: projectInstructions },
+    { path: ".ai-sdlc/artifact-hosts.json", content: renderArtifactHosts(configuration) },
   ];
-  if (configuration.stack?.uiMcp === "shadcn") {
-    entries.push({ path: tool.mcpPath, content: tool.mcpContent });
-  }
   entries.push(
     { path: ".ai-sdlc/project-profile.md", content: projectProfile },
     ...sharedEntries,
@@ -517,24 +308,47 @@ function profileValues(configuration) {
       markdownCell(item.signal),
       markdownCell(item.usedFor),
     ].join(" | ")).map((row) => `| ${row} |`).join("\n")
-    : "| None | No supported stack files were detected | No recommendation |";
+    : "| None | No supported project evidence was detected | Available to the Architect on first use |";
+
+  const roleCoverageRows = roleDefinitions.map((role) => {
+    const local = configuration.roleIds.includes(role.id);
+    return `| ${role.phase} | ${role.id} | ${local ? "Initialized" : "Not initialized"} | ${local ? "local" : "unconfigured"} |`;
+  }).join("\n");
 
   return {
-    DEVELOPMENT_WORK: configuration.development === "none" ? "No" : "Yes",
-    DEVELOPMENT_AREA: configuration.development === "none"
-      ? "Not applicable"
-      : configuration.developmentProfile.label,
-    STACK: configuration.stack?.label ?? "Not applicable",
-    UI_SYSTEM: configuration.stack?.uiSystem ?? "Not applicable",
-    UI_MCP: configuration.stack?.uiMcp ?? "None",
-    VALIDATION: configuration.validation?.label ?? "Not applicable",
-    ACTIVE_PHASES: configuration.activePhases.join(", "),
-    DEDICATED_AGENTS: configuration.roleIds.join(", "),
-    VALIDATION_GUIDANCE: configuration.validation
-      ? `${configuration.validation.guidance} ${configuration.stack.validationFocus}`
-      : "Code validation is not configured because this project does not perform development work.",
+    LOCAL_ROLE_AGENTS: formatList(configuration.roleIds),
+    ACTIVE_LOCAL_PHASES: formatList(configuration.activePhases),
+    ROLE_COVERAGE_ROWS: roleCoverageRows,
     DETECTED_EVIDENCE_ROWS: evidenceRows,
   };
+}
+
+function renderArtifactHosts(configuration) {
+  const routes = Object.fromEntries(roleDefinitions.map((role) => {
+    const local = configuration.roleIds.includes(role.id);
+    return [role.phase.toLowerCase(), {
+      phase: role.phase,
+      role: role.id,
+      host: local ? "local" : null,
+      paths: role.artifactPaths,
+    }];
+  }));
+  return JSON.stringify({
+    version: 1,
+    defaultHost: "local",
+    hosts: {
+      local: {
+        kind: "filesystem",
+        root: ".",
+        artifactIndex: "docs/ai-sdlc/index.md",
+      },
+    },
+    routes,
+  }, null, 2);
+}
+
+function formatList(values) {
+  return values.length > 0 ? values.join(", ") : "None";
 }
 
 function markdownCell(value) {
@@ -543,20 +357,9 @@ function markdownCell(value) {
 
 async function detectProject(target) {
   const evidence = [];
-  let frontendDetected = false;
-  let backendDetected = false;
-  const recommendedStacks = { frontend: null, backend: null };
-  const backendStackCandidates = new Set();
-  let react = false;
-  let vite = false;
-  let tailwind = false;
-  let antDesign = false;
-  let materialUi = false;
-  let nodeBackend = false;
-  let typeScript = false;
   const targetStats = lstatIfPresent(target);
   if (targetStats && (!targetStats.isDirectory() || targetStats.isSymbolicLink())) {
-    return { evidence, recommendedDevelopment: null, recommendedStacks };
+    return { evidence };
   }
   const targetHasContent = targetStats?.isDirectory()
     ? (await readdir(target)).length > 0
@@ -575,33 +378,15 @@ async function detectProject(target) {
       const scripts = Object.keys(manifest.scripts ?? {})
         .filter((name) => ["build", "lint", "test", "typecheck"].includes(name));
 
-      react = has("react");
-      vite = has("vite");
-      tailwind = has("tailwindcss");
-      antDesign = has("antd");
-      materialUi = has("@mui/material");
-      nodeBackend = ["@nestjs/core", "express", "fastify"].some(has);
-      typeScript = has("typescript");
-
-      if (react) {
-        frontendDetected = true;
-        signals.push("React dependency");
-      }
-      if (vite) signals.push("Vite dependency");
-      if (tailwind) signals.push("Tailwind CSS dependency");
-      if (antDesign) {
-        frontendDetected = true;
-        signals.push("Ant Design dependency");
-      }
-      if (materialUi) {
-        frontendDetected = true;
-        signals.push("Material UI dependency");
-      }
-      if (nodeBackend) {
-        backendDetected = true;
+      if (has("react")) signals.push("React dependency");
+      if (has("vite")) signals.push("Vite dependency");
+      if (has("tailwindcss")) signals.push("Tailwind CSS dependency");
+      if (has("antd")) signals.push("Ant Design dependency");
+      if (has("@mui/material")) signals.push("Material UI dependency");
+      if (["@nestjs/core", "express", "fastify"].some(has)) {
         signals.push("Node.js backend dependency");
       }
-      if (typeScript) signals.push("TypeScript dependency");
+      if (has("typescript")) signals.push("TypeScript dependency");
       if (scripts.length > 0) signals.push(`scripts: ${scripts.join(", ")}`);
     } catch {
       signals.push("content could not be parsed");
@@ -609,53 +394,28 @@ async function detectProject(target) {
     evidence.push({
       path: "package.json",
       signal: signals.join("; "),
-      usedFor: frontendDetected || backendDetected
-        ? "development area, stack preference, and validation evidence"
-        : "existing-stack and validation evidence",
+      usedFor: "Architect technology-profile evidence",
     });
   }
 
   if (hasProjectFile(target, "tsconfig.json")) {
-    typeScript = true;
     evidence.push({
       path: "tsconfig.json",
       signal: "TypeScript project configuration",
-      usedFor: nodeBackend ? "backend stack evidence" : "project evidence",
+      usedFor: "Architect technology-profile evidence",
     });
-  }
-
-  if (nodeBackend) {
-    backendStackCandidates.add(typeScript ? "node-typescript" : "backend-existing");
   }
 
   const componentsSource = await readProjectFile(target, "components.json");
   const shadcn = componentsSource !== null && isShadcnConfiguration(componentsSource);
   if (componentsSource !== null) {
-    if (shadcn) frontendDetected = true;
     evidence.push({
       path: "components.json",
       signal: shadcn
         ? "shadcn/ui project configuration"
         : "components.json present; shadcn/ui configuration not confirmed",
-      usedFor: shadcn ? "frontend stack and UI MCP evidence" : "project evidence only",
+      usedFor: "Architect technology-profile evidence",
     });
-  }
-
-  if (frontendDetected) {
-    const frontendStackCandidates = [];
-    const shadcnMatchesPreset = react && vite && tailwind && shadcn;
-    const antDesignMatchesPreset = react && vite && antDesign;
-    const materialUiMatchesPreset = react && vite && materialUi;
-    if (shadcnMatchesPreset) frontendStackCandidates.push("react-shadcn");
-    if (antDesignMatchesPreset) frontendStackCandidates.push("react-antd");
-    if (materialUiMatchesPreset) frontendStackCandidates.push("react-mui");
-
-    const incompleteUiEvidence = (shadcn && !shadcnMatchesPreset)
-      || (antDesign && !antDesignMatchesPreset)
-      || (materialUi && !materialUiMatchesPreset);
-    recommendedStacks.frontend = frontendStackCandidates.length === 1 && !incompleteUiEvidence
-      ? frontendStackCandidates[0]
-      : "frontend-existing";
   }
 
   for (const [file, signal] of [
@@ -664,7 +424,7 @@ async function detectProject(target) {
     ["package-lock.json", "npm lockfile"],
   ]) {
     if (hasProjectFile(target, file)) {
-      evidence.push({ path: file, signal, usedFor: "package-manager evidence" });
+      evidence.push({ path: file, signal, usedFor: "Architect technology-profile evidence" });
     }
   }
 
@@ -672,15 +432,11 @@ async function detectProject(target) {
   for (const file of javaFiles) {
     const source = await readProjectFile(target, file);
     if (source === null) continue;
-    backendDetected = true;
     const spring = /spring[.-]boot|org\.springframework\.boot/iu.test(source);
-    backendStackCandidates.add(spring ? "java-spring" : "backend-existing");
     evidence.push({
       path: file,
       signal: spring ? "Java build with Spring Boot" : "Java build file",
-      usedFor: spring
-        ? "backend stack and validation recommendation"
-        : "backend area, existing-stack, and validation recommendation",
+      usedFor: "Architect technology-profile evidence",
     });
   }
   for (const [file, signal] of [
@@ -688,50 +444,30 @@ async function detectProject(target) {
     ["gradlew", "Gradle wrapper"],
   ]) {
     if (hasProjectFile(target, file)) {
-      evidence.push({ path: file, signal, usedFor: "validation command evidence" });
+      evidence.push({ path: file, signal, usedFor: "Architect technology-profile evidence" });
     }
   }
 
   for (const file of ["pyproject.toml", "requirements.txt"]) {
     const source = await readProjectFile(target, file);
     if (source === null) continue;
-    backendDetected = true;
     const fastApi = /\bfastapi\b/iu.test(source);
-    backendStackCandidates.add(fastApi ? "python-fastapi" : "backend-existing");
     evidence.push({
       path: file,
       signal: fastApi ? "Python project with FastAPI" : "Python project file",
-      usedFor: fastApi
-        ? "backend stack and validation recommendation"
-        : "backend area, existing-stack, and validation recommendation",
+      usedFor: "Architect technology-profile evidence",
     });
   }
 
-  if (backendStackCandidates.size === 1) {
-    [recommendedStacks.backend] = backendStackCandidates;
-  } else if (backendStackCandidates.size > 1) {
-    recommendedStacks.backend = "backend-existing";
+  if (targetHasContent && evidence.length === 0) {
+    evidence.push({
+      path: ".",
+      signal: "Target directory is not empty",
+      usedFor: "Architect discovery evidence",
+    });
   }
 
-  if (targetHasContent) {
-    recommendedStacks.frontend ??= "frontend-existing";
-    recommendedStacks.backend ??= "backend-existing";
-    if (evidence.length === 0) {
-      evidence.push({
-        path: ".",
-        signal: "Target directory is not empty",
-        usedFor: "existing-stack recommendation",
-      });
-    }
-  }
-
-  return {
-    evidence,
-    recommendedDevelopment: frontendDetected === backendDetected
-      ? null
-      : frontendDetected ? "frontend" : "backend",
-    recommendedStacks,
-  };
+  return { evidence };
 }
 
 function isShadcnConfiguration(source) {
@@ -993,71 +729,37 @@ function normalizeTool(value) {
   return aliases[normalized] ?? null;
 }
 
-function normalizeDevelopment(value) {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  const aliases = {
-    "1": "frontend",
-    frontend: "frontend",
-    front: "frontend",
-    "front-end": "frontend",
-    "2": "backend",
-    backend: "backend",
-    back: "backend",
-    "back-end": "backend",
-    none: "none",
-    no: "none",
-    docs: "none",
-    documentation: "none",
-    "no-development": "none",
-  };
-  return aliases[normalized] ?? null;
-}
+function parseRoles(value) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (raw === "all") return [...roleIds];
+  if (raw === "none") return [];
 
-function normalizeStack(value) {
-  const normalized = String(value ?? "").trim().toLowerCase();
   const aliases = {
-    "react-shadcn": "react-shadcn",
-    shadcn: "react-shadcn",
-    "shadcn/ui": "react-shadcn",
-    "react-antd": "react-antd",
-    antd: "react-antd",
-    "ant-design": "react-antd",
-    "ant design": "react-antd",
-    "react-mui": "react-mui",
-    mui: "react-mui",
-    "material-ui": "react-mui",
-    "material ui": "react-mui",
-    "frontend-existing": "frontend-existing",
-    "existing-frontend": "frontend-existing",
-    "java-spring": "java-spring",
-    java: "java-spring",
-    spring: "java-spring",
-    "spring-boot": "java-spring",
-    "node-typescript": "node-typescript",
-    node: "node-typescript",
-    typescript: "node-typescript",
-    "python-fastapi": "python-fastapi",
-    python: "python-fastapi",
-    fastapi: "python-fastapi",
-    "backend-existing": "backend-existing",
-    "existing-backend": "backend-existing",
+    "pm-ba": "pm-ba",
+    pm: "pm-ba",
+    ba: "pm-ba",
+    designer: "designer",
+    design: "designer",
+    architect: "architect",
+    architecture: "architect",
+    "software-engineer": "software-engineer",
+    engineer: "software-engineer",
+    developer: "software-engineer",
+    tester: "tester",
+    qa: "tester",
+    devops: "devops",
+    ops: "devops",
   };
-  return aliases[normalized] ?? null;
-}
+  const selected = new Set();
 
-function normalizeValidation(value) {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  const aliases = {
-    lean: "lean",
-    light: "lean",
-    minimal: "lean",
-    standard: "standard",
-    normal: "standard",
-    thorough: "thorough",
-    full: "thorough",
-    complete: "thorough",
-  };
-  return aliases[normalized] ?? null;
+  for (const item of raw.split(",").map((part) => part.trim())) {
+    const roleId = aliases[item];
+    if (!roleId) throw new Error(`Unknown role: ${item || value}`);
+    if (selected.has(roleId)) throw new Error(`Duplicate role: ${roleId}`);
+    selected.add(roleId);
+  }
+
+  return roleIds.filter((roleId) => selected.has(roleId));
 }
 
 function parseArgs(args) {
@@ -1077,9 +779,7 @@ function parseArgs(args) {
     name: null,
     summary: null,
     tool: null,
-    development: null,
-    stack: null,
-    validation: null,
+    roles: null,
   };
   let targetSet = false;
 
@@ -1093,22 +793,12 @@ function parseArgs(args) {
       const rawTool = optionValue(values, ++index, value);
       options.tool = normalizeTool(rawTool);
       if (!options.tool) throw new Error(`Unknown AI tool: ${rawTool}`);
+    } else if (value === "--roles") {
+      options.roles = parseRoles(optionValue(values, ++index, value));
     } else if (value === "--development") {
-      const rawDevelopment = optionValue(values, ++index, value);
-      options.development = normalizeDevelopment(rawDevelopment);
-      if (!options.development) {
-        throw new Error(`Unknown development mode: ${rawDevelopment}`);
-      }
-    } else if (value === "--stack") {
-      const rawStack = optionValue(values, ++index, value);
-      options.stack = normalizeStack(rawStack);
-      if (!options.stack) throw new Error(`Unknown stack: ${rawStack}`);
-    } else if (value === "--validation") {
-      const rawValidation = optionValue(values, ++index, value);
-      options.validation = normalizeValidation(rawValidation);
-      if (!options.validation) {
-        throw new Error(`Unknown validation preference: ${rawValidation}`);
-      }
+      throw new Error("--development was removed. Select independent local agents with --roles.");
+    } else if (value === "--stack" || value === "--validation") {
+      throw new Error(`${value} was removed. The Architect records technology and quality decisions in the technology profile when they are needed.`);
     } else if (value.startsWith("-")) {
       throw new Error(`Unknown option: ${value}`);
     } else if (!targetSet) {
@@ -1140,9 +830,7 @@ Options:
   --name <name>               Project name
   --summary <text>            Short project summary
   --tool <tool>               copilot, claude, or codex
-  --development <mode>        none, frontend, or backend
-  --stack <preset>            Stack preset for frontend or backend development
-  --validation <preference>   lean, standard, or thorough
+  --roles <list>              Comma-separated role IDs, all, or none
   -h, --help                  Show help
 `;
 }

@@ -21,25 +21,15 @@ import { run } from "../bin/cli.js";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const temporaryDirectories = [];
-const coreRoleIds = [
+const roleIds = [
   "pm-ba",
   "designer",
   "architect",
-];
-const roleIds = [
-  ...coreRoleIds,
   "software-engineer",
   "tester",
   "devops",
 ];
-const frontendDevelopmentArgs = [
-  "--development",
-  "frontend",
-  "--stack",
-  "react-shadcn",
-  "--validation",
-  "standard",
-];
+const allRolesArgs = ["--roles", "all"];
 const templateFiles = [
   "architecture-adr.md",
   "architecture-c4-containers.mmd",
@@ -58,6 +48,7 @@ const templateFiles = [
   "prd.md",
   "release-runbook.md",
   "story.md",
+  "technology-profile.md",
   "test-report.md",
 ];
 
@@ -67,7 +58,65 @@ test.after(async () => {
   );
 });
 
-test("Copilot init writes only the Copilot tool set", async () => {
+test("each AI tool gets only its native instructions and selected role files", async () => {
+  const cases = [
+    {
+      tool: "copilot",
+      instructions: ".github/copilot-instructions.md",
+      directory: ".github/agents",
+      fileName: (roleId) => `${roleId}.agent.md`,
+      absent: ["CLAUDE.md", "AGENTS.md", ".claude", ".codex", ".vscode/mcp.json", ".mcp.json"],
+    },
+    {
+      tool: "claude",
+      instructions: "CLAUDE.md",
+      directory: ".claude/agents",
+      fileName: (roleId) => `${roleId}.md`,
+      absent: [".github", "AGENTS.md", ".codex", ".vscode/mcp.json", ".mcp.json"],
+    },
+    {
+      tool: "codex",
+      instructions: "AGENTS.md",
+      directory: ".codex/agents",
+      fileName: (roleId) => `${roleId}.toml`,
+      absent: [".github", "CLAUDE.md", ".claude", ".vscode/mcp.json", ".mcp.json", ".codex/config.toml"],
+    },
+  ];
+
+  for (const item of cases) {
+    const target = await initializedProject(item.tool);
+    assert.equal(existsSync(path.join(target, item.instructions)), true);
+    assert.deepEqual(
+      (await readdir(path.join(target, item.directory))).sort(),
+      roleIds.map(item.fileName).sort(),
+    );
+    for (const absent of item.absent) {
+      assert.equal(existsSync(path.join(target, absent)), false, `${item.tool}: ${absent}`);
+    }
+
+    for (const roleId of roleIds) {
+      const generated = await readFile(
+        path.join(target, item.directory, item.fileName(roleId)),
+        "utf8",
+      );
+      const source = (await readFile(
+        path.join(repositoryRoot, "templates/agents", `${roleId}.md`),
+        "utf8",
+      )).trim();
+      if (item.tool === "codex") {
+        assert.match(generated, new RegExp(`^name = "${roleId}"\\ndescription = `, "u"));
+        assert.equal(await readCodexInstructions(
+          path.join(target, item.directory, item.fileName(roleId)),
+        ), source);
+      } else {
+        assert.match(generated, new RegExp(`^---\\nname: "${roleId}"\\ndescription: `, "u"));
+        assert.ok(generated.trimEnd().endsWith(source));
+      }
+    }
+  }
+});
+
+test("all roles produce the profile, registry, and default bridge skill", async () => {
   const target = await temporaryDirectory();
   const output = [];
 
@@ -80,39 +129,14 @@ test("Copilot init writes only the Copilot tool set", async () => {
     "Solves one clear problem",
     "--tool",
     "copilot",
-    ...frontendDevelopmentArgs,
+    ...allRolesArgs,
   ], { output: (value) => output.push(value) }), 0);
 
   assert.equal(existsSync(path.join(target, ".github/copilot-instructions.md")), true);
-  assert.equal(existsSync(path.join(target, ".vscode/mcp.json")), true);
-  assert.equal(existsSync(path.join(target, "CLAUDE.md")), false);
-  assert.equal(existsSync(path.join(target, "AGENTS.md")), false);
-  assert.equal(existsSync(path.join(target, ".mcp.json")), false);
-  assert.equal(existsSync(path.join(target, ".claude")), false);
-  assert.equal(existsSync(path.join(target, ".codex")), false);
-  assert.match(output.join(""), /Created 29 files/u);
   assert.match(output.join(""), /Profile: \.ai-sdlc\/project-profile\.md/u);
-  assert.match(output.join(""), /Development work: Yes/u);
-  assert.match(output.join(""), /Development area: Frontend/u);
-  assert.match(output.join(""), /Stack: React \+ Vite \+ Tailwind \+ shadcn\/ui/u);
-  assert.match(output.join(""), /Validation: Standard/u);
-  assert.match(output.join(""), /shadcn MCP: \.vscode\/mcp\.json/u);
-
-  const files = (await readdir(path.join(target, ".github/agents"))).sort();
-  assert.deepEqual(files, roleIds.map((roleId) => `${roleId}.agent.md`).sort());
-
-  for (const roleId of roleIds) {
-    const generated = await readFile(
-      path.join(target, ".github/agents", `${roleId}.agent.md`),
-      "utf8",
-    );
-    const canonical = await readFile(
-      path.join(repositoryRoot, "templates/agents", `${roleId}.md`),
-      "utf8",
-    );
-    assert.match(generated, new RegExp(`^---\\nname: "${roleId}"\\ndescription: `, "u"));
-    assert.ok(generated.endsWith(canonical));
-  }
+  assert.match(output.join(""), /Artifact hosts: \.ai-sdlc\/artifact-hosts\.json/u);
+  assert.match(output.join(""), /Artifact bridge: \.agents\/skills\/sdlc-artifact-bridge\/SKILL\.md/u);
+  assert.match(output.join(""), /Selected roles: pm-ba, designer, architect, software-engineer, tester, devops/u);
 
   const instructions = await readFile(
     path.join(target, ".github/copilot-instructions.md"),
@@ -123,252 +147,107 @@ test("Copilot init writes only the Copilot tool set", async () => {
   assert.match(instructions, /`docs\/ai-sdlc\/index\.md`/u);
   assert.match(instructions, /Available dedicated role agents are in `\.github\/agents`/u);
   assert.match(instructions, /`\.ai-sdlc\/project-profile\.md`/u);
+  assert.match(instructions, /`\.ai-sdlc\/artifact-hosts\.json`/u);
+  assert.match(instructions, /`sdlc-artifact-bridge` skill/u);
 
   const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
-  assert.match(profile, /\| Development work \| Yes \|/u);
-  assert.match(profile, /\| Development area \| Frontend \|/u);
-  assert.match(profile, /\| UI system \| shadcn\/ui \|/u);
-  assert.match(profile, /\| Validation preference \| Standard \|/u);
-  assert.match(profile, /\| Dedicated agents \| pm-ba, designer, architect, software-engineer, tester, devops \|/u);
+  assert.match(profile, /\| Local role agents \| pm-ba, designer, architect, software-engineer, tester, devops \|/u);
+  assert.match(profile, /\| Active local phases \| Discovery, Design, Architecture, Implementation, Verification, Release \|/u);
+  assert.match(profile, /\| Technology profile \| `docs\/ai-sdlc\/technology-profile\.md` when first created by the Architect \|/u);
+  assert.match(profile, /\| Artifact host registry \| `\.ai-sdlc\/artifact-hosts\.json` \|/u);
+  assert.match(profile, /\| Artifact bridge skill \| `\.agents\/skills\/sdlc-artifact-bridge\/SKILL\.md` \|/u);
+  assert.doesNotMatch(profile, /\| (?:Development work|Development area|Stack preference|UI system|UI MCP|Validation preference) \|/u);
 
-  const mcp = JSON.parse(await readFile(path.join(target, ".vscode/mcp.json"), "utf8"));
-  assert.deepEqual(mcp, {
-    servers: {
-      shadcn: {
-        command: "npx",
-        args: ["shadcn@latest", "mcp"],
-      },
-    },
+  assert.equal(existsSync(path.join(target, ".ai-sdlc/artifact-hosts.json")), true);
+  assert.equal(existsSync(path.join(target, ".agents/skills/sdlc-artifact-bridge/SKILL.md")), true);
+  assert.equal(existsSync(path.join(target, ".vscode/mcp.json")), false);
+  assert.equal(existsSync(path.join(target, ".mcp.json")), false);
+});
+
+test("roles can be sparse or absent without hidden dependencies", async () => {
+  const sparse = await initializedProject("claude", { roles: "tester,designer" });
+  assert.deepEqual(await readdir(path.join(sparse, ".claude/agents")), ["designer.md", "tester.md"]);
+  const sparseProfile = await readFile(path.join(sparse, ".ai-sdlc/project-profile.md"), "utf8");
+  assert.match(sparseProfile, /\| Local role agents \| designer, tester \|/u);
+  assert.match(sparseProfile, /\| Active local phases \| Design, Verification \|/u);
+  assert.match(sparseProfile, /\| Discovery \| pm-ba \| Not initialized \| unconfigured \|/u);
+  assert.match(sparseProfile, /\| Design \| designer \| Initialized \| local \|/u);
+  assert.match(sparseProfile, /\| Verification \| tester \| Initialized \| local \|/u);
+
+  const empty = await initializedProject("codex", { roles: "none" });
+  assert.equal(existsSync(path.join(empty, ".codex/agents")), false);
+  assert.equal(existsSync(path.join(empty, "AGENTS.md")), true);
+  assert.equal(existsSync(path.join(empty, ".ai-sdlc/artifact-hosts.json")), true);
+  assert.equal(existsSync(path.join(empty, ".agents/skills/sdlc-artifact-bridge/SKILL.md")), true);
+  const emptyProfile = await readFile(path.join(empty, ".ai-sdlc/project-profile.md"), "utf8");
+  assert.match(emptyProfile, /\| Local role agents \| None \|/u);
+  assert.match(emptyProfile, /\| Active local phases \| None \|/u);
+});
+
+test("artifact registry has six independent routes and repository-root path patterns", async () => {
+  const target = await initializedProject("claude", { roles: "architect,devops" });
+  const registry = JSON.parse(
+    await readFile(path.join(target, ".ai-sdlc/artifact-hosts.json"), "utf8"),
+  );
+
+  assert.equal(registry.version, 1);
+  assert.equal(registry.defaultHost, "local");
+  assert.deepEqual(registry.hosts.local, {
+    kind: "filesystem",
+    root: ".",
+    artifactIndex: "docs/ai-sdlc/index.md",
   });
-});
+  assert.deepEqual(Object.keys(registry.routes), [
+    "discovery",
+    "design",
+    "architecture",
+    "implementation",
+    "verification",
+    "release",
+  ]);
 
-test("Claude and Codex init use native role and shadcn MCP files", async () => {
-  const cases = [
-    {
-      tool: "claude",
-      instructions: "CLAUDE.md",
-      directory: ".claude/agents",
-      fileName: (roleId) => `${roleId}.md`,
-      mcpPath: ".mcp.json",
-      absent: [".github", ".vscode", ".codex", "AGENTS.md"],
-      assertMcp: (content) => {
-        assert.deepEqual(JSON.parse(content), {
-          mcpServers: {
-            shadcn: {
-              command: "npx",
-              args: ["shadcn@latest", "mcp"],
-            },
-          },
-        });
-      },
-    },
-    {
-      tool: "codex",
-      instructions: "AGENTS.md",
-      directory: ".codex/agents",
-      fileName: (roleId) => `${roleId}.toml`,
-      mcpPath: ".codex/config.toml",
-      absent: [".github", ".vscode", ".claude", ".mcp.json", "CLAUDE.md"],
-      assertMcp: (content) => {
-        assert.equal(
-          content,
-          '[mcp_servers.shadcn]\ncommand = "npx"\nargs = ["shadcn@latest", "mcp"]\n',
-        );
-      },
-    },
-  ];
-
-  for (const item of cases) {
-    const target = await temporaryDirectory();
-    assert.equal(await run([
-      "init",
-      target,
-      "--name",
-      "Native Files",
-      "--summary",
-      "Checks one selected tool",
-      "--tool",
-      item.tool,
-      ...frontendDevelopmentArgs,
-    ], { output: () => {} }), 0);
-
-    assert.equal(existsSync(path.join(target, item.instructions)), true);
-    assert.equal(existsSync(path.join(target, item.mcpPath)), true);
-    assert.deepEqual(
-      (await readdir(path.join(target, item.directory))).sort(),
-      roleIds.map(item.fileName).sort(),
-    );
-    for (const absent of item.absent) {
-      assert.equal(existsSync(path.join(target, absent)), false);
-    }
-    item.assertMcp(await readFile(path.join(target, item.mcpPath), "utf8"));
-
-    for (const roleId of roleIds) {
-      const generated = await readFile(
-        path.join(target, item.directory, item.fileName(roleId)),
-        "utf8",
-      );
-      const source = (await readFile(
-        path.join(repositoryRoot, "templates/agents", `${roleId}.md`),
-        "utf8",
-      )).trim();
-
-      if (item.tool === "codex") {
-        assert.match(generated, new RegExp(`^name = "${roleId}"\\ndescription = `, "u"));
-        const instructions = generated.match(/^developer_instructions = (.+)$/mu);
-        assert.ok(instructions);
-        assert.equal(JSON.parse(instructions[1]), source);
-      } else {
-        assert.match(generated, new RegExp(`^---\\nname: "${roleId}"\\ndescription: `, "u"));
-        assert.ok(generated.trimEnd().endsWith(source));
-      }
-    }
+  for (const [phase, route] of Object.entries(registry.routes)) {
+    const selected = phase === "architecture" || phase === "release";
+    assert.equal(route.host, selected ? "local" : null, phase);
+    assert.equal(Object.hasOwn(route, "status"), false, phase);
+    assert.ok(route.paths.length > 0, phase);
+    assert.ok(route.paths.every((value) => value.startsWith("/docs/ai-sdlc/")), phase);
   }
 });
 
-test("no-development mode installs only product, design, and architecture agents", async () => {
-  const cases = [
-    {
-      tool: "copilot",
-      directory: ".github/agents",
-      fileName: (roleId) => `${roleId}.agent.md`,
-      mcpPath: ".vscode/mcp.json",
-    },
-    {
-      tool: "claude",
-      directory: ".claude/agents",
-      fileName: (roleId) => `${roleId}.md`,
-      mcpPath: ".mcp.json",
-    },
-    {
-      tool: "codex",
-      directory: ".codex/agents",
-      fileName: (roleId) => `${roleId}.toml`,
-      mcpPath: ".codex/config.toml",
-    },
-  ];
-
-  for (const item of cases) {
-    const target = await initializedProject(item.tool, { development: "none" });
-    assert.deepEqual(
-      (await readdir(path.join(target, item.directory))).sort(),
-      coreRoleIds.map(item.fileName).sort(),
+test("the generated bridge skill resolves local, filesystem, and HTTPS artifacts without an MCP adapter", async () => {
+  for (const tool of ["copilot", "claude", "codex"]) {
+    const target = await initializedProject(tool, { roles: "none" });
+    const skill = await readFile(
+      path.join(target, ".agents/skills/sdlc-artifact-bridge/SKILL.md"),
+      "utf8",
     );
-    assert.equal(existsSync(path.join(target, item.mcpPath)), false);
-    assert.equal((await listFiles(target)).length, 25);
-
-    const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
-    assert.match(profile, /\| Development work \| No \|/u);
-    assert.match(profile, /\| Development area \| Not applicable \|/u);
-    assert.match(profile, /\| Stack preference \| Not applicable \|/u);
-    assert.match(profile, /\| Validation preference \| Not applicable \|/u);
-    assert.match(profile, /\| Active phases \| Discovery, Design, Architecture \|/u);
-    assert.match(profile, /\| Dedicated agents \| pm-ba, designer, architect \|/u);
-
-    const workflow = await readFile(path.join(target, ".ai-sdlc/workflow.md"), "utf8");
-    assert.match(workflow, /Implementation, Verification, and Release have no active work/u);
+    assert.match(skill, /^---\nname: sdlc-artifact-bridge\n/mu);
+    assert.match(skill, /\.ai-sdlc\/artifact-hosts\.json/u);
+    assert.match(skill, /leading `\/` as a path from the selected repository root/u);
+    assert.match(skill, /`filesystem` host/u);
+    assert.match(skill, /HTTPS host/u);
+    assert.match(skill, /remove exactly the validated logical path's first `\/`/u);
+    assert.match(skill, /Do not resolve the logical path from the origin root/u);
+    assert.match(skill, /same origin and under the configured base path/u);
+    assert.match(skill, /exact match first, otherwise use the single longest matching path prefix/u);
+    assert.match(skill, /its `host` must not be null/u);
+    assert.match(skill, /reject a backslash or any `\.\.` path segment before or after URL decoding/u);
+    assert.match(skill, /including through symbolic links/u);
+    assert.match(skill, /read-only/u);
+    assert.match(skill, /Do not (?:clone, fetch, synchronize|synchronize, copy)/u);
+    assert.match(skill, /Do not use an MCP server for artifact resolution/u);
   }
+
+  const baseUrl = new URL("https://example.com/product-docs/");
+  const logicalPath = "/docs/ai-sdlc/prd.md";
+  assert.equal(
+    new URL(logicalPath.slice(1), baseUrl).href,
+    "https://example.com/product-docs/docs/ai-sdlc/prd.md",
+  );
 });
 
-test("frontend and backend presets write one profile and only shadcn writes MCP", async () => {
-  const cases = [
-    {
-      development: "frontend",
-      stack: "react-shadcn",
-      stackLabel: "React + Vite + Tailwind + shadcn/ui",
-      uiSystem: "shadcn/ui",
-      validation: "standard",
-      validationLabel: "Standard",
-      mcp: true,
-    },
-    {
-      development: "frontend",
-      stack: "react-antd",
-      stackLabel: "React + Vite + Ant Design",
-      uiSystem: "Ant Design",
-      validation: "lean",
-      validationLabel: "Lean",
-      mcp: false,
-    },
-    {
-      development: "frontend",
-      stack: "react-mui",
-      stackLabel: "React + Vite + Material UI",
-      uiSystem: "Material UI",
-      validation: "thorough",
-      validationLabel: "Thorough",
-      mcp: false,
-    },
-    {
-      development: "frontend",
-      stack: "frontend-existing",
-      stackLabel: "Use the existing frontend stack",
-      uiSystem: "Follow existing project conventions",
-      validation: "standard",
-      validationLabel: "Standard",
-      mcp: false,
-    },
-    {
-      development: "backend",
-      stack: "java-spring",
-      stackLabel: "Java + Spring Boot",
-      uiSystem: "Not applicable",
-      validation: "standard",
-      validationLabel: "Standard",
-      mcp: false,
-    },
-    {
-      development: "backend",
-      stack: "node-typescript",
-      stackLabel: "Node.js + TypeScript",
-      uiSystem: "Not applicable",
-      validation: "lean",
-      validationLabel: "Lean",
-      mcp: false,
-    },
-    {
-      development: "backend",
-      stack: "python-fastapi",
-      stackLabel: "Python + FastAPI",
-      uiSystem: "Not applicable",
-      validation: "thorough",
-      validationLabel: "Thorough",
-      mcp: false,
-    },
-    {
-      development: "backend",
-      stack: "backend-existing",
-      stackLabel: "Use the existing backend stack",
-      uiSystem: "Not applicable",
-      validation: "standard",
-      validationLabel: "Standard",
-      mcp: false,
-    },
-  ];
-
-  for (const item of cases) {
-    const target = await initializedProject("claude", item);
-    const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
-    assert.ok(profile.includes("| Development work | Yes |"));
-    assert.ok(profile.includes(`| Development area | ${item.development === "frontend" ? "Frontend" : "Backend"} |`));
-    assert.ok(profile.includes(`| Stack preference | ${item.stackLabel} |`));
-    assert.ok(profile.includes(`| UI system | ${item.uiSystem} |`));
-    assert.ok(profile.includes(`| UI MCP | ${item.mcp ? "shadcn" : "None"} |`));
-    assert.ok(profile.includes(`| Validation preference | ${item.validationLabel} |`));
-    assert.match(
-      profile,
-      item.development === "frontend" ? /For frontend work/u : /For (?:.+ )?backend work/u,
-    );
-    assert.equal(existsSync(path.join(target, ".mcp.json")), item.mcp);
-    assert.equal((await listFiles(target)).length, item.mcp ? 29 : 28);
-    assert.deepEqual(
-      (await readdir(path.join(target, ".claude/agents"))).sort(),
-      roleIds.map((roleId) => `${roleId}.md`).sort(),
-    );
-  }
-});
-
-test("project profile records safe root-level stack evidence", async () => {
+test("project profile records safe root-level evidence for later Architect planning", async () => {
   const target = await temporaryDirectory();
   await writeFile(path.join(target, "package.json"), JSON.stringify({
     dependencies: { react: "latest", vite: "latest", tailwindcss: "latest" },
@@ -387,281 +266,48 @@ test("project profile records safe root-level stack evidence", async () => {
     "Records safe project evidence",
     "--tool",
     "claude",
-    ...frontendDevelopmentArgs,
+    "--roles",
+    "architect",
   ], { output: () => {} });
 
   const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
-  assert.match(profile, /\| package\.json \| Node\.js package manifest; React dependency; Vite dependency; Tailwind CSS dependency; scripts: build, lint \|/u);
-  assert.match(profile, /\| components\.json \| shadcn\/ui project configuration \|/u);
+  assert.match(profile, /\| package\.json \| Node\.js package manifest; React dependency; Vite dependency; Tailwind CSS dependency; scripts: build, lint \| Architect technology-profile evidence \|/u);
+  assert.match(profile, /\| components\.json \| shadcn\/ui project configuration \| Architect technology-profile evidence \|/u);
   assert.doesNotMatch(profile, /privateTask|secret-command/u);
   assert.equal(profile.includes(target), false);
 });
 
-test("stack recommendations require matching evidence and stay neutral for mixed backends", async () => {
-  const cases = [
-    {
-      name: "plain Java",
-      area: "backend",
-      choice: "4",
-      expected: "Use the existing backend stack",
-      files: { "pom.xml": "<project><artifactId>plain-java</artifactId></project>\n" },
-    },
-    {
-      name: "plain Python",
-      area: "backend",
-      choice: "4",
-      expected: "Use the existing backend stack",
-      files: { "requirements.txt": "django==5.0\n" },
-    },
-    {
-      name: "JavaScript backend",
-      area: "backend",
-      choice: "4",
-      expected: "Use the existing backend stack",
-      files: {
-        "package.json": JSON.stringify({ dependencies: { express: "latest" } }),
-      },
-    },
-    {
-      name: "existing Vue frontend",
-      area: "frontend",
-      choice: "4",
-      expected: "Use the existing frontend stack",
-      files: {
-        "package.json": JSON.stringify({ dependencies: { vue: "latest" } }),
-      },
-    },
-    {
-      name: "existing Go backend",
-      area: "backend",
-      choice: "4",
-      expected: "Use the existing backend stack",
-      files: { "go.mod": "module example.com/service\n\ngo 1.24\n" },
-      profilePattern: /Target directory is not empty/u,
-    },
-    {
-      name: "unconfirmed components file",
-      area: "frontend",
-      choice: "4",
-      expected: "Use the existing frontend stack",
-      files: {
-        "package.json": JSON.stringify({
-          dependencies: { react: "latest", vite: "latest", tailwindcss: "latest" },
-        }),
-        "components.json": "{}\n",
-      },
-      profilePattern: /components\.json present; shadcn\/ui configuration not confirmed/u,
-    },
-    {
-      name: "Spring Boot",
-      area: "backend",
-      choice: "1",
-      expected: "Java + Spring Boot",
-      files: {
-        "pom.xml": "<project><artifactId>spring-boot-starter-web</artifactId></project>\n",
-      },
-    },
-    {
-      name: "TypeScript backend",
-      area: "backend",
-      choice: "2",
-      expected: "Node.js + TypeScript",
-      files: {
-        "package.json": JSON.stringify({
-          dependencies: { express: "latest" },
-          devDependencies: { typescript: "latest" },
-        }),
-      },
-    },
-    {
-      name: "tsconfig TypeScript backend",
-      area: "backend",
-      choice: "2",
-      expected: "Node.js + TypeScript",
-      files: {
-        "package.json": JSON.stringify({ dependencies: { express: "latest" } }),
-        "tsconfig.json": "{}\n",
-      },
-    },
-    {
-      name: "FastAPI",
-      area: "backend",
-      choice: "3",
-      expected: "Python + FastAPI",
-      files: { "requirements.txt": "fastapi==1.0\n" },
-    },
-    {
-      name: "shadcn frontend",
-      area: "frontend",
-      choice: "1",
-      expected: "React + Vite + Tailwind + shadcn/ui",
-      files: {
-        "package.json": JSON.stringify({
-          dependencies: { react: "latest", vite: "latest", tailwindcss: "latest" },
-        }),
-        "components.json": JSON.stringify({
-          $schema: "https://ui.shadcn.com/schema.json",
-        }),
-      },
-    },
-    {
-      name: "Ant Design frontend",
-      area: "frontend",
-      choice: "2",
-      expected: "React + Vite + Ant Design",
-      files: {
-        "package.json": JSON.stringify({
-          dependencies: { react: "latest", vite: "latest", antd: "latest" },
-        }),
-      },
-    },
-    {
-      name: "Material UI frontend",
-      area: "frontend",
-      choice: "3",
-      expected: "React + Vite + Material UI",
-      files: {
-        "package.json": JSON.stringify({
-          dependencies: { react: "latest", vite: "latest", "@mui/material": "latest" },
-        }),
-      },
-    },
-    {
-      name: "mixed frontend UI systems",
-      area: "frontend",
-      choice: "4",
-      expected: "Use the existing frontend stack",
-      files: {
-        "package.json": JSON.stringify({
-          dependencies: {
-            react: "latest",
-            vite: "latest",
-            antd: "latest",
-            "@mui/material": "latest",
-          },
-        }),
-      },
-    },
-    {
-      name: "mixed backend",
-      area: "backend",
-      choice: "4",
-      expected: "Use the existing backend stack",
-      files: {
-        "pom.xml": "<project><artifactId>spring-boot-starter-web</artifactId></project>\n",
-        "requirements.txt": "fastapi==1.0\n",
-      },
-    },
-  ];
-
-  for (const item of cases) {
-    const target = await temporaryDirectory();
-    for (const [file, content] of Object.entries(item.files)) {
-      await writeFile(path.join(target, file), content, "utf8");
-    }
-    const questions = [];
-    const prompt = answers([
-      "1",
-      item.area === "frontend" ? "1" : "2",
-      item.choice,
-      "1",
-    ], questions);
-
-    await run([
-      "init",
-      target,
-      "--name",
-      item.name,
-      "--summary",
-      "Checks honest stack recommendations",
-      "--tool",
-      "claude",
-    ], { prompt, output: () => {} });
-
-    const stackQuestion = questions.find((question) => /stack preference/u.test(question));
-    assert.ok(stackQuestion, item.name);
-    assert.match(
-      stackQuestion,
-      new RegExp(`${escapeRegex(item.expected)} \\(project evidence; recommended\\)`, "u"),
-      item.name,
-    );
-    assert.equal(
-      [...stackQuestion.matchAll(/\(project evidence; recommended\)/gu)].length,
-      1,
-      item.name,
-    );
-    if (item.profilePattern) {
-      const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
-      assert.match(profile, item.profilePattern, item.name);
-    }
-  }
-});
-
-test("interactive init asks a short conditional development questionnaire", async () => {
+test("interactive init asks six independent role questions and no stack questionnaire", async () => {
   const target = await temporaryDirectory();
   const questions = [];
   const output = [];
-  const prompt = answers([
-    "",
-    "A short summary",
-    "not-a-tool",
-    "3",
-    "maybe",
-    "1",
-    "3",
-    "1",
-    "9",
-    "1",
-    "9",
-    "1",
-  ], questions);
+  const prompt = answers(["1", "2", "1", "2", "1", "2"], questions);
 
-  assert.equal(await run(["init", target], {
-    prompt,
-    output: (value) => output.push(value),
-  }), 0);
+  await run([
+    "init",
+    target,
+    "--name",
+    "Role Questions",
+    "--summary",
+    "Chooses roles independently",
+    "--tool",
+    "claude",
+  ], { prompt, output: (value) => output.push(value) });
 
-  assert.equal(questions.length, 12);
-  assert.match(questions[0], /Project name/u);
-  assert.match(questions[1], /Project summary/u);
-  assert.match(questions[2], /Choose your AI tool/u);
-  assert.match(questions[4], /perform code development/u);
-  assert.match(questions[6], /What development work/u);
-  assert.match(questions[8], /frontend stack preference/u);
-  assert.match(questions[8], /shadcn\/ui \(recommended\)/u);
-  assert.doesNotMatch(questions[8], /project evidence/u);
-  assert.match(questions[10], /validation preference/u);
-  assert.match(output.join(""), /Choose 1, 2, 3, or 4/u);
-
-  const instructions = await readFile(path.join(target, "AGENTS.md"), "utf8");
-  assert.match(
-    instructions,
-    new RegExp(`\\*\\*Project:\\*\\* ${escapeRegex(path.basename(target))}`, "u"),
+  assert.equal(questions.length, 6);
+  assert.deepEqual(
+    questions.map((question) => question.match(/^Initialize the (.+?) role/mu)?.[1]),
+    ["PM / BA", "Designer", "Architect", "Software Engineer", "Tester", "DevOps"],
   );
-  assert.match(instructions, /\*\*Goal:\*\* A short summary/u);
-  assert.match(instructions, /Available dedicated role agents are in `\.codex\/agents`/u);
-  const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
-  assert.match(profile, /\| Development work \| Yes \|/u);
-  assert.match(profile, /\| Development area \| Frontend \|/u);
-  assert.match(profile, /\| Stack preference \| React \+ Vite \+ Tailwind \+ shadcn\/ui \|/u);
-  assert.match(profile, /\| Validation preference \| Standard \|/u);
-});
-
-test("interactive no-development choice skips stack and validation questions", async () => {
-  const target = await temporaryDirectory();
-  const questions = [];
-  const prompt = answers(["Docs Project", "Shared delivery documents", "2", "2"], questions);
-
-  await run(["init", target], { prompt, output: () => {} });
-
-  assert.equal(questions.length, 4);
-  assert.match(questions[3], /perform code development/u);
-  assert.equal(questions.some((question) => /stack preference|validation preference/u.test(question)), false);
+  assert.equal(
+    questions.some((question) => /development|stack|validation/iu.test(question)),
+    false,
+  );
   assert.deepEqual(
     (await readdir(path.join(target, ".claude/agents"))).sort(),
-    coreRoleIds.map((roleId) => `${roleId}.md`).sort(),
+    ["architect.md", "pm-ba.md", "tester.md"],
   );
-  assert.equal(existsSync(path.join(target, ".mcp.json")), false);
+  assert.match(output.join(""), /Selected roles: pm-ba, architect, tester/u);
 });
 
 test("project text is inserted once and kept literal", async () => {
@@ -675,7 +321,7 @@ test("project text is inserted once and kept literal", async () => {
     "Goal {{PROJECT_NAME}}",
     "--tool",
     "claude",
-    ...frontendDevelopmentArgs,
+    ...allRolesArgs,
   ], { output: () => {} });
 
   const instructions = await readFile(path.join(target, "CLAUDE.md"), "utf8");
@@ -698,11 +344,15 @@ test("shared workflow keeps the six phases and the full template set", async () 
     phaseLines.map((line) => line.split("|")[1].trim()),
     ["Discovery", "Design", "Architecture", "Implementation", "Verification", "Release"],
   );
-  assert.match(workflow, /Keep the six phases and their owners in this order/u);
-  assert.match(workflow, /Use the named dedicated agent for each active phase/u);
+  assert.match(workflow, /stable order and ownership vocabulary/u);
+  assert.match(workflow, /subset may be sparse/u);
   assert.match(workflow, /Read `\.ai-sdlc\/project-profile\.md` before starting/u);
+  assert.match(workflow, /use `\.ai-sdlc\/artifact-hosts\.json` with the `sdlc-artifact-bridge` skill/u);
   assert.match(workflow, /Architecture Pack files/u);
   assert.match(workflow, /optional plan, tasks, and notes/u);
+  assert.match(workflow, /Do not initialize, simulate, or create filler work for a missing role/u);
+  assert.match(workflow, /Do not block a selected later role merely because an earlier role is not local/u);
+  assert.match(workflow, /route host is null or inaccessible/u);
   assert.match(workflow, /structured question UI/u);
   assert.match(workflow, /two or three mutually exclusive options/u);
   assert.match(workflow, /recommended option first/u);
@@ -722,7 +372,7 @@ test("artifact index lists only real, openable artifacts", async () => {
   const workflow = await readFile(path.join(target, ".ai-sdlc/workflow.md"), "utf8");
   assert.match(workflow, /create, update, move, or delete/u);
   assert.match(workflow, /link relative to the index, such as `\.\/prd\.md`/u);
-  assert.match(workflow, /canonical URL for an artifact owned by another repository/u);
+  assert.match(workflow, /cite their canonical source in the consuming document/u);
   assert.match(workflow, /one plain-English description/u);
   assert.match(workflow, /remove stale rows/u);
 });
@@ -770,7 +420,7 @@ test("human decisions are asked immediately and artifacts record resolved choice
   assert.match(readme, /agent asks immediately with two or three clear options/u);
 
   const deferredDecision = /open decisions?|open questions?|decision still needed|open target decisions|needs decision|decision needed/iu;
-  for (const file of templateFiles) {
+  for (const file of templateFiles.filter((name) => name !== "technology-profile.md")) {
     const content = await readFile(path.join(target, ".ai-sdlc/templates", file), "utf8");
     assert.doesNotMatch(content, deferredDecision, file);
   }
@@ -793,7 +443,7 @@ test("human decisions are asked immediately and artifacts record resolved choice
   assert.match(options, /## Selected decision/u);
 });
 
-test("Designer follows the configured UI system without legacy design scripts", async () => {
+test("Designer stays technology-neutral when no technology profile exists", async () => {
   const target = await initializedProject("copilot");
   const designer = await readFile(
     path.join(target, ".github/agents/designer.agent.md"),
@@ -811,8 +461,9 @@ test("Designer follows the configured UI system without legacy design scripts", 
 
   assert.match(designer, /approved visual references, verified source behavior/u);
   assert.match(designer, /Read `\.ai-sdlc\/project-profile\.md`/u);
-  assert.match(designer, /configured UI system/u);
-  assert.match(designer, /project profile names a UI MCP server/u);
+  assert.match(designer, /use `\.ai-sdlc\/artifact-hosts\.json` with the `sdlc-artifact-bridge` skill/u);
+  assert.match(designer, /Work independently when PM \/ BA or Architect agents are not initialized/u);
+  assert.match(designer, /If none exists, remain technology-neutral/u);
   assert.match(designer, /user journey, information hierarchy, primary action/u);
   assert.match(designer, /For visual work, render the affected viewport/u);
   assert.match(designer, /approved reference or adjacent product surfaces/u);
@@ -824,15 +475,54 @@ test("Designer follows the configured UI system without legacy design scripts", 
   assert.match(designer, /pixel-perfect fidelity/u);
   assert.doesNotMatch(designer, /shadcn\/ui|Ant Design|Material UI/u);
   assert.doesNotMatch(designer, /\bVDS\b|vds-query|component-query|validate-spec/iu);
-  assert.match(profile, /\| UI system \| shadcn\/ui \|/u);
+  assert.match(profile, /Initialization does not choose a stack or validation depth/u);
   assert.match(baseline, /Human-curated notes/u);
-  assert.match(baseline, /configured UI-system convention/u);
   assert.match(spec, /Experience and information hierarchy/u);
   assert.match(spec, /Responsive behavior/u);
   assert.match(spec, /Accessibility and content/u);
   assert.match(spec, /Visual evidence/u);
-  assert.match(spec, /configured UI-system component/u);
   assert.doesNotMatch(spec, /spec_version|deferred_validations|validator/iu);
+});
+
+test("Architect initializes technology planning on first use without other roles", async () => {
+  const target = await initializedProject("codex", { roles: "architect" });
+  const architect = await readCodexInstructions(
+    path.join(target, ".codex/agents/architect.toml"),
+  );
+  const planning = await readFile(path.join(target, ".ai-sdlc/technology-planning.md"), "utf8");
+  const profileTemplate = await readFile(
+    path.join(target, ".ai-sdlc/templates/technology-profile.md"),
+    "utf8",
+  );
+
+  assert.deepEqual(await readdir(path.join(target, ".codex/agents")), ["architect.toml"]);
+  assert.match(architect, /first Architecture task/u);
+  assert.match(architect, /look for `docs\/ai-sdlc\/technology-profile\.md` locally and through the configured Architecture route/u);
+  assert.match(architect, /`Proposed` or `Confirmed` status/u);
+  assert.match(architect, /A `Superseded` profile is not usable/u);
+  assert.match(architect, /inspect evidence, ask whether to preserve verified current technology/u);
+  assert.match(architect, /then ask only applicable material choices/u);
+  assert.match(architect, /create the profile from its template/u);
+  assert.match(architect, /Work independently when PM \/ BA, Designer, Software Engineer, Tester, or DevOps agents are not initialized/u);
+  assert.match(architect, /Do not install dependencies, scaffold an application/u);
+
+  assert.match(planning, /Search the local artifact index, the Architecture route/u);
+  assert.match(planning, /Ask the user only about material choices that cannot be resolved from evidence/u);
+  assert.match(planning, /one decision at a time with two or three viable options/u);
+  assert.match(planning, /Add the profile to `docs\/ai-sdlc\/index\.md`/u);
+  assert.match(planning, /without Software Engineer, Tester, or DevOps agents being present/u);
+  for (const area of [
+    "Frontend and interaction",
+    "Services and APIs",
+    "Data and storage",
+    "Integrations and messaging",
+    "Runtime and deployment",
+    "Security and privacy",
+    "Observability and operations",
+    "Validation and quality",
+  ]) {
+    assert.match(profileTemplate, new RegExp(escapeRegex(area), "u"), area);
+  }
 });
 
 test("Architecture Pack keeps C4, ADR, concerns, and required API patterns", async () => {
@@ -924,7 +614,8 @@ test("Software Engineer can use plan, tasks, and implementation notes without ex
   assert.match(engineer, /implementation-plan\.md/u);
   assert.match(engineer, /implementation-tasks\.md/u);
   assert.match(engineer, /smallest complete vertical slice/u);
-  assert.match(engineer, /profile's validation preference/u);
+  assert.match(engineer, /Use the technology profile and accepted ADRs when they exist/u);
+  assert.match(engineer, /Choose check depth from confirmed quality requirements/u);
   assert.match(engineer, /commands confirmed by project files or instructions/u);
   assert.match(engineer, /Do not scaffold an application/u);
   assert.match(plan, /Repository change map/u);
@@ -954,24 +645,17 @@ test("Software Engineer can use plan, tasks, and implementation notes without ex
   }
 });
 
-test("roles and artifact templates do not require explicit handoffs", async () => {
+test("every role knows how to resolve artifacts without auto-initializing dependencies", async () => {
   const target = await initializedProject("claude");
-  const files = [
-    ...roleIds.map((roleId) => path.join(target, ".claude/agents", `${roleId}.md`)),
-    ...templateFiles.map((file) => path.join(target, ".ai-sdlc/templates", file)),
-    path.join(target, ".ai-sdlc/workflow.md"),
-    path.join(target, "docs/ai-sdlc/index.md"),
-    path.join(target, "CLAUDE.md"),
-  ];
-
-  for (const file of files) {
-    const content = await readFile(file, "utf8");
-    assert.doesNotMatch(
-      content,
-      /\bhandoff\b|next owner|give (?:the )?(?:PM \/ BA|Designer|Architect|Software Engineer|Tester|DevOps)\b/iu,
-      file,
-    );
+  for (const roleId of roleIds) {
+    const content = await readFile(path.join(target, ".claude/agents", `${roleId}.md`), "utf8");
+    assert.match(content, /\.ai-sdlc\/artifact-hosts\.json/u, roleId);
+    assert.match(content, /sdlc-artifact-bridge/u, roleId);
   }
+
+  const workflow = await readFile(path.join(target, ".ai-sdlc/workflow.md"), "utf8");
+  assert.match(workflow, /A role not initialized here may be performed elsewhere or may be unnecessary/u);
+  assert.match(workflow, /Do not initialize, simulate, or create filler work for a missing role/u);
 });
 
 test("init stops before writing when a destination exists", async () => {
@@ -989,7 +673,7 @@ test("init stops before writing when a destination exists", async () => {
       "Must not overwrite",
       "--tool",
       "claude",
-      ...frontendDevelopmentArgs,
+      ...allRolesArgs,
     ], { output: () => {} }),
     /CLAUDE\.md/u,
   );
@@ -1016,7 +700,7 @@ test("init preserves an existing artifact index and stops before writing", async
       "Must keep the current artifact list",
       "--tool",
       "codex",
-      ...frontendDevelopmentArgs,
+      ...allRolesArgs,
     ], { output: () => {} }),
     /docs\/ai-sdlc\/index\.md/u,
   );
@@ -1044,7 +728,7 @@ test("init preserves an existing project profile and stops before writing", asyn
       "Must keep initialization choices",
       "--tool",
       "claude",
-      ...frontendDevelopmentArgs,
+      ...allRolesArgs,
     ], { output: () => {} }),
     /\.ai-sdlc\/project-profile\.md/u,
   );
@@ -1054,70 +738,54 @@ test("init preserves an existing project profile and stops before writing", asyn
   assert.equal(existsSync(path.join(target, ".mcp.json")), false);
 });
 
-test("init preserves existing MCP config for every selected tool", async () => {
-  const cases = [
-    {
-      tool: "copilot",
-      mcpPath: ".vscode/mcp.json",
-      instructionsPath: ".github/copilot-instructions.md",
-    },
-    { tool: "claude", mcpPath: ".mcp.json", instructionsPath: "CLAUDE.md" },
-    { tool: "codex", mcpPath: ".codex/config.toml", instructionsPath: "AGENTS.md" },
-  ];
+test("init preserves an existing artifact registry and stops before writing", async () => {
+  const target = await temporaryDirectory();
+  const registry = path.join(target, ".ai-sdlc/artifact-hosts.json");
+  await mkdir(path.dirname(registry), { recursive: true });
+  await writeFile(registry, '{"keep":true}\n', "utf8");
 
-  for (const item of cases) {
-    const target = await temporaryDirectory();
-    const mcp = path.join(target, item.mcpPath);
-    await mkdir(path.dirname(mcp), { recursive: true });
-    await writeFile(mcp, "keep this configuration\n", "utf8");
+  await assert.rejects(
+    run([
+      "init",
+      target,
+      "--name",
+      "Existing Registry",
+      "--summary",
+      "Must keep artifact routes",
+      "--tool",
+      "claude",
+      ...allRolesArgs,
+    ], { output: () => {} }),
+    /\.ai-sdlc\/artifact-hosts\.json/u,
+  );
 
-    await assert.rejects(
-      run([
-        "init",
-        target,
-        "--name",
-        "Existing MCP",
-        "--summary",
-        "Must keep the current tool configuration",
-        "--tool",
-        item.tool,
-        ...frontendDevelopmentArgs,
-      ], { output: () => {} }),
-      new RegExp(escapeRegex(item.mcpPath), "u"),
-    );
-
-    assert.equal(await readFile(mcp, "utf8"), "keep this configuration\n");
-    assert.equal(existsSync(path.join(target, item.instructionsPath)), false);
-    assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
-  }
+  assert.equal(await readFile(registry, "utf8"), '{"keep":true}\n');
+  assert.equal(existsSync(path.join(target, "CLAUDE.md")), false);
+  assert.equal(existsSync(path.join(target, ".claude")), false);
 });
 
-test("backend initialization leaves an unrelated MCP config untouched", async () => {
+test("init leaves unrelated MCP configuration untouched and creates none", async () => {
   const target = await temporaryDirectory();
-  const mcp = path.join(target, ".mcp.json");
-  await writeFile(mcp, '{"keep":true}\n', "utf8");
+  const existing = path.join(target, ".mcp.json");
+  await writeFile(existing, '{"keep":true}\n', "utf8");
 
   await run([
     "init",
     target,
     "--name",
-    "Backend MCP",
+    "Unrelated Configuration",
     "--summary",
-    "Does not configure a UI MCP",
+    "Initializes roles without tool servers",
     "--tool",
     "claude",
-    "--development",
-    "backend",
-    "--stack",
-    "java-spring",
-    "--validation",
-    "standard",
+    "--roles",
+    "architect",
   ], { output: () => {} });
 
-  assert.equal(await readFile(mcp, "utf8"), '{"keep":true}\n');
+  assert.equal(await readFile(existing, "utf8"), '{"keep":true}\n');
   assert.equal(existsSync(path.join(target, "CLAUDE.md")), true);
-  const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
-  assert.match(profile, /\| UI MCP \| None \|/u);
+  assert.equal(existsSync(path.join(target, ".vscode/mcp.json")), false);
+  assert.equal(existsSync(path.join(target, ".codex/config.toml")), false);
 });
 
 test("init rejects a symbolic-link output parent", {
@@ -1137,7 +805,7 @@ test("init rejects a symbolic-link output parent", {
       "Must stay in the target",
       "--tool",
       "copilot",
-      ...frontendDevelopmentArgs,
+      ...allRolesArgs,
     ], { output: () => {} }),
     /\.github\//u,
   );
@@ -1161,7 +829,7 @@ test("init keeps the useful error for a file in the target path", async () => {
       "Must fail clearly",
       "--tool",
       "claude",
-      ...frontendDevelopmentArgs,
+      ...allRolesArgs,
     ], { output: () => {} }),
     (error) => error?.code === "ENOTDIR" && !String(error.message).includes("rollback"),
   );
@@ -1187,7 +855,7 @@ test("init removes its earlier files when a later write fails", {
         "A later directory cannot be written",
         "--tool",
         "claude",
-        ...frontendDevelopmentArgs,
+        ...allRolesArgs,
       ], { output: () => {} }),
       /permission denied|EACCES/iu,
     );
@@ -1212,12 +880,8 @@ test("rollback removes an unchanged generated project profile", async () => {
       "Fails after the profile is written",
       "--tool",
       "claude",
-      "--development",
-      "frontend",
-      "--stack",
-      "react-antd",
-      "--validation",
-      "standard",
+      "--roles",
+      "architect",
     ], {
       output: () => {},
       beforeWrite: ({ path: entryPath }) => {
@@ -1233,7 +897,7 @@ test("rollback removes an unchanged generated project profile", async () => {
 
 test("init preserves a file created by another process after the conflict check", async () => {
   const target = await temporaryDirectory();
-  const racedFile = path.join(target, ".mcp.json");
+  const racedFile = path.join(target, ".ai-sdlc/artifact-hosts.json");
 
   await assert.rejects(
     run([
@@ -1245,11 +909,12 @@ test("init preserves a file created by another process after the conflict check"
       "Preserves a concurrently created file",
       "--tool",
       "claude",
-      ...frontendDevelopmentArgs,
+      ...allRolesArgs,
     ], {
       output: () => {},
       beforeWrite: async ({ path: entryPath }) => {
-        if (entryPath === ".mcp.json") {
+        if (entryPath === ".ai-sdlc/artifact-hosts.json") {
+          await mkdir(path.dirname(racedFile), { recursive: true });
           await writeFile(racedFile, "Created by another process.\n", "utf8");
         }
       },
@@ -1259,7 +924,6 @@ test("init preserves a file created by another process after the conflict check"
 
   assert.equal(await readFile(racedFile, "utf8"), "Created by another process.\n");
   assert.equal(existsSync(path.join(target, "CLAUDE.md")), false);
-  assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
 });
 
 test("rollback keeps a generated file that another process changed or replaced", async () => {
@@ -1296,7 +960,7 @@ test("rollback keeps a generated file that another process changed or replaced",
         "Keep outside changes",
         "--tool",
         "claude",
-        ...frontendDevelopmentArgs,
+        ...allRolesArgs,
       ], {
         output: () => {},
         beforeWrite: async ({ index }) => {
@@ -1321,19 +985,17 @@ test("CLI help is short and invalid options fail", async () => {
 
   assert.equal(helpResult.status, 0, helpResult.stderr);
   assert.match(helpResult.stdout, /--tool <tool>/u);
-  assert.match(helpResult.stdout, /--development <mode>/u);
-  assert.match(helpResult.stdout, /--stack <preset>/u);
-  assert.match(helpResult.stdout, /--validation <preference>/u);
+  assert.match(helpResult.stdout, /--roles <list>/u);
+  assert.doesNotMatch(helpResult.stdout, /--development|--stack|--validation/u);
 
   await assert.rejects(run(["init", ".", "--tool", "unknown"]), /Unknown AI tool/u);
   await assert.rejects(
-    run(["init", ".", "--development", "mobile"]),
-    /Unknown development mode: mobile/u,
+    run(["init", ".", "--roles", "architect,wizard"]),
+    /Unknown role: wizard/u,
   );
-  await assert.rejects(run(["init", ".", "--stack", "rails"]), /Unknown stack: rails/u);
   await assert.rejects(
-    run(["init", ".", "--validation", "maximum"]),
-    /Unknown validation preference: maximum/u,
+    run(["init", ".", "--roles", "architect,architecture"]),
+    /Duplicate role: architect/u,
   );
   const completeBase = [
     "init",
@@ -1345,54 +1007,26 @@ test("CLI help is short and invalid options fail", async () => {
     "--tool",
     "claude",
   ];
-  await assert.rejects(run(completeBase, { output: () => {} }), /--development is required/u);
+  await assert.rejects(run(completeBase, { output: () => {} }), /--roles is required/u);
   await assert.rejects(
     run([...completeBase, "--development", "frontend"], { output: () => {} }),
-    /--stack is required for frontend development/u,
+    /--development was removed.*--roles/u,
   );
   await assert.rejects(
-    run([
-      ...completeBase,
-      "--development",
-      "frontend",
-      "--stack",
-      "react-shadcn",
-    ], { output: () => {} }),
-    /--validation is required when development is enabled/u,
+    run([...completeBase, "--stack", "react-shadcn"], { output: () => {} }),
+    /--stack was removed.*technology profile/u,
   );
   await assert.rejects(
-    run([
-      ...completeBase,
-      "--stack",
-      "java-spring",
-      "--development",
-      "frontend",
-      "--validation",
-      "standard",
-    ], { output: () => {} }),
-    /Stack java-spring is not valid for frontend development/u,
-  );
-  await assert.rejects(
-    run([...completeBase, "--development", "none", "--stack", "react-shadcn"], {
-      output: () => {},
-    }),
-    /--stack cannot be used/u,
-  );
-  await assert.rejects(
-    run([...completeBase, "--development", "none", "--validation", "standard"], {
-      output: () => {},
-    }),
-    /--validation cannot be used/u,
+    run([...completeBase, "--validation", "standard"], { output: () => {} }),
+    /--validation was removed.*technology profile/u,
   );
   await assert.rejects(run(["serve"]), /Use: create-ai-native-sdlc init/u);
   await assert.rejects(run(["init", ".", "--client", "codex"]), /Unknown option/u);
   await assert.rejects(run(["init", ".", "--name", "   "]), /--name needs a value/u);
-  await assert.rejects(run(["init", ".", "--development"]), /--development needs a value/u);
-  await assert.rejects(run(["init", ".", "--stack"]), /--stack needs a value/u);
-  await assert.rejects(run(["init", ".", "--validation"]), /--validation needs a value/u);
+  await assert.rejects(run(["init", ".", "--roles"]), /--roles needs a value/u);
 });
 
-test("README describes current outputs without the old negative capability list", async () => {
+test("README describes role selection, artifact routing, and Architect technology planning", async () => {
   const readme = await readFile(path.join(repositoryRoot, "README.md"), "utf8");
 
   assert.match(readme, /## Generated files/u);
@@ -1400,26 +1034,42 @@ test("README describes current outputs without the old negative capability list"
   assert.match(readme, /## Architecture Pack/u);
   assert.match(readme, /docs\/ai-sdlc\/index\.md/u);
   assert.match(readme, /\.ai-sdlc\/project-profile\.md/u);
-  assert.match(readme, /`none`/u);
-  assert.match(readme, /`frontend`/u);
-  assert.match(readme, /`backend`/u);
-  assert.match(readme, /`react-shadcn`, `react-antd`, `react-mui`/u);
-  assert.match(readme, /`java-spring`, `node-typescript`, `python-fastapi`/u);
-  assert.match(readme, /`frontend-existing`/u);
-  assert.match(readme, /`backend-existing`/u);
-  assert.match(readme, /`lean`, `standard`, or `thorough`/u);
-  assert.doesNotMatch(readme, /## What it does not include/iu);
-  assert.doesNotMatch(
-    readme,
-    /^- No (?:web app|server or database|workflow runner|dashboard|sync or migration engine|large group of reports)/imu,
-  );
+  assert.match(readme, /--roles/u);
+  assert.match(readme, /pm-ba,designer,architect/u);
+  assert.match(readme, /all|`all`/u);
+  assert.match(readme, /none|`none`/u);
+  assert.match(readme, /\.ai-sdlc\/artifact-hosts\.json/u);
+  assert.match(readme, /sdlc-artifact-bridge\//u);
+  assert.match(readme, /\$sdlc-artifact-bridge \/docs\/ai-sdlc\/prd\.md/u);
+  assert.match(readme, /\$sdlc-artifact-bridge product-repo:\/docs\/ai-sdlc\/prd\.md/u);
+  assert.match(readme, /SKILL\.md/u);
+  assert.match(readme, /technology profile/u);
+  assert.match(readme, /does not use MCP|No MCP|not (?:an )?MCP/iu);
+  assert.doesNotMatch(readme, /--development|--stack|--validation/u);
+});
+
+test("npm package includes the CLI, templates, bridge skill, and no generated MCP config", async () => {
+  const npmCache = await temporaryDirectory();
+  const result = spawnSync("npm", ["pack", "--dry-run", "--json"], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    env: { ...process.env, npm_config_cache: npmCache },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout)[0];
+  const files = report.files.map((item) => item.path);
+  assert.ok(files.includes("bin/cli.js"));
+  assert.ok(files.includes("templates/project-profile.md"));
+  assert.ok(files.includes("templates/shared/.ai-sdlc/technology-planning.md"));
+  assert.ok(files.includes("templates/shared/.agents/skills/sdlc-artifact-bridge/SKILL.md"));
+  assert.equal(files.some((file) => /mcp\.json|config\.toml/u.test(file)), false);
 });
 
 test("generated files are plain English and do not contain old platform contracts", async () => {
   for (const tool of ["copilot", "claude", "codex"]) {
     const target = await initializedProject(tool);
     const files = await listFiles(target);
-    assert.equal(files.length, 29);
+    assert.ok(files.length >= 30);
 
     for (const file of files) {
       const content = await readFile(file, "utf8");
@@ -1427,7 +1077,7 @@ test("generated files are plain English and do not contain old platform contract
       assert.doesNotMatch(content, /\{\{[A-Z_]+\}\}/u, file);
       assert.doesNotMatch(
         content,
-        /Run-scoped|semantic gate|artifact revision|artifact registry|architecture-rulebook|architecture-selection|catalogDigest|reviewId|optionsArtifactId|selectedAt|selection review UUID|minimum_findings|machine-readable|execution contract|change contract|seven-lens|Tier [ABC]|ai-native\.yaml/iu,
+        /Run-scoped|semantic gate|architecture-rulebook|architecture-selection|catalogDigest|reviewId|optionsArtifactId|selectedAt|selection review UUID|minimum_findings|execution contract|change contract|seven-lens|Tier [ABC]|ai-native\.yaml/iu,
         file,
       );
     }
@@ -1436,16 +1086,6 @@ test("generated files are plain English and do not contain old platform contract
 
 async function initializedProject(tool, configuration = {}) {
   const target = await temporaryDirectory();
-  const development = configuration.development ?? "frontend";
-  const developmentArgs = ["--development", development];
-  if (development !== "none") {
-    developmentArgs.push(
-      "--stack",
-      configuration.stack ?? (development === "frontend" ? "react-shadcn" : "java-spring"),
-      "--validation",
-      configuration.validation ?? "standard",
-    );
-  }
   await run([
     "init",
     target,
@@ -1455,7 +1095,8 @@ async function initializedProject(tool, configuration = {}) {
     "A small test project",
     "--tool",
     tool,
-    ...developmentArgs,
+    "--roles",
+    configuration.roles ?? "all",
   ], { output: () => {} });
   return target;
 }

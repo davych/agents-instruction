@@ -13,7 +13,7 @@ npx --yes --package=github:davych/my-sdlc-workflow \
   create-ai-native-sdlc init .
 ```
 
-The CLI asks for the project name, a short summary, the AI tool, whether the project performs development work, and the relevant stack and validation preferences. Stack and validation questions are skipped when development is not needed.
+The CLI asks for the project name, a short summary, the AI tool, and whether to initialize each of the six dedicated role agents. Every role is optional and independent. You can initialize only Architect, only Designer and Tester, all roles, or no dedicated roles.
 
 You can also pass every value directly:
 
@@ -23,46 +23,43 @@ npx --yes --package=github:davych/my-sdlc-workflow \
   --name "My Project" \
   --summary "A small tool for my team" \
   --tool codex \
-  --development frontend \
-  --stack react-shadcn \
-  --validation standard
+  --roles pm-ba,designer,architect
 ```
 
-The target defaults to the current directory. Non-interactive use supplies `--development` and, for frontend or backend work, `--stack` and `--validation`.
+The target defaults to the current directory. Non-interactive use supplies `--roles` with a comma-separated list. Use `--roles all` for all six agents or `--roles none` when this repository only needs the shared workflow, artifact routes, and bridge skill.
 
 ## Generated files
 
 Only the selected AI tool is configured.
 
-| Tool | Project instructions | Role agents | shadcn MCP when selected |
-|---|---|---|---|
-| GitHub Copilot in VS Code | `.github/copilot-instructions.md` | `.github/agents/*.agent.md` | `.vscode/mcp.json` |
-| Claude Code | `CLAUDE.md` | `.claude/agents/*.md` | `.mcp.json` |
-| Codex | `AGENTS.md` | `.codex/agents/*.toml` | `.codex/config.toml` |
-
-The MCP file is generated only for the `react-shadcn` frontend preset and runs `npx shadcn@latest mcp`. Registries can be configured through the target project's `components.json`. See the [shadcn MCP documentation](https://ui.shadcn.com/docs/mcp). Codex supports project-scoped MCP configuration in trusted projects; see the [official OpenAI MCP documentation](https://developers.openai.com/codex/mcp).
-
-Initialization writes `.ai-sdlc/project-profile.md` as the single description of whether development is enabled, the frontend or backend area, stack preference, UI system, validation depth, active phases, dedicated agents, and detected project evidence.
-
-| Development | Stack presets | Dedicated agents |
+| Tool | Project instructions | Selected role agents |
 |---|---|---|
-| `none` | Not applicable | PM / BA, Designer, Architect |
-| `frontend` | `react-shadcn`, `react-antd`, `react-mui`, `frontend-existing` | All six roles |
-| `backend` | `java-spring`, `node-typescript`, `python-fastapi`, `backend-existing` | All six roles |
+| GitHub Copilot in VS Code | `.github/copilot-instructions.md` | `.github/agents/*.agent.md` |
+| Claude Code | `CLAUDE.md` | `.claude/agents/*.md` |
+| Codex | `AGENTS.md` | `.codex/agents/*.toml` |
 
-The `*-existing` choices keep an established project on its current stack when none of the named presets is accurate. Root project files mark a named preset as `project evidence; recommended` only when the matching evidence is present. An existing target without a matching preset recommends `*-existing`; an empty target shows the questionnaire's ordinary default as `recommended`. Validation uses `lean`, `standard`, or `thorough`. These settings guide the agents; they do not install dependencies, create an application, or authorize a framework migration.
+Initialization writes `.ai-sdlc/project-profile.md` as the human-readable description of local role coverage and detected project evidence. It also writes `.ai-sdlc/artifact-hosts.json` as the machine-readable registry for local and cross-repository artifact ownership.
+
+Stack and validation choices are intentionally not part of initialization. When the Architect first works, it looks for an existing technology profile locally and through the artifact routes. If none exists, it inspects evidence, asks the user only for material unresolved choices, and creates `docs/ai-sdlc/technology-profile.md`. This works even when no development role is installed, and it does not install dependencies, scaffold an application, or authorize a migration.
 
 Every tool also gets the shared workflow and artifact templates:
 
 ```text
+.agents/
+  skills/
+    sdlc-artifact-bridge/
+      SKILL.md
 .ai-sdlc/
+  artifact-hosts.json
   project-profile.md
+  technology-planning.md
   workflow.md
   templates/
     prd.md
     story.md
     design-baseline.md
     design-spec.md
+    technology-profile.md
     architecture.md
     architecture-discovery-context.md
     architecture-options.md
@@ -82,7 +79,38 @@ docs/
     index.md
 ```
 
-Templates are used only when they add value. Working documents are created under `docs/ai-sdlc/`. The artifact index lists only documents that actually exist, with a link and a short description. A frontend, backend, or another tool can use `docs/ai-sdlc/index.md` as the stable discovery entry point.
+Templates are used only when they add value. Working documents are created under `docs/ai-sdlc/`. The local artifact index lists only documents owned by this repository that actually exist, with a link and a short description.
+
+The `sdlc-artifact-bridge` is a repository skill, not an MCP server. It reads `.ai-sdlc/artifact-hosts.json` to resolve `/docs/...` references to this repository, another local repository, or a canonical HTTPS URL. It performs read-only context resolution: it does not clone, fetch, synchronize, copy, or write across repositories.
+
+Invoke it with a routed path, or name a host explicitly:
+
+```text
+$sdlc-artifact-bridge /docs/ai-sdlc/prd.md
+$sdlc-artifact-bridge product-repo:/docs/ai-sdlc/prd.md
+```
+
+Each phase has its own route in the registry. A selected local role starts with its route set to the local host; an unselected role starts with a null host and appears as `Unconfigured` in the project profile. To connect a separate product, design, or architecture repository later, add its filesystem or HTTPS host and point only the relevant route at it. The other roles remain independent.
+
+For example, add this object as `hosts.product-repo` for a sibling repository:
+
+```json
+{
+  "kind": "filesystem",
+  "root": "../product-repo",
+  "artifactIndex": "docs/ai-sdlc/index.md"
+}
+```
+
+Then set the existing `routes.discovery.host` value to `"product-repo"` and preserve its generated `phase`, `role`, and `paths`. For an HTTPS document host, add this object as `hosts.product-docs`:
+
+```json
+{
+  "kind": "url",
+  "baseUrl": "https://example.com/product-docs/",
+  "artifactIndex": "docs/ai-sdlc/index.md"
+}
+```
 
 ## Delivery workflow
 
@@ -103,9 +131,9 @@ Start a change with:
 Follow .ai-sdlc/workflow.md for this change: <describe the change>.
 ```
 
-The roles coordinate through the existing artifacts listed in `docs/ai-sdlc/index.md`.
+The phase names, order, and owners remain stable, but the initialized role set may be sparse. Roles first read artifacts in the local index, then use the bridge for configured external sources. A later role does not require every earlier role to be local, and the workflow never initializes a missing role or creates a filler upstream document automatically.
 
-The six phases and owners remain fixed. A `none` development profile keeps Discovery, Design, and Architecture active; the workflow records that Implementation, Verification, and Release have no active work without generating their dedicated agents or filler documents.
+When the request and available evidence are sufficient, a selected role continues independently. When a required input is missing, it asks for the specific route, artifact, or decision that blocks the work and records the source once supplied.
 
 When work needs a human decision, the agent asks immediately with two or three clear options and a recommended choice. It continues after the answer and records the selected result instead of leaving an unresolved question at the end of a document.
 
@@ -132,11 +160,11 @@ create-ai-native-sdlc init [target] [options]
 --name <name>               Project name
 --summary <text>            Short project summary
 --tool <tool>               copilot, claude, or codex
---development <mode>        none, frontend, or backend
---stack <preset>            Frontend or backend stack preset
---validation <preference>   lean, standard, or thorough
+--roles <list>              Comma-separated role IDs, all, or none
 -h, --help                  Show help
 ```
+
+Role IDs are `pm-ba`, `designer`, `architect`, `software-engineer`, `tester`, and `devops`.
 
 ## Development
 
