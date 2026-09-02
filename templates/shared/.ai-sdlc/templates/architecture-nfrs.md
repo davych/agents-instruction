@@ -1,23 +1,13 @@
-# Architecture NFR Budgets: {topic}
+# Architecture NFRs: <System or scope>
 
-<!-- ai-sdlc:architecture-selection:v1 {"optionId":"{platform-selected option ID}","reviewId":"{selection review UUID}","optionsArtifactId":"{reviewed options artifact UUID}","selectedAt":"{selection timestamp}"} -->
+Record only quality targets that matter and can be checked. Do not invent a number to fill the table.
 
-**Status:** Draft for human review
-**Selected option:** {option link}
-**C4 container view:** {relative link}
+| ID | Quality | Responsible C4 element | Target or gate | Window and condition | Check method | Evidence | Failure signal |
+|---|---|---|---|---|---|---|---|
+| NFR-001 | <Latency / Availability / Capacity / Security / Recovery / Other> | <Container or relationship> | <Confirmed number, binary check, or Not applicable> | <Condition> | <Repeatable method> | <Source> | <Observable breach> |
 
-| ID | Source Rule IDs | Family | Responsible Container or Relationship | Target or Gate | Window and Condition | Test Method | Evidence | Failure Signal | Status |
-|----|-----------------|--------|---------------------------------------|----------------|----------------------|-------------|----------|----------------|--------|
-| NFR-01 | {rule IDs or None} | {family} | {C4 alias} | {number or binary gate} | {window and load condition} | {repeatable method} | {source} | {observable breach} | {Proposed / Confirmed / Blocked} |
+## Target decision record
 
-## Violating Design Behaviors
-
-| NFR | Do Not Introduce | Why It Breaks the Budget |
-|-----|------------------|--------------------------|
-| NFR-01 | {specific behavior} | {causal link} |
-
-## Missing Decisions
-
-- [ ] {target, owner, evidence needed, and impact}
-
-Never invent a target. A row with `TBD — human decision` is blocked and prevents the pack from being marked ready.
+| Quality | Selected target | Decided by | Source |
+|---|---|---|---|
+| <Quality or None> | <Selected answer> | <Person> | <Conversation or link> |

@@ -1,97 +1,57 @@
-```json
-{
-  "spec_version": "1.0",
-  "title": "<Feature or change>",
-  "mode": "new",
-  "status": "draft",
-  "framework": "<verified project framework or unknown>",
-  "source": ["artifact:change-contract", "artifact:prd-or-user-stories-when-applicable", "artifact:design-baseline"],
-  "screens": [
-    {
-      "id": "<screen-id>",
-      "layout": "<verified project pattern>",
-      "states": ["default"]
-    }
-  ],
-  "components": [],
-  "acceptance_criteria": [
-    {
-      "id": "US-001-AC-01",
-      "requirement": "<Supplied acceptance criterion>",
-      "design_response": "<Observable design response>"
-    }
-  ],
-  "assumptions": [],
-  "open_questions": [],
-  "blockers": [],
-  "deferred_validations": []
-}
-```
+# Design Spec: <Feature or change>
 
-# <Feature or change>
+**Status:** <Draft / Ready / Blocked>
+**Sources:** <Requirement, story, baseline, approved reference, or Inline request>
+**Mode:** <New / Change>
 
-## Intent
+## Intent and coverage
 
-State the user outcome and design boundary.
+- **User outcome:** <Observable outcome>
+- **Acceptance criteria:** <IDs or short list>
+- **Design boundary:** <Included surface and confirmed exclusions>
 
-## Coverage
+## Experience and information hierarchy
 
-List the relevant story and acceptance-criteria IDs. State any confirmed exclusion.
+<Describe the journey, content order, primary action, and project patterns to reuse.>
 
-## Experience and layout
+## Flow and states
 
-Describe hierarchy and verified project patterns. Reference relevant acceptance criteria such as US-001-AC-01.
-
-## States and behavior
-
-Describe only states and transitions that can occur.
+- **Core flow:** <Steps or reference>
+- **Data conditions:** <Real loading, empty, partial, error, and success states that apply>
+- **Transitions and recovery:** <Important behavior>
 
 ## Responsive behavior
 
-Describe what changes at each verified viewport. Write `Not applicable` when the surface has no responsive variation.
+- <What changes at each verified viewport, or Not applicable>
 
 ## Components and assets
 
-List verified components, custom-component reasons, content status, assets, and real reference links.
+| Need | Reuse or component | Source | Notes |
+|---|---|---|---|
+| <UI need> | <Local pattern, configured UI-system component, approved addition, or custom> | <Project path, project profile, official component source, or approved reference> | <Props, state, asset, or reason> |
 
 ## Accessibility and content
 
-Describe keyboard and focus behavior, labels, error feedback, reading order, contrast needs, and final or draft copy when applicable.
+- <Keyboard and focus behavior>
+- <Labels, errors, reading order, contrast, and motion needs>
+- <Final copy, draft copy, and i18n keys or pattern>
 
-## Validation
+## Implementation notes
 
-Record component-query evidence, tested viewports, accessibility checks, and any approved reference comparison.
+- <Behavior and visual constraints that must remain true>
+- <Where implementation has safe flexibility>
+- <Detail that must not be inferred or None>
 
-## Handoff to Software Engineer
+## Visual evidence
 
-The JSON `status` is the handoff status. Use `ready-for-engineering` only when `blockers` is empty. This status means the design is complete enough to implement; it is not product, legal, accessibility, or architecture approval. The architecture phase gate must also pass before implementation starts.
+- <Rendered viewport, screenshot, approved comparison, Figma file/node, or Not checked>
 
-**Next owner:** Software Engineer
+## Assumptions
 
-### Build scope
+- <Assumption or blocker, or None>
 
-- <Story and acceptance-criteria IDs covered by this design>
+## Decision record
 
-### Behavior to preserve
-
-- <Required flow, state, responsive, accessibility, content, or visual constraint>
-
-### Do not infer
-
-- <Missing decision or behavior the developer must return to the named owner, or None>
-
-### Allowed design flexibility
-
-- <Detail the developer may adapt without changing the intended experience, or None>
-
-### Validation evidence
-
-- <Validator result, component evidence, viewport check, screenshot, Figma node, or other real evidence>
-
-### Deferred verification
-
-- <Obligation ID, runnable prerequisite, targets, checks, pass criteria, supported evidence types, and the explicit on-fail/on-missing Verification block, or None>
-
-### Open decisions and blockers
-
-- <Blocker, owner, impact, and next action, or None>
+| Topic | Selected option | Decided by | Source |
+|---|---|---|---|
+| <Topic or None> | <Selected answer> | <Person> | <Conversation or link> |

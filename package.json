@@ -1,7 +1,7 @@
 {
   "name": "create-ai-native-sdlc",
   "version": "0.1.0",
-  "description": "An AI-native SDLC initializer with one canonical role source and native Agents for GitHub Copilot, Claude Code, and Codex.",
+  "description": "A small CLI that installs tool-specific AI delivery instructions.",
   "type": "module",
   "bin": {
     "create-ai-native-sdlc": "bin/cli.js"
@@ -9,7 +9,6 @@
   "files": [
     "bin",
     "templates",
-    "guidelines",
     "README.md",
     "LICENSE"
   ],
@@ -17,11 +16,10 @@
     "test": "node --test"
   },
   "keywords": [
-    "ai-native",
+    "ai",
     "sdlc",
     "agents",
-    "initializer",
-    "scaffold"
+    "initializer"
   ],
   "author": "Davy Chen",
   "license": "MIT",

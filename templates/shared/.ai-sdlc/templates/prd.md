@@ -1,14 +1,13 @@
-# PRD: <Feature name>
+# PRD: <Feature or product area>
 
-**Version:** <Version or Unassigned>
-**Date:** <YYYY-MM-DD>
-**Owner:** <Human owner or Unassigned>
-**Status:** Draft for human review
-**Sources:** <Source paths or Not provided>
+**Status:** <Draft / Confirmed / Superseded>
+**Owner:** <Owner or Unassigned>
+**Updated:** <YYYY-MM-DD>
+**Sources:** <Links, paths, or Inline request>
 
 ## Problem and context
 
-<Explain the user or business problem in two or three short paragraphs.>
+<Describe the user or business problem and why it matters.>
 
 ## Target users
 
@@ -18,42 +17,48 @@
 
 ## Goals and success measures
 
-| Goal | Measure | Target | Source or owner |
-|---|---|---|---|
-| <Goal> | <Observable measure> | <Confirmed target or TBD — human decision> | <Source> |
+| Goal | Measure | Target or owner |
+|---|---|---|
+| <Goal> | <Observable measure> | <Confirmed target or decision owner> |
 
 ## Scope
 
 ### In scope
 
-- <Confirmed outcome>
+- <Required outcome>
 
 ### Out of scope
 
-> This section must not be empty. If no exclusion is confirmed, write: `No exclusions are confirmed yet; scope is limited to the In scope list.`
-
-- <Confirmed exclusion>
+- <Important non-goal>
 
 ## Business rules
 
 | ID | Rule | Evidence | Status |
 |---|---|---|---|
-| BR-001 | <Business rule> | <Source> | <Confirmed, Assumed, or Needs decision> |
+| BR-001 | <Business rule> | <Source> | <Confirmed / Assumed> |
+
+## Acceptance criteria
+
+Use this section only when a small change does not need a separate story file. Otherwise keep acceptance criteria in the linked stories.
+
+| ID | Observable behavior | Source |
+|---|---|---|
+| AC-001 | <Behavior that can be checked> | <Request, rule, or decision> |
 
 ## User story index
 
-> This table is the only source for priority. Use a human-confirmed value or `TBD`.
-
-| ID | Story | Category | Priority (human-confirmed) |
-|---|---|---|---|
-| US-001 | [<Story title>]({relative-path-from-prd-to-story.md}) | <business-category> | TBD |
+| ID | Story | Priority |
+|---|---|---|
+| US-001 | [<Story title>](./stories/US-001-<title>.md) | <Human-confirmed value> |
 
 ## Assumptions
 
 | ID | Assumption | Impact if wrong | Confirmation needed |
 |---|---|---|---|
-| A-001 | <Assumption> | <Impact> | <Human decision needed> |
+| A-001 | <Assumption> | <Impact> | <Evidence to check> |
 
-## Open questions for a human
+## Decision record
 
-- [ ] <Question and why it matters>
+| Topic | Selected option | Decided by | Source |
+|---|---|---|---|
+| <Topic or None> | <Selected answer> | <Person> | <Conversation or link> |

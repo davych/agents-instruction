@@ -1,1090 +1,1503 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { run } from "../bin/cli.js";
 
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const temporaryDirectories = [];
-const transactionMarkerName = ".ai-native-sdlc-init-transaction.json";
-const roleIds = ["pm-ba", "designer", "architect", "software-engineer", "tester", "devops"];
-const engineeringEvidenceKeys = [
-  "implementation-notes",
-  "implementation-plan",
-  "implementation-tasks",
-  "engineering-session-log",
-  "engineering-test-evidence",
-  "engineering-review",
-  "engineering-provenance"
+const coreRoleIds = [
+  "pm-ba",
+  "designer",
+  "architect",
 ];
-const engineeringEvidenceBasenames = {
-  "implementation-notes": "implementation-notes.md",
-  "implementation-plan": "implementation-plan.md",
-  "implementation-tasks": "implementation-tasks.md",
-  "engineering-session-log": "session-log.md",
-  "engineering-test-evidence": "independent-test-evidence.md",
-  "engineering-review": "review.md",
-  "engineering-provenance": "pr-provenance.md"
-};
+const roleIds = [
+  ...coreRoleIds,
+  "software-engineer",
+  "tester",
+  "devops",
+];
+const frontendDevelopmentArgs = [
+  "--development",
+  "frontend",
+  "--stack",
+  "react-shadcn",
+  "--validation",
+  "standard",
+];
+const templateFiles = [
+  "architecture-adr.md",
+  "architecture-c4-containers.mmd",
+  "architecture-c4-context.mmd",
+  "architecture-discovery-context.md",
+  "architecture-nfrs.md",
+  "architecture-options.md",
+  "architecture-patterns.md",
+  "architecture-risk-review.md",
+  "architecture.md",
+  "design-baseline.md",
+  "design-spec.md",
+  "implementation-notes.md",
+  "implementation-plan.md",
+  "implementation-tasks.md",
+  "prd.md",
+  "release-runbook.md",
+  "story.md",
+  "test-report.md",
+];
 
 test.after(async () => {
-  await Promise.all(temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })));
+  await Promise.all(
+    temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })),
+  );
 });
 
-test("interactive init installs one native GitHub Copilot agent set", async () => {
+test("Copilot init writes only the Copilot tool set", async () => {
   const target = await temporaryDirectory();
-  const questions = [];
-  const prompt = answers([
-    "Solo Product",
-    "A small product",
-    "1",
-    "docs/context.md, docs/brand.md",
-    "tools/component-catalog.mjs"
-  ], questions);
+  const output = [];
 
-  assert.equal(await run(["init", target], { prompt, output: () => {} }), 0);
-  assert.equal(questions.length, 5);
+  assert.equal(await run([
+    "init",
+    target,
+    "--name",
+    "Small Product",
+    "--summary",
+    "Solves one clear problem",
+    "--tool",
+    "copilot",
+    ...frontendDevelopmentArgs,
+  ], { output: (value) => output.push(value) }), 0);
 
-  const config = await readFile(path.join(target, "ai-native.yaml"), "utf8");
-  assert.match(config, /name: "Solo Product"/u);
-  assert.match(config, /summary: "A small product"/u);
-  assert.match(config, /agent:\n  client: "github-copilot"/u);
-  assert.match(config, /agents: "\.github\/agents"/u);
-  assert.doesNotMatch(config, /clients:/u);
-  assert.match(config, /outputs: docs/u);
-  assert.match(config, /id: change-contract, owner: pm-ba, path: change-contract\.md/u);
-  assert.match(config, /id: prd, owner: pm-ba, path: prd\.md/u);
-  assert.match(config, /id: user-stories, owner: pm-ba, path: user-stories/u);
-  assert.match(config, /outputs: \[change-contract, prd, user-stories\]/u);
-  assert.match(config, /owner: designer\n      inputs: \[change-contract, prd, user-stories\]/u);
-  assert.match(config, /owner: architect\n      inputs: \[change-contract, prd, user-stories, design-spec\]/u);
-  assert.match(config, /outputs: \[architecture, architecture-discovery-context, architecture-options, architecture-c4-context, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs, architecture-adversarial\]/u);
-  assert.match(config, /Architecture disposition is recorded; skip[\s\S]*reuse[\s\S]*partial\/full[\s\S]*human selection and acceptance evidence/u);
-  assert.match(config, /owner: software-engineer\n      inputs: \[change-contract, prd, user-stories, design-baseline, design-spec, architecture, architecture-c4-containers, architecture-adrs, architecture-patterns, architecture-nfrs\]/u);
-  assert.match(
-    config,
-    new RegExp(`owner: software-engineer\\n      inputs: \\[change-contract[^\\n]+\\]\\n      outputs: \\[${engineeringEvidenceKeys.join(", ")}\\]`, "u")
-  );
-  assert.match(config, /owner: tester\n      inputs: \[change-contract, prd, user-stories, design-spec, architecture, architecture-nfrs, implementation-notes, engineering-test-evidence, engineering-review\]/u);
-  assert.match(config, /owner: devops\n      inputs: \[change-contract, architecture, architecture-adrs, architecture-nfrs, architecture-adversarial, implementation-notes, engineering-provenance, test-report\]/u);
-  assert.match(config, /id: design-baseline, owner: designer, path: DESIGN_BASELINE\.md/u);
-  assert.match(config, /id: design-spec, owner: designer, path: design-spec\.md/u);
-  assert.match(config, /id: architecture, owner: architect, path: architecture\.md/u);
-  assert.match(config, /id: architecture-adrs, owner: architect, path: 04-adrs/u);
-  for (const artifactKey of engineeringEvidenceKeys) {
-    assert.match(
-      config,
-      new RegExp(
-        `id: ${artifactKey}, owner: software-engineer, path: ${engineeringEvidenceBasenames[artifactKey].replace(".", "\\.")}`,
-        "u"
-      )
-    );
-  }
+  assert.equal(existsSync(path.join(target, ".github/copilot-instructions.md")), true);
+  assert.equal(existsSync(path.join(target, ".vscode/mcp.json")), true);
+  assert.equal(existsSync(path.join(target, "CLAUDE.md")), false);
+  assert.equal(existsSync(path.join(target, "AGENTS.md")), false);
+  assert.equal(existsSync(path.join(target, ".mcp.json")), false);
+  assert.equal(existsSync(path.join(target, ".claude")), false);
+  assert.equal(existsSync(path.join(target, ".codex")), false);
+  assert.match(output.join(""), /Created 29 files/u);
+  assert.match(output.join(""), /Profile: \.ai-sdlc\/project-profile\.md/u);
+  assert.match(output.join(""), /Development work: Yes/u);
+  assert.match(output.join(""), /Development area: Frontend/u);
+  assert.match(output.join(""), /Stack: React \+ Vite \+ Tailwind \+ shadcn\/ui/u);
+  assert.match(output.join(""), /Validation: Standard/u);
+  assert.match(output.join(""), /shadcn MCP: \.vscode\/mcp\.json/u);
+
+  const files = (await readdir(path.join(target, ".github/agents"))).sort();
+  assert.deepEqual(files, roleIds.map((roleId) => `${roleId}.agent.md`).sort());
 
   for (const roleId of roleIds) {
-    const agent = await readFile(path.join(target, `.github/agents/${roleId}.agent.md`), "utf8");
-    assert.match(agent, new RegExp(`^---\\nname: "${roleId}"\\ndescription: `, "u"));
-    assert.match(agent, new RegExp(`\\n---\\n\\n# `, "u"));
-    const canonicalAgent = await readFile(
-      path.join(process.cwd(), `templates/agents/${roleId}.md`),
-      "utf8"
+    const generated = await readFile(
+      path.join(target, ".github/agents", `${roleId}.agent.md`),
+      "utf8",
     );
-    assert.ok(agent.endsWith(`${canonicalAgent.trim()}\n`));
-    assert.deepEqual(
-      [...canonicalAgent.matchAll(/^## (.+)$/gmu)].map((match) => match[1]),
-      ["Mission", "Authority", "Non-negotiable boundaries", "Start", "Handoff"],
-      `${roleId} Agent must remain a single-purpose authority entry point`
+    const canonical = await readFile(
+      path.join(repositoryRoot, "templates/agents", `${roleId}.md`),
+      "utf8",
     );
-    assert.match(canonicalAgent, /project\.locale/u);
-    assert.match(canonicalAgent, /execution contract or direct-IDE execution brief/u);
-    assert.doesNotMatch(canonicalAgent, /^## (?:.*disposition.*|Procedure|Workflow|Path.*|Output contract|Evidence order)$/imu);
+    assert.match(generated, new RegExp(`^---\\nname: "${roleId}"\\ndescription: `, "u"));
+    assert.ok(generated.endsWith(canonical));
   }
-  assert.deepEqual(
-    (await readdir(path.join(target, ".github/agents"))).sort(),
-    roleIds.map((roleId) => `${roleId}.agent.md`).sort()
-  );
-  assert.equal(existsSync(path.join(target, ".ai-sdlc/agents")), false);
-  assert.equal(existsSync(path.join(target, ".claude/agents")), false);
-  assert.equal(existsSync(path.join(target, ".codex/agents")), false);
-  const workflow = await readFile(path.join(target, ".ai-sdlc/workflows/default.md"), "utf8");
-  assert.match(workflow, /Owner-aware artifact resolution/u);
-  assert.match(workflow, /\.ai-sdlc\/roles\/<owner>\/config\.yaml/u);
-  assert.match(workflow, /## Change Contract prerequisite[\s\S]*immutable, task-scoped `change-contract`/u);
-  assert.match(workflow, /## Six phases[\s\S]*\| 1 \| Discovery \| PM \/ BA \|[\s\S]*\| 6 \| Release \| DevOps \|/u);
-  assert.match(workflow, /## Impact routing[\s\S]*Product \| `direct`[\s\S]*Design \| `skip`[\s\S]*Architecture \| `full`/u);
-  assert.match(workflow, /Verification remains required for production-code changes/u);
-  assert.match(workflow, /roles\/architect\/workflow\.md[\s\S]*roles\/tester\/workflow\.md[\s\S]*roles\/devops\/workflow\.md/u);
-  assert.match(workflow, /### Direct IDE fallback[\s\S]*no Web execution contract[\s\S]*selected registered output IDs[\s\S]*registered basename[\s\S]*not a platform clearance/u);
-  assert.match(workflow, /Shared evidence and staleness rules[\s\S]*project\.locale/u);
-  assert.doesNotMatch(workflow, /Selected option: <ID>|shell: false|rollback trigger/u);
-  assert.equal(existsSync(path.join(target, ".ai-sdlc/tasks/README.md")), false);
-  assert.equal(existsSync(path.join(target, ".ai-sdlc/guides/designer.md")), false);
-  const prdTemplate = await readFile(path.join(target, ".ai-sdlc/templates/prd.md"), "utf8");
-  const storyTemplate = await readFile(path.join(target, ".ai-sdlc/templates/story.md"), "utf8");
-  assert.match(prdTemplate, /\{relative-path-from-prd-to-story\.md\}/u);
-  assert.match(storyTemplate, /\{relative-path-from-story-to-prd\.md\}/u);
-  assert.deepEqual(
-    (await readdir(path.join(target, ".ai-sdlc/templates"))).sort(),
-    [
-      "architecture-adr.md",
-      "architecture-adversarial.md",
-      "architecture-c4-containers.mmd",
-      "architecture-c4-context.mmd",
-      "architecture-discovery-context.md",
-      "architecture-nfrs.md",
-      "architecture-options.md",
-      "architecture-patterns.md",
-      "architecture.md",
-      "change-contract.md",
-      "design-baseline.md",
-      "design-spec.md",
-      "engineering-provenance.md",
-      "engineering-review.md",
-      "engineering-session-log.md",
-      "engineering-test-evidence.md",
-      "implementation-notes.md",
-      "implementation-plan.md",
-      "implementation-tasks.md",
-      "prd.md",
-      "release-runbook.md",
-      "story.md",
-      "test-report.md"
-    ]
-  );
-  const pmBaConfig = await readFile(path.join(target, ".ai-sdlc/roles/pm-ba/config.yaml"), "utf8");
-  assert.match(pmBaConfig, /role: "\.github\/agents\/pm-ba\.agent\.md"/u);
-  assert.match(pmBaConfig, /inputs:\n  markdown: \[\]/u);
-  assert.match(pmBaConfig, /output:\n  subdirectory: ai-native\/product/u);
-  const pmBaWorkflow = await readFile(path.join(target, ".ai-sdlc/roles/pm-ba/workflow.md"), "utf8");
-  assert.match(pmBaWorkflow, /one `story\.md` per new story/u);
-  assert.match(pmBaWorkflow, /`direct`[\s\S]*`reuse`[\s\S]*`partial`[\s\S]*`full`/u);
-  assert.match(pmBaWorkflow, /Change Contract remains byte-for-byte unchanged/u);
-  assert.doesNotMatch(pmBaWorkflow, /^---/u);
-  assert.equal(existsSync(path.join(target, ".ai-sdlc/roles/pm-ba/SKILL.md")), false);
-  const changeContractTemplate = await readFile(
-    path.join(target, ".ai-sdlc/templates/change-contract.md"),
-    "utf8"
-  );
-  assert.match(changeContractTemplate, /immutable human contract for one Run/u);
-  assert.match(changeContractTemplate, /## Current behavior or context[\s\S]*## Expected behavior and outcome[\s\S]*## Acceptance contract[\s\S]*## Regression obligations/u);
-  assert.match(changeContractTemplate, /CC-AC-001[\s\S]*## Impact hints, not final dispositions/u);
-  const pmBaAgent = await readFile(path.join(target, ".github/agents/pm-ba.agent.md"), "utf8");
-  assert.match(pmBaAgent, /Change Contract[\s\S]*read-only/u);
-  assert.doesNotMatch(pmBaAgent, /`direct`[\s\S]*`reuse`[\s\S]*`partial`[\s\S]*`full`/u);
-  const architectConfig = await readFile(path.join(target, ".ai-sdlc/roles/architect/config.yaml"), "utf8");
-  assert.match(architectConfig, /role: "\.github\/agents\/architect\.agent\.md"/u);
-  assert.match(architectConfig, /artifacts: \[change-contract, prd, user-stories, design-spec\]/u);
-  assert.match(architectConfig, /domain: null[\s\S]*regulations: \[\][\s\S]*confirmed_peak_load: null/u);
-  assert.match(architectConfig, /rulebook:\n  project_mode: auto\n  validation: required\n  schema_version: 1/u);
-  assert.match(architectConfig, /output:\n  subdirectory: ai-native\/architecture/u);
-  assert.match(architectConfig, /minimum_options: 3[\s\S]*minimum_nfrs: 7[\s\S]*minimum_findings_per_stressor: 3/u);
-  const architectWorkflow = await readFile(path.join(target, ".ai-sdlc/roles/architect/workflow.md"), "utf8");
-  assert.match(architectWorkflow, /`skip` and `reuse` are human\/platform routing actions[\s\S]*Under `partial`[\s\S]*Under `full`/u);
-  assert.match(architectWorkflow, /rulebook index[\s\S]*always-loaded[\s\S]*Greenfield, Brownfield, or Hybrid/u);
-  assert.match(architectWorkflow, /all six conditional pack routes[\s\S]*load only packs marked Applicable or Blocked/u);
-  assert.match(architectWorkflow, /Rule Pack Applicability rows[\s\S]*Never silently omit a pack/u);
-  assert.match(architectWorkflow, /Rule Disposition Register[\s\S]*every rule × affected scope from every Applicable pack exactly once/u);
-  assert.match(architectWorkflow, /Brownfield or existing Hybrid boundary[\s\S]*accepted migration ADR/u);
-  assert.match(architectWorkflow, /Discovery is not selected[\s\S]*reviewed revision as read-only[\s\S]*Options is not selected[\s\S]*reviewed revision as read-only/u);
-  assert.match(architectWorkflow, /do not edit an unselected artifact[\s\S]*record a new option selection/u);
-  assert.match(architectWorkflow, /selected-state run reads them but does not rewrite them[\s\S]*invalidates the old selection/u);
-  assert.match(architectWorkflow, /rulebook v1 JSON machine block[\s\S]*every rule × affected scope from every Applicable pack exactly once/u);
-  assert.match(architectWorkflow, /platform semantic gate accepts option selection[\s\S]*final approval/u);
-  assert.match(architectWorkflow, /rulebook-digest\.mjs[\s\S]*old checkpoint and selection are stale/u);
-  assert.match(architectWorkflow, /Create or update the resolved `architecture` artifact[\s\S]*check for human selection evidence[\s\S]*materialize the awaiting-selection scaffolds[\s\S]*`Awaiting human selection`/u);
-  assert.match(architectWorkflow, /review-feedback line `Selected option: <ID>`[\s\S]*current options revision/u);
-  assert.match(architectWorkflow, /`## Option <ID>: <name>`[\s\S]*captured human decision[\s\S]*do not ask for the same answer again/u);
-  assert.match(architectWorkflow, /C4 `\.mmd` artifact[\s\S]*`README\.md`[\s\S]*not an ADR[\s\S]*Pending document/u);
-  assert.match(architectWorkflow, /Every output selected by the supplied execution contract or direct-IDE brief exists and is non-empty/u);
-  assert.match(architectWorkflow, /explicit `Must` and `Do not` rules/u);
-  assert.match(architectWorkflow, /fresh session or independent reviewer/u);
-  assert.match(architectWorkflow, /deferred_validations[\s\S]*Tester-owned Verification obligations/u);
-  assert.doesNotMatch(architectWorkflow, /^---/u);
-  assert.equal(existsSync(path.join(target, ".ai-sdlc/roles/architect/SKILL.md")), false);
-  const architectAgent = await readFile(path.join(target, ".github/agents/architect.agent.md"), "utf8");
-  assert.match(architectAgent, /architecture options[\s\S]*human acceptance/iu);
-  assert.doesNotMatch(architectAgent, /`## Option <ID>: <name>`|ARCH-OBS-002/u);
-  const architectRuleIndex = await readFile(
-    path.join(target, ".ai-sdlc/roles/architect/references/architecture-rules.md"),
-    "utf8"
-  );
-  assert.match(architectRuleIndex, /MUST[\s\S]*DEFAULT[\s\S]*WHEN[\s\S]*FORBIDDEN/u);
-  assert.match(architectRuleIndex, /Conditional pack router[\s\S]*API rules[\s\S]*Frontend rules/u);
-  assert.match(architectRuleIndex, /Do not load a conditional pack merely because it exists/u);
-  const architectRuleDirectory = path.join(target, ".ai-sdlc/roles/architect/references/rules");
-  assert.deepEqual(
-    (await readdir(architectRuleDirectory)).sort(),
-    ["api.md", "core.md", "data.md", "frontend.md", "integration.md", "observability.md", "security.md"]
-  );
-  const architectRulePacks = Object.fromEntries(await Promise.all(
-    ["api", "core", "data", "frontend", "integration", "observability", "security"].map(async (name) => [
-      name,
-      await readFile(path.join(architectRuleDirectory, `${name}.md`), "utf8")
-    ])
-  ));
-  assert.match(architectRulePacks.api, /API-001[\s\S]*RESTful[\s\S]*API-002[\s\S]*response-envelope[\s\S]*API-003[\s\S]*cursor pagination/u);
-  assert.match(architectRulePacks.data, /DATA-001[\s\S]*repository[\s\S]*DATA-002[\s\S]*transactional outbox[\s\S]*DATA-003[\s\S]*owning container[\s\S]*DATA-004[\s\S]*cache/u);
-  assert.match(architectRulePacks.integration, /INT-001[\s\S]*retries[\s\S]*INT-002[\s\S]*deadlines[\s\S]*INT-003[\s\S]*circuit breaker[\s\S]*INT-004[\s\S]*anti-corruption layer[\s\S]*INT-005[\s\S]*event-driven/u);
-  assert.match(architectRulePacks.security, /SEC-001[\s\S]*identity[\s\S]*SEC-002[\s\S]*authorization[\s\S]*SEC-003[\s\S]*sensitive fields/u);
-  assert.match(architectRulePacks.observability, /OBS-001[\s\S]*request ID[\s\S]*OBS-002[\s\S]*structured logs[\s\S]*OBS-003[\s\S]*distributed tracing/u);
-  assert.match(architectRulePacks.frontend, /FE-001[\s\S]*Greenfield, Brownfield, or Hybrid[\s\S]*FE-002[\s\S]*React[\s\S]*FE-003[\s\S]*Tailwind[\s\S]*FE-004[\s\S]*Redux Toolkit/u);
-  assert.match(architectRulePacks.frontend, /Brownfield[\s\S]*do not introduce a second framework[\s\S]*migration ADR/u);
-  assert.match(architectRulePacks.api, /API-001` \| `DEFAULT` \| `ADR required`[\s\S]*API-002` \| `DEFAULT` \| `ADR required`/u);
-  assert.match(architectRulePacks.frontend, /FE-002` \| `DEFAULT` \| `ADR required`[\s\S]*FE-004` \| `DEFAULT` \| `ADR required`/u);
-  assert.match(architectRulePacks.core, /Build context before the solution[\s\S]*Diverge before selecting[\s\S]*Keep C4 at the right level[\s\S]*Use an independent premortem/u);
-  const rulebookDigestScript = path.join(target, ".ai-sdlc/roles/architect/scripts/rulebook-digest.mjs");
-  const digestResult = spawnSync(process.execPath, [rulebookDigestScript], { cwd: target, encoding: "utf8" });
-  assert.equal(digestResult.status, 0, digestResult.stderr);
-  assert.match(digestResult.stdout, /^[a-f0-9]{64}\n$/u);
-  await writeFile(
-    path.join(target, ".ai-sdlc/roles/architect/config.yaml"),
-    architectConfig.replace("project_mode: auto", "project_mode: brownfield"),
-    "utf8"
-  );
-  const brownfieldDigestResult = spawnSync(process.execPath, [rulebookDigestScript], { cwd: target, encoding: "utf8" });
-  assert.equal(brownfieldDigestResult.status, 0, brownfieldDigestResult.stderr);
-  assert.notEqual(brownfieldDigestResult.stdout, digestResult.stdout);
-  await writeFile(path.join(target, ".ai-sdlc/roles/architect/config.yaml"), architectConfig, "utf8");
-  const architectureIndex = await readFile(path.join(target, ".ai-sdlc/templates/architecture.md"), "utf8");
-  assert.match(architectureIndex, /Acceptance evidence:[\s\S]*## Rulebook Conformance[\s\S]*## Pack Index[\s\S]*## ADR Register[\s\S]*## Open Human Decisions/u);
-  assert.match(architectureIndex, /## Rulebook Conformance[\s\S]*\| API \|[\s\S]*\| Data \|[\s\S]*\| Integration \|[\s\S]*\| Security \|[\s\S]*\| Observability \|[\s\S]*\| Frontend \|/u);
-  assert.match(architectureIndex, /"selection": null[\s\S]*"justifiedDeviationRuleIds": \[\]/u);
-  assertCanonicalRulebookBlock(architectureIndex, "architecture");
-  const architectureDiscovery = await readFile(path.join(target, ".ai-sdlc/templates/architecture-discovery-context.md"), "utf8");
-  assert.match(architectureDiscovery, /## Project Mode[\s\S]*Greenfield \/ Brownfield \/ Hybrid \/ Blocked[\s\S]*## Rule Pack Applicability[\s\S]*\| API \|[\s\S]*\| Frontend \|/u);
-  assertCanonicalRulebookBlock(architectureDiscovery, "discovery");
-  const architectureOptions = await readFile(path.join(target, ".ai-sdlc/templates/architecture-options.md"), "utf8");
-  assert.match(architectureOptions, /## Rule Constraints[\s\S]*Rule fit or exceptions[\s\S]*Rule Conflict or Rejecting Constraint/u);
-  assert.match(architectureOptions, /exact machine-readable heading[\s\S]*## Option <ID>: <name>/u);
-  assertCanonicalRulebookBlock(architectureOptions, "options");
-  const architectureAdr = await readFile(path.join(target, ".ai-sdlc/templates/architecture-adr.md"), "utf8");
-  assert.match(architectureAdr, /Related architecture rules:[\s\S]*Related scopes:[\s\S]*Rule effect:[\s\S]*does not silently waive/u);
-  const architecturePatterns = await readFile(path.join(target, ".ai-sdlc/templates/architecture-patterns.md"), "utf8");
-  assert.match(architecturePatterns, /## Rule Disposition Register[\s\S]*Adopted \/ Not triggered \/ Justified deviation \/ Exception \/ Blocked/u);
-  assert.match(architecturePatterns, /"selection": \{ "optionId":[\s\S]*"scopeId": "\{scope-id-from-discovery\}"[\s\S]*justified_deviation/u);
-  assertCanonicalRulebookBlock(architecturePatterns, "patterns");
-  const architectureNfrs = await readFile(path.join(target, ".ai-sdlc/templates/architecture-nfrs.md"), "utf8");
-  assert.match(architectureNfrs, /ai-sdlc:architecture-selection:v1[\s\S]*Source Rule IDs/u);
-  const architectureContext = await readFile(path.join(target, ".ai-sdlc/templates/architecture-c4-context.mmd"), "utf8");
-  const architectureContainers = await readFile(path.join(target, ".ai-sdlc/templates/architecture-c4-containers.mmd"), "utf8");
-  assert.match(architectureContext, /ai-sdlc:architecture-selection:v1/u);
-  assert.match(architectureContainers, /ai-sdlc:architecture-selection:v1/u);
-  const architectureAdversarial = await readFile(path.join(target, ".ai-sdlc/templates/architecture-adversarial.md"), "utf8");
-  assert.match(architectureAdversarial, /ai-sdlc:architecture-selection:v1/u);
-  await readFile(
-    path.join(target, ".ai-sdlc/roles/designer/references/figma-workflow.md"),
-    "utf8"
-  );
-  const designerConfig = await readFile(path.join(target, ".ai-sdlc/roles/designer/config.yaml"), "utf8");
-  assert.match(designerConfig, /role: "\.github\/agents\/designer\.agent\.md"/u);
-  assert.match(designerConfig, /artifacts: \[change-contract, prd, user-stories\]/u);
-  assert.match(designerConfig, /- "docs\/context\.md"/u);
-  assert.match(designerConfig, /output:\n  subdirectory: ai-native\/design\n\ncomponents:/u);
-  const designerAgent = await readFile(path.join(target, ".github/agents/designer.agent.md"), "utf8");
-  assert.match(designerAgent, /smallest sufficient design evidence/u);
-  assert.doesNotMatch(designerAgent, /`skip`[\s\S]*`reuse`[\s\S]*`partial`[\s\S]*`full`/u);
-  const designerWorkflow = await readFile(path.join(target, ".ai-sdlc/roles/designer/workflow.md"), "utf8");
-  assert.match(designerWorkflow, /Handoff to Software Engineer[\s\S]*ready-for-engineering/u);
-  assert.match(designerWorkflow, /`skip`[\s\S]*`reuse`[\s\S]*`partial`[\s\S]*`full`/u);
-  assert.match(designerWorkflow, /Downstream implementation consumes the active product, design, and architecture clearances/u);
-  assert.match(designerWorkflow, /Deferred-validation loop guard[\s\S]*stable ID[\s\S]*deferred_validations/u);
-  assert.doesNotMatch(designerWorkflow, /B-04/u);
-  assert.doesNotMatch(designerWorkflow, /^---/u);
-  assert.equal(existsSync(path.join(target, ".ai-sdlc/roles/designer/SKILL.md")), false);
-  const designSpecTemplate = await readFile(path.join(target, ".ai-sdlc/templates/design-spec.md"), "utf8");
-  assert.match(designSpecTemplate, /"blockers": \[\][\s\S]*## Handoff to Software Engineer/u);
-  assert.match(designSpecTemplate, /"deferred_validations": \[\][\s\S]*### Deferred verification/u);
-  assert.match(designSpecTemplate, /artifact:change-contract/u);
-  const engineerAgent = await readFile(path.join(target, ".github/agents/software-engineer.agent.md"), "utf8");
-  assert.match(engineerAgent, /confirmed contracts[\s\S]*engineering evidence pack/iu);
-  assert.match(engineerAgent, /workflow\.md/u);
-  assert.match(engineerAgent, /architecture[\s\S]*human decision/iu);
-  assert.match(engineerAgent, /security exception/iu);
-  assert.match(engineerAgent, /DDL/iu);
-  assert.match(engineerAgent, /merge/iu);
-  assert.match(engineerAgent, /release/iu);
 
-  const engineerRoleRoot = path.join(target, ".ai-sdlc/roles/software-engineer");
-  assert.deepEqual(
-    (await readdir(engineerRoleRoot)).sort(),
-    ["config.yaml", "references", "workflow.md"]
+  const instructions = await readFile(
+    path.join(target, ".github/copilot-instructions.md"),
+    "utf8",
   );
-  assert.deepEqual(
-    (await readdir(path.join(engineerRoleRoot, "references"))).sort(),
-    [
-      "ci-enforcement.md",
-      "independent-verification.md",
-      "provenance.md",
-      "seven-lens-review.md",
-      "spec-driven-development.md"
-    ]
-  );
-  assert.equal(existsSync(path.join(engineerRoleRoot, "SKILL.md")), false);
-  assert.equal(existsSync(path.join(target, ".github/skills/software-engineer/SKILL.md")), false);
-  assert.equal(existsSync(path.join(target, ".claude/skills/software-engineer/SKILL.md")), false);
-  assert.equal(existsSync(path.join(target, ".codex/skills/software-engineer/SKILL.md")), false);
+  assert.match(instructions, /\*\*Project:\*\* Small Product/u);
+  assert.match(instructions, /\*\*Goal:\*\* Solves one clear problem/u);
+  assert.match(instructions, /`docs\/ai-sdlc\/index\.md`/u);
+  assert.match(instructions, /Available dedicated role agents are in `\.github\/agents`/u);
+  assert.match(instructions, /`\.ai-sdlc\/project-profile\.md`/u);
 
-  const engineerConfig = await readFile(path.join(engineerRoleRoot, "config.yaml"), "utf8");
-  assert.match(engineerConfig, /role: "\.github\/agents\/software-engineer\.agent\.md"/u);
-  assert.match(engineerConfig, /output:\n  subdirectory: ai-native\/engineering/u);
-  assert.match(engineerConfig, /registered_artifacts:[\s\S]*implementation-plan[\s\S]*engineering-provenance/u);
-  assert.match(engineerConfig, /passing_isolation_tiers: \[A, B\][\s\S]*minimum_review_lenses: 7/u);
-  assert.doesNotMatch(engineerConfig, /(?:hot|warm|cold|replay|conditional_support)/iu);
+  const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
+  assert.match(profile, /\| Development work \| Yes \|/u);
+  assert.match(profile, /\| Development area \| Frontend \|/u);
+  assert.match(profile, /\| UI system \| shadcn\/ui \|/u);
+  assert.match(profile, /\| Validation preference \| Standard \|/u);
+  assert.match(profile, /\| Dedicated agents \| pm-ba, designer, architect, software-engineer, tester, devops \|/u);
 
-  const engineerWorkflow = await readFile(path.join(engineerRoleRoot, "workflow.md"), "utf8");
-  assert.match(engineerWorkflow, /Change Contract[\s\S]*Product[\s\S]*Design[\s\S]*Architecture/iu);
-  assert.match(engineerWorkflow, /template is the sole source[\s\S]*implementation-plan\.md/iu);
-  assert.match(engineerWorkflow, /Tier A[\s\S]*Tier B[\s\S]*Tier C[\s\S]*Limited/u);
-  assert.match(engineerWorkflow, /seven[- ]lens[\s\S]*adversarial/iu);
-  assert.match(engineerWorkflow, /security-sensitive[\s\S]*human/iu);
-  assert.match(engineerWorkflow, /future-use PR traceability/iu);
-  assert.doesNotMatch(engineerWorkflow, /mini-cycle|replay|hot, warm, and cold/iu);
-  assert.doesNotMatch(engineerWorkflow, /^---/u);
-
-  const implementationPlanTemplate = await readFile(
-    path.join(target, ".ai-sdlc/templates/implementation-plan.md"),
-    "utf8"
-  );
-  assert.match(
-    implementationPlanTemplate,
-    /## ADDED[\s\S]*## MODIFIED[\s\S]*## REMOVED[\s\S]*## REMOVED audit[\s\S]*## Risk note/iu
-  );
-
-  for (const artifactKey of engineeringEvidenceKeys) {
-    const template = await readFile(
-      path.join(target, `.ai-sdlc/templates/${artifactKey}.md`),
-      "utf8"
-    );
-    assert.match(template, /\S/u, `${artifactKey} template should be non-empty`);
-  }
-  assert.equal(existsSync(path.join(target, ".ai-sdlc/templates/engineering-replay-packet.md")), false);
-  assert.doesNotMatch(
-    config,
-    /id: engineering-replay-packet/u,
-    "the conditional replay packet is not a registered phase output"
-  );
-  const testerAgent = await readFile(path.join(target, ".github/agents/tester.agent.md"), "utf8");
-  assert.match(testerAgent, /temporary staging copy[\s\S]*validated allowlist promotion[\s\S]*complete promoted suite baseline[\s\S]*standalone real-browser execution/u);
-  assert.match(testerAgent, /Run-scoped `test-report`/u);
-  assert.doesNotMatch(testerAgent, /E2E Stage 1|E2E Stage 2|E2E Stage 3|Author working directory/u);
-  assert.match(config, /id: verification[\s\S]*inputs: \[change-contract, prd, user-stories, design-spec,/u);
-  const implementationNotes = await readFile(
-    path.join(target, ".ai-sdlc/templates/implementation-notes.md"),
-    "utf8"
-  );
-  assert.match(implementationNotes, /## Contract and active clearances[\s\S]*Change Contract[\s\S]*## Impact-check deviations[\s\S]*Targeted regression obligations/u);
-  const testReport = await readFile(path.join(target, ".ai-sdlc/templates/test-report.md"), "utf8");
-  assert.match(testReport, /## Contract, scope, and environment[\s\S]*## Acceptance and regression results[\s\S]*pre-fix reproduction[\s\S]*## Coverage gaps/u);
-  assert.match(testReport, /## Deferred design verification[\s\S]*Obligation ID[\s\S]*blocked[\s\S]*untested/u);
-  assert.match(testReport, /Temporary staging identity[\s\S]*Staging validation[\s\S]*Validated promotion result[\s\S]*Promoted suite baseline[\s\S]*Human script review/u);
-  assert.doesNotMatch(`${workflow}\n${architectAgent}\n${designerAgent}\n${testReport}`, /ARCH-OBS-002|B-04/u);
-  const componentQuery = await readFile(
-    path.join(target, ".ai-sdlc/roles/designer/scripts/component-query.mjs"),
-    "utf8"
-  );
-  assert.match(componentQuery, /tools\/component-catalog\.mjs/u);
-  assert.doesNotMatch(componentQuery, /VDS|@verso/iu);
-
-  await mkdir(path.join(target, "tools"), { recursive: true });
-  await writeFile(path.join(target, "tools/component-catalog.mjs"), `
-export async function loadComponentCatalog() {
-  return {
-    components: [{
-      name: "Action",
-      aliases: ["Button"],
-      frameworks: ["web"],
-      props: [{ name: "tone", values: ["primary", "secondary"] }]
-    }],
-    tokens: [],
-    icons: []
-  };
-}
-`, "utf8");
-
-  const queryResult = spawnSync(process.execPath, [
-    path.join(target, ".ai-sdlc/roles/designer/scripts/component-query.mjs"),
-    "component",
-    "Action",
-    "--json"
-  ], { cwd: target, encoding: "utf8" });
-  assert.equal(queryResult.status, 0, queryResult.stderr);
-  assert.equal(JSON.parse(queryResult.stdout).matched, true);
-
-  const specPath = path.join(target, "design-spec.md");
-  await writeFile(specPath, validSpec(), "utf8");
-  const validation = spawnSync(process.execPath, [
-    path.join(target, ".ai-sdlc/roles/designer/scripts/validate-spec.mjs"),
-    specPath
-  ], { cwd: target, encoding: "utf8" });
-  assert.equal(validation.status, 0, validation.stdout + validation.stderr);
-
-  const deferredSpecPath = path.join(target, "deferred-design-spec.md");
-  const deferredContract = `{
-      "id": "B-04",
-      "owner": "tester",
-      "phase": "verification",
-      "prerequisite": "实现完成且页面可运行后执行浏览器验证",
-      "targets": ["320x568", "1280x800"],
-      "checks": ["keyboard", "focus"],
-      "pass_criteria": "关键操作无裁切且焦点顺序正确",
-      "evidence_required": "Playwright output and screenshot",
-      "evidence_types": ["browser-run", "screenshot"],
-      "on_fail": "block_verification",
-      "on_missing": "block_verification",
-      "status": "deferred",
-      "release_impact": "Missing or failed evidence blocks Verification approval"
-    }`;
-  await writeFile(
-    deferredSpecPath,
-    validSpec()
-      .replace('"deferred_validations": []', `"deferred_validations": [${deferredContract}]`)
-      .replace(
-        "### Deferred verification\n\n- None.",
-        "### Deferred verification\n\n- B-04 — after the runnable implementation; 320x568 and 1280x800; keyboard and focus; Playwright output and screenshot; missing or failed evidence blocks Verification."
-      ),
-    "utf8"
-  );
-  const deferredValidation = spawnSync(process.execPath, [
-    path.join(target, ".ai-sdlc/roles/designer/scripts/validate-spec.mjs"),
-    "--json",
-    deferredSpecPath
-  ], { cwd: target, encoding: "utf8" });
-  assert.equal(deferredValidation.status, 0, deferredValidation.stdout + deferredValidation.stderr);
-
-  const unsafeDeferredSpecPath = path.join(target, "unsafe-deferred-design-spec.md");
-  await writeFile(
-    unsafeDeferredSpecPath,
-    validSpec()
-      .replace(
-        '"deferred_validations": []',
-        `"deferred_validations": [${deferredContract
-          .replace('"targets": ["320x568", "1280x800"]', '"targets": ["???"]')
-          .replace('"on_fail": "block_verification"', '"on_fail": "allow_release"')}]`
-      )
-      .replace(
-        "### Deferred verification\n\n- None.",
-        "### Deferred verification\n\n- B-04 — invalid test fixture."
-      ),
-    "utf8"
-  );
-  const unsafeDeferredValidation = spawnSync(process.execPath, [
-    path.join(target, ".ai-sdlc/roles/designer/scripts/validate-spec.mjs"),
-    "--json",
-    unsafeDeferredSpecPath
-  ], { cwd: target, encoding: "utf8" });
-  assert.equal(unsafeDeferredValidation.status, 1, unsafeDeferredValidation.stderr);
-  assert.match(unsafeDeferredValidation.stdout, /non-empty targets|on_fail block_verification/u);
-
-  const invalidSpecPath = path.join(target, "invalid-design-spec.md");
-  await writeFile(invalidSpecPath, "```json\n{\"spec_version\":\"1.0\",\"screens\":{},\"components\":[null]}\n```\n", "utf8");
-  const invalidValidation = spawnSync(process.execPath, [
-    path.join(target, ".ai-sdlc/roles/designer/scripts/validate-spec.mjs"),
-    "--json",
-    invalidSpecPath
-  ], { cwd: target, encoding: "utf8" });
-  assert.equal(invalidValidation.status, 1, invalidValidation.stderr);
-  assert.ok(JSON.parse(invalidValidation.stdout).failures > 0);
-
-  const blockedHandoffPath = path.join(target, "blocked-handoff-design-spec.md");
-  await writeFile(
-    blockedHandoffPath,
-    validSpec().replace('"blockers": []', '"blockers": ["Needs a human decision"]'),
-    "utf8"
-  );
-  const blockedHandoffValidation = spawnSync(process.execPath, [
-    path.join(target, ".ai-sdlc/roles/designer/scripts/validate-spec.mjs"),
-    "--json",
-    blockedHandoffPath
-  ], { cwd: target, encoding: "utf8" });
-  assert.equal(blockedHandoffValidation.status, 1, blockedHandoffValidation.stderr);
-  assert.match(blockedHandoffValidation.stdout, /ready-for-engineering requires an empty blockers array/u);
-
-  const emptyHandoffPath = path.join(target, "empty-handoff-design-spec.md");
-  await writeFile(
-    emptyHandoffPath,
-    validSpec().replace(/## Handoff to Software Engineer[\s\S]*$/u, ""),
-    "utf8"
-  );
-  const emptyHandoffValidation = spawnSync(process.execPath, [
-    path.join(target, ".ai-sdlc/roles/designer/scripts/validate-spec.mjs"),
-    "--json",
-    emptyHandoffPath
-  ], { cwd: target, encoding: "utf8" });
-  assert.equal(emptyHandoffValidation.status, 1, emptyHandoffValidation.stderr);
-  assert.match(emptyHandoffValidation.stdout, /A ready-for-engineering SPEC needs ## Handoff to Software Engineer/u);
+  const mcp = JSON.parse(await readFile(path.join(target, ".vscode/mcp.json"), "utf8"));
+  assert.deepEqual(mcp, {
+    servers: {
+      shadcn: {
+        command: "npx",
+        args: ["shadcn@latest", "mcp"],
+      },
+    },
+  });
 });
 
-test("interactive init installs only the selected Claude Code or Codex agents", async () => {
+test("Claude and Codex init use native role and shadcn MCP files", async () => {
   const cases = [
     {
-      answer: "2",
+      tool: "claude",
+      instructions: "CLAUDE.md",
       directory: ".claude/agents",
       fileName: (roleId) => `${roleId}.md`,
-      absent: [".github/agents", ".codex/agents"],
-      client: "claude-code",
-      rolePattern: /role: "\.claude\/agents\/designer\.md"/u
+      mcpPath: ".mcp.json",
+      absent: [".github", ".vscode", ".codex", "AGENTS.md"],
+      assertMcp: (content) => {
+        assert.deepEqual(JSON.parse(content), {
+          mcpServers: {
+            shadcn: {
+              command: "npx",
+              args: ["shadcn@latest", "mcp"],
+            },
+          },
+        });
+      },
     },
     {
-      answer: "3",
+      tool: "codex",
+      instructions: "AGENTS.md",
       directory: ".codex/agents",
       fileName: (roleId) => `${roleId}.toml`,
-      absent: [".github/agents", ".claude/agents"],
-      client: "codex",
-      rolePattern: /role: "\.codex\/agents\/designer\.toml"/u
-    }
+      mcpPath: ".codex/config.toml",
+      absent: [".github", ".vscode", ".claude", ".mcp.json", "CLAUDE.md"],
+      assertMcp: (content) => {
+        assert.equal(
+          content,
+          '[mcp_servers.shadcn]\ncommand = "npx"\nargs = ["shadcn@latest", "mcp"]\n',
+        );
+      },
+    },
   ];
 
-  for (const clientCase of cases) {
+  for (const item of cases) {
     const target = await temporaryDirectory();
-    const prompt = answers([
-      "Client Product",
-      "Selected native client",
-      ...(clientCase.answer === "2" ? ["unknown-client"] : []),
-      clientCase.answer,
-      "",
-      ""
-    ]);
-    assert.equal(await run(["init", target], { prompt, output: () => {} }), 0);
+    assert.equal(await run([
+      "init",
+      target,
+      "--name",
+      "Native Files",
+      "--summary",
+      "Checks one selected tool",
+      "--tool",
+      item.tool,
+      ...frontendDevelopmentArgs,
+    ], { output: () => {} }), 0);
 
+    assert.equal(existsSync(path.join(target, item.instructions)), true);
+    assert.equal(existsSync(path.join(target, item.mcpPath)), true);
     assert.deepEqual(
-      (await readdir(path.join(target, clientCase.directory))).sort(),
-      roleIds.map(clientCase.fileName).sort()
+      (await readdir(path.join(target, item.directory))).sort(),
+      roleIds.map(item.fileName).sort(),
     );
-    for (const absentDirectory of clientCase.absent) {
-      assert.equal(existsSync(path.join(target, absentDirectory)), false);
+    for (const absent of item.absent) {
+      assert.equal(existsSync(path.join(target, absent)), false);
     }
-    assert.equal(existsSync(path.join(target, ".ai-sdlc/agents")), false);
-    assert.equal(existsSync(path.join(target, ".ai-sdlc/roles/designer/config.yaml")), true);
-    assert.equal(existsSync(path.join(target, ".ai-sdlc/workflows/default.md")), true);
-    const config = await readFile(path.join(target, "ai-native.yaml"), "utf8");
-    assert.match(config, new RegExp(`client: "${clientCase.client}"`, "u"));
-    assert.match(
-      config,
-      new RegExp(`agents: "${clientCase.directory.replace(".", "\\.").replaceAll("/", "\\/")}"`, "u")
-    );
-    assert.match(
-      await readFile(path.join(target, ".ai-sdlc/roles/designer/config.yaml"), "utf8"),
-      clientCase.rolePattern
-    );
-    if (clientCase.answer === "2") {
-      const claudeAgent = await readFile(path.join(target, ".claude/agents/pm-ba.md"), "utf8");
-      assert.ok(claudeAgent.endsWith(
-        (await readFile(path.join(process.cwd(), "templates/agents/pm-ba.md"), "utf8")).trim() + "\n"
-      ));
+    item.assertMcp(await readFile(path.join(target, item.mcpPath), "utf8"));
+
+    for (const roleId of roleIds) {
+      const generated = await readFile(
+        path.join(target, item.directory, item.fileName(roleId)),
+        "utf8",
+      );
+      const source = (await readFile(
+        path.join(repositoryRoot, "templates/agents", `${roleId}.md`),
+        "utf8",
+      )).trim();
+
+      if (item.tool === "codex") {
+        assert.match(generated, new RegExp(`^name = "${roleId}"\\ndescription = `, "u"));
+        const instructions = generated.match(/^developer_instructions = (.+)$/mu);
+        assert.ok(instructions);
+        assert.equal(JSON.parse(instructions[1]), source);
+      } else {
+        assert.match(generated, new RegExp(`^---\\nname: "${roleId}"\\ndescription: `, "u"));
+        assert.ok(generated.trimEnd().endsWith(source));
+      }
     }
   }
+});
 
-  const codexTarget = temporaryDirectories.at(-1);
-  for (const roleId of roleIds) {
-    const codexAgent = await readFile(path.join(codexTarget, `.codex/agents/${roleId}.toml`), "utf8");
-    assert.match(codexAgent, new RegExp(`^name = "${roleId}"\\ndescription = `, "u"));
-    const instructions = codexAgent.match(/^developer_instructions = (.+)$/mu);
-    assert.ok(instructions);
-    assert.equal(
-      JSON.parse(instructions[1]),
-      (await readFile(path.join(process.cwd(), `templates/agents/${roleId}.md`), "utf8")).trim()
+test("no-development mode installs only product, design, and architecture agents", async () => {
+  const cases = [
+    {
+      tool: "copilot",
+      directory: ".github/agents",
+      fileName: (roleId) => `${roleId}.agent.md`,
+      mcpPath: ".vscode/mcp.json",
+    },
+    {
+      tool: "claude",
+      directory: ".claude/agents",
+      fileName: (roleId) => `${roleId}.md`,
+      mcpPath: ".mcp.json",
+    },
+    {
+      tool: "codex",
+      directory: ".codex/agents",
+      fileName: (roleId) => `${roleId}.toml`,
+      mcpPath: ".codex/config.toml",
+    },
+  ];
+
+  for (const item of cases) {
+    const target = await initializedProject(item.tool, { development: "none" });
+    assert.deepEqual(
+      (await readdir(path.join(target, item.directory))).sort(),
+      coreRoleIds.map(item.fileName).sort(),
+    );
+    assert.equal(existsSync(path.join(target, item.mcpPath)), false);
+    assert.equal((await listFiles(target)).length, 25);
+
+    const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
+    assert.match(profile, /\| Development work \| No \|/u);
+    assert.match(profile, /\| Development area \| Not applicable \|/u);
+    assert.match(profile, /\| Stack preference \| Not applicable \|/u);
+    assert.match(profile, /\| Validation preference \| Not applicable \|/u);
+    assert.match(profile, /\| Active phases \| Discovery, Design, Architecture \|/u);
+    assert.match(profile, /\| Dedicated agents \| pm-ba, designer, architect \|/u);
+
+    const workflow = await readFile(path.join(target, ".ai-sdlc/workflow.md"), "utf8");
+    assert.match(workflow, /Implementation, Verification, and Release have no active work/u);
+  }
+});
+
+test("frontend and backend presets write one profile and only shadcn writes MCP", async () => {
+  const cases = [
+    {
+      development: "frontend",
+      stack: "react-shadcn",
+      stackLabel: "React + Vite + Tailwind + shadcn/ui",
+      uiSystem: "shadcn/ui",
+      validation: "standard",
+      validationLabel: "Standard",
+      mcp: true,
+    },
+    {
+      development: "frontend",
+      stack: "react-antd",
+      stackLabel: "React + Vite + Ant Design",
+      uiSystem: "Ant Design",
+      validation: "lean",
+      validationLabel: "Lean",
+      mcp: false,
+    },
+    {
+      development: "frontend",
+      stack: "react-mui",
+      stackLabel: "React + Vite + Material UI",
+      uiSystem: "Material UI",
+      validation: "thorough",
+      validationLabel: "Thorough",
+      mcp: false,
+    },
+    {
+      development: "frontend",
+      stack: "frontend-existing",
+      stackLabel: "Use the existing frontend stack",
+      uiSystem: "Follow existing project conventions",
+      validation: "standard",
+      validationLabel: "Standard",
+      mcp: false,
+    },
+    {
+      development: "backend",
+      stack: "java-spring",
+      stackLabel: "Java + Spring Boot",
+      uiSystem: "Not applicable",
+      validation: "standard",
+      validationLabel: "Standard",
+      mcp: false,
+    },
+    {
+      development: "backend",
+      stack: "node-typescript",
+      stackLabel: "Node.js + TypeScript",
+      uiSystem: "Not applicable",
+      validation: "lean",
+      validationLabel: "Lean",
+      mcp: false,
+    },
+    {
+      development: "backend",
+      stack: "python-fastapi",
+      stackLabel: "Python + FastAPI",
+      uiSystem: "Not applicable",
+      validation: "thorough",
+      validationLabel: "Thorough",
+      mcp: false,
+    },
+    {
+      development: "backend",
+      stack: "backend-existing",
+      stackLabel: "Use the existing backend stack",
+      uiSystem: "Not applicable",
+      validation: "standard",
+      validationLabel: "Standard",
+      mcp: false,
+    },
+  ];
+
+  for (const item of cases) {
+    const target = await initializedProject("claude", item);
+    const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
+    assert.ok(profile.includes("| Development work | Yes |"));
+    assert.ok(profile.includes(`| Development area | ${item.development === "frontend" ? "Frontend" : "Backend"} |`));
+    assert.ok(profile.includes(`| Stack preference | ${item.stackLabel} |`));
+    assert.ok(profile.includes(`| UI system | ${item.uiSystem} |`));
+    assert.ok(profile.includes(`| UI MCP | ${item.mcp ? "shadcn" : "None"} |`));
+    assert.ok(profile.includes(`| Validation preference | ${item.validationLabel} |`));
+    assert.match(
+      profile,
+      item.development === "frontend" ? /For frontend work/u : /For (?:.+ )?backend work/u,
+    );
+    assert.equal(existsSync(path.join(target, ".mcp.json")), item.mcp);
+    assert.equal((await listFiles(target)).length, item.mcp ? 29 : 28);
+    assert.deepEqual(
+      (await readdir(path.join(target, ".claude/agents"))).sort(),
+      roleIds.map((roleId) => `${roleId}.md`).sort(),
     );
   }
 });
 
-test("init rejects unsafe output paths before writing anything", async () => {
+test("project profile records safe root-level stack evidence", async () => {
+  const target = await temporaryDirectory();
+  await writeFile(path.join(target, "package.json"), JSON.stringify({
+    dependencies: { react: "latest", vite: "latest", tailwindcss: "latest" },
+    scripts: { build: "vite build", lint: "eslint .", privateTask: "secret-command" },
+  }), "utf8");
+  await writeFile(path.join(target, "components.json"), JSON.stringify({
+    $schema: "https://ui.shadcn.com/schema.json",
+  }), "utf8");
+
+  await run([
+    "init",
+    target,
+    "--name",
+    "Detected Frontend",
+    "--summary",
+    "Records safe project evidence",
+    "--tool",
+    "claude",
+    ...frontendDevelopmentArgs,
+  ], { output: () => {} });
+
+  const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
+  assert.match(profile, /\| package\.json \| Node\.js package manifest; React dependency; Vite dependency; Tailwind CSS dependency; scripts: build, lint \|/u);
+  assert.match(profile, /\| components\.json \| shadcn\/ui project configuration \|/u);
+  assert.doesNotMatch(profile, /privateTask|secret-command/u);
+  assert.equal(profile.includes(target), false);
+});
+
+test("stack recommendations require matching evidence and stay neutral for mixed backends", async () => {
+  const cases = [
+    {
+      name: "plain Java",
+      area: "backend",
+      choice: "4",
+      expected: "Use the existing backend stack",
+      files: { "pom.xml": "<project><artifactId>plain-java</artifactId></project>\n" },
+    },
+    {
+      name: "plain Python",
+      area: "backend",
+      choice: "4",
+      expected: "Use the existing backend stack",
+      files: { "requirements.txt": "django==5.0\n" },
+    },
+    {
+      name: "JavaScript backend",
+      area: "backend",
+      choice: "4",
+      expected: "Use the existing backend stack",
+      files: {
+        "package.json": JSON.stringify({ dependencies: { express: "latest" } }),
+      },
+    },
+    {
+      name: "existing Vue frontend",
+      area: "frontend",
+      choice: "4",
+      expected: "Use the existing frontend stack",
+      files: {
+        "package.json": JSON.stringify({ dependencies: { vue: "latest" } }),
+      },
+    },
+    {
+      name: "existing Go backend",
+      area: "backend",
+      choice: "4",
+      expected: "Use the existing backend stack",
+      files: { "go.mod": "module example.com/service\n\ngo 1.24\n" },
+      profilePattern: /Target directory is not empty/u,
+    },
+    {
+      name: "unconfirmed components file",
+      area: "frontend",
+      choice: "4",
+      expected: "Use the existing frontend stack",
+      files: {
+        "package.json": JSON.stringify({
+          dependencies: { react: "latest", vite: "latest", tailwindcss: "latest" },
+        }),
+        "components.json": "{}\n",
+      },
+      profilePattern: /components\.json present; shadcn\/ui configuration not confirmed/u,
+    },
+    {
+      name: "Spring Boot",
+      area: "backend",
+      choice: "1",
+      expected: "Java + Spring Boot",
+      files: {
+        "pom.xml": "<project><artifactId>spring-boot-starter-web</artifactId></project>\n",
+      },
+    },
+    {
+      name: "TypeScript backend",
+      area: "backend",
+      choice: "2",
+      expected: "Node.js + TypeScript",
+      files: {
+        "package.json": JSON.stringify({
+          dependencies: { express: "latest" },
+          devDependencies: { typescript: "latest" },
+        }),
+      },
+    },
+    {
+      name: "tsconfig TypeScript backend",
+      area: "backend",
+      choice: "2",
+      expected: "Node.js + TypeScript",
+      files: {
+        "package.json": JSON.stringify({ dependencies: { express: "latest" } }),
+        "tsconfig.json": "{}\n",
+      },
+    },
+    {
+      name: "FastAPI",
+      area: "backend",
+      choice: "3",
+      expected: "Python + FastAPI",
+      files: { "requirements.txt": "fastapi==1.0\n" },
+    },
+    {
+      name: "shadcn frontend",
+      area: "frontend",
+      choice: "1",
+      expected: "React + Vite + Tailwind + shadcn/ui",
+      files: {
+        "package.json": JSON.stringify({
+          dependencies: { react: "latest", vite: "latest", tailwindcss: "latest" },
+        }),
+        "components.json": JSON.stringify({
+          $schema: "https://ui.shadcn.com/schema.json",
+        }),
+      },
+    },
+    {
+      name: "Ant Design frontend",
+      area: "frontend",
+      choice: "2",
+      expected: "React + Vite + Ant Design",
+      files: {
+        "package.json": JSON.stringify({
+          dependencies: { react: "latest", vite: "latest", antd: "latest" },
+        }),
+      },
+    },
+    {
+      name: "Material UI frontend",
+      area: "frontend",
+      choice: "3",
+      expected: "React + Vite + Material UI",
+      files: {
+        "package.json": JSON.stringify({
+          dependencies: { react: "latest", vite: "latest", "@mui/material": "latest" },
+        }),
+      },
+    },
+    {
+      name: "mixed frontend UI systems",
+      area: "frontend",
+      choice: "4",
+      expected: "Use the existing frontend stack",
+      files: {
+        "package.json": JSON.stringify({
+          dependencies: {
+            react: "latest",
+            vite: "latest",
+            antd: "latest",
+            "@mui/material": "latest",
+          },
+        }),
+      },
+    },
+    {
+      name: "mixed backend",
+      area: "backend",
+      choice: "4",
+      expected: "Use the existing backend stack",
+      files: {
+        "pom.xml": "<project><artifactId>spring-boot-starter-web</artifactId></project>\n",
+        "requirements.txt": "fastapi==1.0\n",
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    const target = await temporaryDirectory();
+    for (const [file, content] of Object.entries(item.files)) {
+      await writeFile(path.join(target, file), content, "utf8");
+    }
+    const questions = [];
+    const prompt = answers([
+      "1",
+      item.area === "frontend" ? "1" : "2",
+      item.choice,
+      "1",
+    ], questions);
+
+    await run([
+      "init",
+      target,
+      "--name",
+      item.name,
+      "--summary",
+      "Checks honest stack recommendations",
+      "--tool",
+      "claude",
+    ], { prompt, output: () => {} });
+
+    const stackQuestion = questions.find((question) => /stack preference/u.test(question));
+    assert.ok(stackQuestion, item.name);
+    assert.match(
+      stackQuestion,
+      new RegExp(`${escapeRegex(item.expected)} \\(project evidence; recommended\\)`, "u"),
+      item.name,
+    );
+    assert.equal(
+      [...stackQuestion.matchAll(/\(project evidence; recommended\)/gu)].length,
+      1,
+      item.name,
+    );
+    if (item.profilePattern) {
+      const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
+      assert.match(profile, item.profilePattern, item.name);
+    }
+  }
+});
+
+test("interactive init asks a short conditional development questionnaire", async () => {
+  const target = await temporaryDirectory();
+  const questions = [];
+  const output = [];
+  const prompt = answers([
+    "",
+    "A short summary",
+    "not-a-tool",
+    "3",
+    "maybe",
+    "1",
+    "3",
+    "1",
+    "9",
+    "1",
+    "9",
+    "1",
+  ], questions);
+
+  assert.equal(await run(["init", target], {
+    prompt,
+    output: (value) => output.push(value),
+  }), 0);
+
+  assert.equal(questions.length, 12);
+  assert.match(questions[0], /Project name/u);
+  assert.match(questions[1], /Project summary/u);
+  assert.match(questions[2], /Choose your AI tool/u);
+  assert.match(questions[4], /perform code development/u);
+  assert.match(questions[6], /What development work/u);
+  assert.match(questions[8], /frontend stack preference/u);
+  assert.match(questions[8], /shadcn\/ui \(recommended\)/u);
+  assert.doesNotMatch(questions[8], /project evidence/u);
+  assert.match(questions[10], /validation preference/u);
+  assert.match(output.join(""), /Choose 1, 2, 3, or 4/u);
+
+  const instructions = await readFile(path.join(target, "AGENTS.md"), "utf8");
+  assert.match(
+    instructions,
+    new RegExp(`\\*\\*Project:\\*\\* ${escapeRegex(path.basename(target))}`, "u"),
+  );
+  assert.match(instructions, /\*\*Goal:\*\* A short summary/u);
+  assert.match(instructions, /Available dedicated role agents are in `\.codex\/agents`/u);
+  const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
+  assert.match(profile, /\| Development work \| Yes \|/u);
+  assert.match(profile, /\| Development area \| Frontend \|/u);
+  assert.match(profile, /\| Stack preference \| React \+ Vite \+ Tailwind \+ shadcn\/ui \|/u);
+  assert.match(profile, /\| Validation preference \| Standard \|/u);
+});
+
+test("interactive no-development choice skips stack and validation questions", async () => {
+  const target = await temporaryDirectory();
+  const questions = [];
+  const prompt = answers(["Docs Project", "Shared delivery documents", "2", "2"], questions);
+
+  await run(["init", target], { prompt, output: () => {} });
+
+  assert.equal(questions.length, 4);
+  assert.match(questions[3], /perform code development/u);
+  assert.equal(questions.some((question) => /stack preference|validation preference/u.test(question)), false);
+  assert.deepEqual(
+    (await readdir(path.join(target, ".claude/agents"))).sort(),
+    coreRoleIds.map((roleId) => `${roleId}.md`).sort(),
+  );
+  assert.equal(existsSync(path.join(target, ".mcp.json")), false);
+});
+
+test("project text is inserted once and kept literal", async () => {
+  const target = await temporaryDirectory();
+  await run([
+    "init",
+    target,
+    "--name",
+    "Name {{PROJECT_SUMMARY}}",
+    "--summary",
+    "Goal {{PROJECT_NAME}}",
+    "--tool",
+    "claude",
+    ...frontendDevelopmentArgs,
+  ], { output: () => {} });
+
+  const instructions = await readFile(path.join(target, "CLAUDE.md"), "utf8");
+  assert.match(instructions, /\*\*Project:\*\* Name \{\{PROJECT_SUMMARY\}\}/u);
+  assert.match(instructions, /\*\*Goal:\*\* Goal \{\{PROJECT_NAME\}\}/u);
+});
+
+test("shared workflow keeps the six phases and the full template set", async () => {
+  const target = await initializedProject("claude");
+  const templates = (await readdir(path.join(target, ".ai-sdlc/templates"))).sort();
+
+  assert.deepEqual(templates, [...templateFiles].sort());
+  assert.equal(existsSync(path.join(target, ".ai-sdlc/workflow.md")), true);
+
+  const workflow = await readFile(path.join(target, ".ai-sdlc/workflow.md"), "utf8");
+  const phaseLines = workflow
+    .split("\n")
+    .filter((line) => /^\| (Discovery|Design|Architecture|Implementation|Verification|Release) \|/u.test(line));
+  assert.deepEqual(
+    phaseLines.map((line) => line.split("|")[1].trim()),
+    ["Discovery", "Design", "Architecture", "Implementation", "Verification", "Release"],
+  );
+  assert.match(workflow, /Keep the six phases and their owners in this order/u);
+  assert.match(workflow, /Use the named dedicated agent for each active phase/u);
+  assert.match(workflow, /Read `\.ai-sdlc\/project-profile\.md` before starting/u);
+  assert.match(workflow, /Architecture Pack files/u);
+  assert.match(workflow, /optional plan, tasks, and notes/u);
+  assert.match(workflow, /structured question UI/u);
+  assert.match(workflow, /two or three mutually exclusive options/u);
+  assert.match(workflow, /recommended option first/u);
+  assert.match(workflow, /Continue dependent work only after the answer/u);
+  assert.match(workflow, /Do not defer an unresolved decision/u);
+});
+
+test("artifact index lists only real, openable artifacts", async () => {
+  const target = await initializedProject("claude");
+  const index = await readFile(path.join(target, "docs/ai-sdlc/index.md"), "utf8");
+
+  assert.match(index, /single entry point/u);
+  assert.match(index, /Only list artifacts that exist and can be opened/u);
+  assert.match(index, /\| Artifact \| Description \|/u);
+  assert.doesNotMatch(index, /\[.+\]\(.+\)/u);
+
+  const workflow = await readFile(path.join(target, ".ai-sdlc/workflow.md"), "utf8");
+  assert.match(workflow, /create, update, move, or delete/u);
+  assert.match(workflow, /link relative to the index, such as `\.\/prd\.md`/u);
+  assert.match(workflow, /canonical URL for an artifact owned by another repository/u);
+  assert.match(workflow, /one plain-English description/u);
+  assert.match(workflow, /remove stale rows/u);
+});
+
+test("PM and BA templates retain PRD and user story detail", async () => {
+  const target = await initializedProject("claude");
+  const pm = await readFile(path.join(target, ".claude/agents/pm-ba.md"), "utf8");
+  const prd = await readFile(path.join(target, ".ai-sdlc/templates/prd.md"), "utf8");
+  const story = await readFile(path.join(target, ".ai-sdlc/templates/story.md"), "utf8");
+
+  assert.match(pm, /docs\/ai-sdlc\/stories/u);
+  assert.match(pm, /stable story and acceptance-criteria IDs/u);
+  assert.deepEqual(
+    headings(prd),
+    [
+      "PRD: <Feature or product area>",
+      "Problem and context",
+      "Target users",
+      "Goals and success measures",
+      "Scope",
+      "In scope",
+      "Out of scope",
+      "Business rules",
+      "Acceptance criteria",
+      "User story index",
+      "Assumptions",
+      "Decision record",
+    ],
+  );
+  assert.match(story, /As a <user>, I want <capability>/u);
+  assert.match(story, /<US-ID>-AC-01/u);
+  assert.match(story, /```gherkin/u);
+  assert.match(story, /Alternate and failure paths/u);
+  assert.match(story, /## Decision record/u);
+});
+
+test("human decisions are asked immediately and artifacts record resolved choices", async () => {
+  const target = await initializedProject("claude");
+  const workflow = await readFile(path.join(target, ".ai-sdlc/workflow.md"), "utf8");
+  const readme = await readFile(path.join(repositoryRoot, "README.md"), "utf8");
+
+  assert.match(workflow, /pause at that point/u);
+  assert.match(workflow, /impact or trade-off in one sentence/u);
+  assert.match(workflow, /selected decision and its source/u);
+  assert.match(readme, /agent asks immediately with two or three clear options/u);
+
+  const deferredDecision = /open decisions?|open questions?|decision still needed|open target decisions|needs decision|decision needed/iu;
+  for (const file of templateFiles) {
+    const content = await readFile(path.join(target, ".ai-sdlc/templates", file), "utf8");
+    assert.doesNotMatch(content, deferredDecision, file);
+  }
+
+  for (const file of [
+    "prd.md",
+    "story.md",
+    "design-spec.md",
+    "architecture.md",
+    "implementation-plan.md",
+    "release-runbook.md",
+  ]) {
+    const content = await readFile(path.join(target, ".ai-sdlc/templates", file), "utf8");
+    assert.match(content, /Decision record|decision record/u, file);
+  }
+  const options = await readFile(
+    path.join(target, ".ai-sdlc/templates/architecture-options.md"),
+    "utf8",
+  );
+  assert.match(options, /## Selected decision/u);
+});
+
+test("Designer follows the configured UI system without legacy design scripts", async () => {
+  const target = await initializedProject("copilot");
+  const designer = await readFile(
+    path.join(target, ".github/agents/designer.agent.md"),
+    "utf8",
+  );
+  const baseline = await readFile(
+    path.join(target, ".ai-sdlc/templates/design-baseline.md"),
+    "utf8",
+  );
+  const spec = await readFile(
+    path.join(target, ".ai-sdlc/templates/design-spec.md"),
+    "utf8",
+  );
+  const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
+
+  assert.match(designer, /approved visual references, verified source behavior/u);
+  assert.match(designer, /Read `\.ai-sdlc\/project-profile\.md`/u);
+  assert.match(designer, /configured UI system/u);
+  assert.match(designer, /project profile names a UI MCP server/u);
+  assert.match(designer, /user journey, information hierarchy, primary action/u);
+  assert.match(designer, /For visual work, render the affected viewport/u);
+  assert.match(designer, /approved reference or adjacent product surfaces/u);
+  assert.match(designer, /iterate on observed differences/u);
+  assert.match(designer, /Use Figma only when the user requests it/u);
+  assert.match(designer, /Confirm the target file, page, screens, states, viewports/u);
+  assert.match(designer, /Use auto-layout/u);
+  assert.match(designer, /Figma URL or node ID only after/u);
+  assert.match(designer, /pixel-perfect fidelity/u);
+  assert.doesNotMatch(designer, /shadcn\/ui|Ant Design|Material UI/u);
+  assert.doesNotMatch(designer, /\bVDS\b|vds-query|component-query|validate-spec/iu);
+  assert.match(profile, /\| UI system \| shadcn\/ui \|/u);
+  assert.match(baseline, /Human-curated notes/u);
+  assert.match(baseline, /configured UI-system convention/u);
+  assert.match(spec, /Experience and information hierarchy/u);
+  assert.match(spec, /Responsive behavior/u);
+  assert.match(spec, /Accessibility and content/u);
+  assert.match(spec, /Visual evidence/u);
+  assert.match(spec, /configured UI-system component/u);
+  assert.doesNotMatch(spec, /spec_version|deferred_validations|validator/iu);
+});
+
+test("Architecture Pack keeps C4, ADR, concerns, and required API patterns", async () => {
+  const target = await initializedProject("codex");
+  const templateRoot = path.join(target, ".ai-sdlc/templates");
+  const architect = await readCodexInstructions(
+    path.join(target, ".codex/agents/architect.toml"),
+  );
+  const overview = await readFile(path.join(templateRoot, "architecture.md"), "utf8");
+  const patterns = await readFile(
+    path.join(templateRoot, "architecture-patterns.md"),
+    "utf8",
+  );
+  const adr = await readFile(path.join(templateRoot, "architecture-adr.md"), "utf8");
+  const context = await readFile(
+    path.join(templateRoot, "architecture-c4-context.mmd"),
+    "utf8",
+  );
+  const containers = await readFile(
+    path.join(templateRoot, "architecture-c4-containers.mmd"),
+    "utf8",
+  );
+
+  for (const concern of ["API", "Data", "Integration", "Security", "Observability", "Frontend"]) {
+    assert.match(architect, new RegExp(`\\b${concern}\\b`, "u"));
+    assert.match(overview, new RegExp(`^\\| ${concern} \\|`, "mu"));
+  }
+  assert.match(architect, /C4 system context view/u);
+  assert.match(architect, /C4 container view/u);
+  assert.match(architect, /project provides a Mermaid renderer or checker/u);
+  assert.match(architect, /check was not run/u);
+  assert.match(architect, /docs\/ai-sdlc\/adrs/u);
+  assert.match(architect, /required project baseline/u);
+
+  assert.match(patterns, /RESTful contract/u);
+  assert.match(patterns, /HTTP status codes are the authoritative transport outcome/u);
+  assert.match(patterns, /do not return `200` for a failed request/u);
+  assert.match(patterns, /JSON envelope family/u);
+  assert.match(patterns, /cursor or offset pagination/u);
+  assert.match(patterns, /opaque cursor with a stable unique order/u);
+  assert.match(patterns, /authoritative OpenAPI YAML contract/u);
+  assert.match(patterns, /same change as the API behavior/u);
+  assert.match(patterns, /OpenAPI lint or contract check/u);
+
+  assert.match(adr, /## Context/u);
+  assert.match(adr, /## Decision/u);
+  assert.match(adr, /## Options considered/u);
+  assert.match(adr, /## Consequences/u);
+  assert.match(adr, /## Rules for future work/u);
+  assert.match(adr, /\*\*Decision owner:\*\*/u);
+  assert.match(adr, /\*\*Decision evidence:\*\*/u);
+  assert.match(context, /^C4Context/mu);
+  assert.match(context, /C4 L1/u);
+  assert.match(containers, /^C4Container/mu);
+  assert.match(containers, /C4 L2/u);
+
+  const architectureFiles = await Promise.all(
+    templateFiles
+      .filter((file) => file.startsWith("architecture"))
+      .map((file) => readFile(path.join(templateRoot, file), "utf8")),
+  );
+  for (const file of architectureFiles) {
+    assert.doesNotMatch(
+      file,
+      /architecture-rulebook|architecture-selection|catalogDigest|reviewId|optionsArtifactId|selectedAt|selection review UUID|minimum_findings|machine-readable/iu,
+    );
+  }
+});
+
+test("Software Engineer can use plan, tasks, and implementation notes without extra evidence packs", async () => {
+  const target = await initializedProject("copilot");
+  const engineer = await readFile(
+    path.join(target, ".github/agents/software-engineer.agent.md"),
+    "utf8",
+  );
+  const plan = await readFile(
+    path.join(target, ".ai-sdlc/templates/implementation-plan.md"),
+    "utf8",
+  );
+  const tasks = await readFile(
+    path.join(target, ".ai-sdlc/templates/implementation-tasks.md"),
+    "utf8",
+  );
+  const notes = await readFile(
+    path.join(target, ".ai-sdlc/templates/implementation-notes.md"),
+    "utf8",
+  );
+
+  assert.match(engineer, /implementation-plan\.md/u);
+  assert.match(engineer, /implementation-tasks\.md/u);
+  assert.match(engineer, /smallest complete vertical slice/u);
+  assert.match(engineer, /profile's validation preference/u);
+  assert.match(engineer, /commands confirmed by project files or instructions/u);
+  assert.match(engineer, /Do not scaffold an application/u);
+  assert.match(plan, /Repository change map/u);
+  assert.match(plan, /Acceptance and verification plan/u);
+  assert.match(tasks, /Repository and path/u);
+  assert.match(tasks, /Evidence or blocker/u);
+  assert.deepEqual(
+    headings(notes),
+    [
+      "Implementation Notes",
+      "Status",
+      "Scope",
+      "Changes",
+      "Decisions used",
+      "Checks",
+      "Limits and risks",
+      "Verification notes",
+    ],
+  );
+  for (const absent of [
+    "engineering-session-log.md",
+    "engineering-test-evidence.md",
+    "engineering-review.md",
+    "engineering-provenance.md",
+  ]) {
+    assert.equal(existsSync(path.join(target, ".ai-sdlc/templates", absent)), false);
+  }
+});
+
+test("roles and artifact templates do not require explicit handoffs", async () => {
+  const target = await initializedProject("claude");
+  const files = [
+    ...roleIds.map((roleId) => path.join(target, ".claude/agents", `${roleId}.md`)),
+    ...templateFiles.map((file) => path.join(target, ".ai-sdlc/templates", file)),
+    path.join(target, ".ai-sdlc/workflow.md"),
+    path.join(target, "docs/ai-sdlc/index.md"),
+    path.join(target, "CLAUDE.md"),
+  ];
+
+  for (const file of files) {
+    const content = await readFile(file, "utf8");
+    assert.doesNotMatch(
+      content,
+      /\bhandoff\b|next owner|give (?:the )?(?:PM \/ BA|Designer|Architect|Software Engineer|Tester|DevOps)\b/iu,
+      file,
+    );
+  }
+});
+
+test("init stops before writing when a destination exists", async () => {
+  const target = await temporaryDirectory();
+  const existing = path.join(target, "CLAUDE.md");
+  await writeFile(existing, "Keep this file.\n", "utf8");
+
+  await assert.rejects(
+    run([
+      "init",
+      target,
+      "--name",
+      "Conflict",
+      "--summary",
+      "Must not overwrite",
+      "--tool",
+      "claude",
+      ...frontendDevelopmentArgs,
+    ], { output: () => {} }),
+    /CLAUDE\.md/u,
+  );
+
+  assert.equal(await readFile(existing, "utf8"), "Keep this file.\n");
+  assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
+  assert.equal(existsSync(path.join(target, ".claude")), false);
+});
+
+test("init preserves an existing artifact index and stops before writing", async () => {
+  const target = await temporaryDirectory();
+  const indexDirectory = path.join(target, "docs/ai-sdlc");
+  const index = path.join(indexDirectory, "index.md");
+  await mkdir(indexDirectory, { recursive: true });
+  await writeFile(index, "# Existing index\n", "utf8");
+
+  await assert.rejects(
+    run([
+      "init",
+      target,
+      "--name",
+      "Existing Index",
+      "--summary",
+      "Must keep the current artifact list",
+      "--tool",
+      "codex",
+      ...frontendDevelopmentArgs,
+    ], { output: () => {} }),
+    /docs\/ai-sdlc\/index\.md/u,
+  );
+
+  assert.equal(await readFile(index, "utf8"), "# Existing index\n");
+  assert.equal(existsSync(path.join(target, "AGENTS.md")), false);
+  assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
+  assert.equal(existsSync(path.join(target, ".codex")), false);
+});
+
+test("init preserves an existing project profile and stops before writing", async () => {
+  const target = await temporaryDirectory();
+  const profileDirectory = path.join(target, ".ai-sdlc");
+  const profile = path.join(profileDirectory, "project-profile.md");
+  await mkdir(profileDirectory, { recursive: true });
+  await writeFile(profile, "# Existing profile\n", "utf8");
+
+  await assert.rejects(
+    run([
+      "init",
+      target,
+      "--name",
+      "Existing Profile",
+      "--summary",
+      "Must keep initialization choices",
+      "--tool",
+      "claude",
+      ...frontendDevelopmentArgs,
+    ], { output: () => {} }),
+    /\.ai-sdlc\/project-profile\.md/u,
+  );
+
+  assert.equal(await readFile(profile, "utf8"), "# Existing profile\n");
+  assert.equal(existsSync(path.join(target, "CLAUDE.md")), false);
+  assert.equal(existsSync(path.join(target, ".mcp.json")), false);
+});
+
+test("init preserves existing MCP config for every selected tool", async () => {
+  const cases = [
+    {
+      tool: "copilot",
+      mcpPath: ".vscode/mcp.json",
+      instructionsPath: ".github/copilot-instructions.md",
+    },
+    { tool: "claude", mcpPath: ".mcp.json", instructionsPath: "CLAUDE.md" },
+    { tool: "codex", mcpPath: ".codex/config.toml", instructionsPath: "AGENTS.md" },
+  ];
+
+  for (const item of cases) {
+    const target = await temporaryDirectory();
+    const mcp = path.join(target, item.mcpPath);
+    await mkdir(path.dirname(mcp), { recursive: true });
+    await writeFile(mcp, "keep this configuration\n", "utf8");
+
+    await assert.rejects(
+      run([
+        "init",
+        target,
+        "--name",
+        "Existing MCP",
+        "--summary",
+        "Must keep the current tool configuration",
+        "--tool",
+        item.tool,
+        ...frontendDevelopmentArgs,
+      ], { output: () => {} }),
+      new RegExp(escapeRegex(item.mcpPath), "u"),
+    );
+
+    assert.equal(await readFile(mcp, "utf8"), "keep this configuration\n");
+    assert.equal(existsSync(path.join(target, item.instructionsPath)), false);
+    assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
+  }
+});
+
+test("backend initialization leaves an unrelated MCP config untouched", async () => {
+  const target = await temporaryDirectory();
+  const mcp = path.join(target, ".mcp.json");
+  await writeFile(mcp, '{"keep":true}\n', "utf8");
+
+  await run([
+    "init",
+    target,
+    "--name",
+    "Backend MCP",
+    "--summary",
+    "Does not configure a UI MCP",
+    "--tool",
+    "claude",
+    "--development",
+    "backend",
+    "--stack",
+    "java-spring",
+    "--validation",
+    "standard",
+  ], { output: () => {} });
+
+  assert.equal(await readFile(mcp, "utf8"), '{"keep":true}\n');
+  assert.equal(existsSync(path.join(target, "CLAUDE.md")), true);
+  const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
+  assert.match(profile, /\| UI MCP \| None \|/u);
+});
+
+test("init rejects a symbolic-link output parent", {
+  skip: process.platform === "win32",
+}, async () => {
   const target = await temporaryDirectory();
   const outside = await temporaryDirectory();
   await symlink(outside, path.join(target, ".github"));
 
   await assert.rejects(
-    run(["init", target], {
-      prompt: answers(["Safe Product", "Do not escape the project", "1", "", ""]),
-      output: () => {}
-    }),
-    /\.github\//u
+    run([
+      "init",
+      target,
+      "--name",
+      "Safe Paths",
+      "--summary",
+      "Must stay in the target",
+      "--tool",
+      "copilot",
+      ...frontendDevelopmentArgs,
+    ], { output: () => {} }),
+    /\.github\//u,
   );
 
-  assert.equal(existsSync(path.join(target, "ai-native.yaml")), false);
-  assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
   assert.deepEqual(await readdir(outside), []);
-
-  const danglingTarget = await temporaryDirectory();
-  const danglingOutside = await temporaryDirectory();
-  const danglingAgents = path.join(danglingTarget, ".claude/agents");
-  const danglingOutsideFile = path.join(danglingOutside, "pm-ba.md");
-  await mkdir(danglingAgents, { recursive: true });
-  await symlink(danglingOutsideFile, path.join(danglingAgents, "pm-ba.md"));
-
-  await assert.rejects(
-    run(["init", danglingTarget], {
-      prompt: answers(["Safe Product", "Reject dangling links", "2", "", ""]),
-      output: () => {}
-    }),
-    /\.claude\/agents\/pm-ba\.md/u
-  );
-  assert.equal(existsSync(danglingOutsideFile), false);
-  assert.equal(existsSync(path.join(danglingTarget, "ai-native.yaml")), false);
-
-  const collisionTarget = await temporaryDirectory();
-  await writeFile(path.join(collisionTarget, ".codex"), "not a directory", "utf8");
-  await assert.rejects(
-    run(["init", collisionTarget], {
-      prompt: answers(["Safe Product", "Reject path collisions", "3", "", ""]),
-      output: () => {}
-    }),
-    /\.codex\//u
-  );
-  assert.equal(existsSync(path.join(collisionTarget, "ai-native.yaml")), false);
-  assert.equal(existsSync(path.join(collisionTarget, ".ai-sdlc")), false);
-  assert.equal(await readFile(path.join(collisionTarget, ".codex"), "utf8"), "not a directory");
-});
-
-test("AC4/Tier A: an aborted init preserves pre-existing files and removes only its own output", async () => {
-  const target = await temporaryDirectory();
-  const sentinel = path.join(target, "project-owned.md");
-  await writeFile(sentinel, "keep this project-owned content", "utf8");
-  const controller = new AbortController();
-  controller.abort(new Error("test cancellation"));
-
-  await assert.rejects(
-    run(["init", target], {
-      signal: controller.signal,
-      prompt: answers(["Cancelled project", "Must not write", "3", "", ""]),
-      output: () => {}
-    }),
-    /abort|cancel/i,
-  );
-
-  assert.equal(await readFile(sentinel, "utf8"), "keep this project-owned content");
-  assert.equal(existsSync(path.join(target, "ai-native.yaml")), false);
   assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
-  assert.equal(existsSync(path.join(target, ".codex")), false);
-  assert.equal(existsSync(path.join(target, transactionMarkerName)), false);
 });
 
-test("AC4 adversarial: abort after the first created file rolls back the partial transaction", async () => {
-  const target = await temporaryDirectory();
-  const sentinel = path.join(target, "project-owned.md");
-  await writeFile(sentinel, "keep this project-owned content", "utf8");
-  const controller = new AbortController();
-  const operation = run(["init", target], {
-    signal: controller.signal,
-    prompt: answers(["Cancelled project", "Abort after writing starts", "3", "", ""]),
-    output: () => {}
-  });
-
-  while (!existsSync(path.join(target, "ai-native.yaml"))) {
-    const completed = await Promise.race([
-      operation.then(() => true, () => true),
-      new Promise((resolve) => setImmediate(() => resolve(false)))
-    ]);
-    assert.equal(completed, false, "initializer completed before the mid-write abort could be injected");
-  }
-  controller.abort(new Error("mid-write cancellation"));
-  await assert.rejects(operation, /abort|cancel/i);
-
-  assert.equal(await readFile(sentinel, "utf8"), "keep this project-owned content");
-  assert.equal(existsSync(path.join(target, "ai-native.yaml")), false);
-  assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
-  assert.equal(existsSync(path.join(target, ".codex")), false);
-  assert.equal(existsSync(path.join(target, transactionMarkerName)), false);
-});
-
-test("AC4 adversarial: rollback preserves a concurrently replaced inode and reports the mismatch", async () => {
-  const target = await temporaryDirectory();
-  const destination = path.join(target, "ai-native.yaml");
-  const replacement = path.join(target, "replacement.yaml");
-  const replacementContent = "externally replaced content\n";
-  await writeFile(replacement, replacementContent, "utf8");
-
-  const controller = new AbortController();
-  const nativeThrowIfAborted = controller.signal.throwIfAborted.bind(controller.signal);
-  let replaced = false;
-  controller.signal.throwIfAborted = () => {
-    if (!replaced && existsSync(destination)) {
-      renameSync(replacement, destination);
-      replaced = true;
-      controller.abort(new Error("abort after concurrent replacement"));
-    }
-    nativeThrowIfAborted();
-  };
+test("init keeps the useful error for a file in the target path", async () => {
+  const root = await temporaryDirectory();
+  const file = path.join(root, "not-a-directory");
+  await writeFile(file, "Keep this file.\n", "utf8");
 
   await assert.rejects(
-    run(["init", target], {
-      signal: controller.signal,
-      prompt: answers(["Replaced project", "Preserve the replacement", "3", "", ""]),
-      output: () => {}
-    }),
-    (error) => {
-      assert.ok(error instanceof AggregateError);
-      assert.match(error.message, /无法完整回滚/u);
-      assert.match(error.message, /inode 不匹配/u);
-      assert.match(error.errors[1].errors[0].message, /inode 不匹配/u);
-      return true;
-    },
+    run([
+      "init",
+      path.join(file, "project"),
+      "--name",
+      "Bad Target",
+      "--summary",
+      "Must fail clearly",
+      "--tool",
+      "claude",
+      ...frontendDevelopmentArgs,
+    ], { output: () => {} }),
+    (error) => error?.code === "ENOTDIR" && !String(error.message).includes("rollback"),
   );
-
-  assert.equal(replaced, true);
-  assert.equal(await readFile(destination, "utf8"), replacementContent);
+  assert.equal(await readFile(file, "utf8"), "Keep this file.\n");
 });
 
-test("AC4 adversarial: rollback preserves content modified in place on the same inode", async () => {
-  const target = await temporaryDirectory();
-  const destination = path.join(target, "ai-native.yaml");
-  const replacementContent = "EXTERNAL IN-PLACE EDIT\n";
-  const controller = new AbortController();
-  const nativeThrowIfAborted = controller.signal.throwIfAborted.bind(controller.signal);
-  let modified = false;
-
-  controller.signal.throwIfAborted = () => {
-    if (!modified && existsSync(destination)) {
-      const before = lstatSync(destination, { bigint: true });
-      writeFileSync(destination, replacementContent, "utf8");
-      const after = lstatSync(destination, { bigint: true });
-      assert.equal(after.dev, before.dev);
-      assert.equal(after.ino, before.ino);
-      modified = true;
-      controller.abort(new Error("abort after same-inode content modification"));
-    }
-    nativeThrowIfAborted();
-  };
-
-  await assert.rejects(
-    run(["init", target], {
-      signal: controller.signal,
-      prompt: answers(["Modified project", "Preserve the external edit", "3", "", ""]),
-      output: () => {}
-    }),
-    (error) => {
-      assert.ok(error instanceof AggregateError);
-      assert.match(error.message, /无法完整回滚/u);
-      assert.match(error.message, /内容已修改/u);
-      assert.ok(error.errors[1].errors.some((failure) => /内容已修改/u.test(failure.message)));
-      return true;
-    },
-  );
-
-  assert.equal(modified, true);
-  assert.equal(await readFile(destination, "utf8"), replacementContent);
-});
-
-test("AC4 adversarial: abort observed after all files publish but before commit rolls back", async () => {
-  const target = await temporaryDirectory();
-  const markerPath = path.join(target, transactionMarkerName);
-  const controller = new AbortController();
-  const nativeThrowIfAborted = controller.signal.throwIfAborted.bind(controller.signal);
-  let postPublishChecks = 0;
-  controller.signal.throwIfAborted = () => {
-    if (!controller.signal.aborted && existsSync(markerPath)) {
-      const journal = JSON.parse(readFileSync(markerPath, "utf8"));
-      const allPublished = journal.entries.every((entry) =>
-        existsSync(path.join(target, entry.path)));
-      if (allPublished) {
-        postPublishChecks += 1;
-        if (postPublishChecks === 2) {
-          controller.abort(new Error("abort inside pre-commit cleanup"));
-        }
-      }
-    }
-    nativeThrowIfAborted();
-  };
-
-  await assert.rejects(
-    run(["init", target], {
-      signal: controller.signal,
-      prompt: answers(["Commit race", "Abort before marker commit", "3", "", ""]),
-      output: () => {}
-    }),
-    /abort inside pre-commit cleanup/u,
-  );
-
-  assert.equal(postPublishChecks, 2);
-  assert.equal(existsSync(path.join(target, "ai-native.yaml")), false);
-  assert.equal(existsSync(markerPath), false);
-  assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
-  assert.equal(existsSync(path.join(target, ".codex")), false);
-  assert.equal(
-    (await readdir(target)).some((name) => /^\.ai-native-sdlc-init-/u.test(name)),
-    false,
-  );
-});
-
-for (const { signalName, exitCode } of [
-  { signalName: "SIGINT", exitCode: 130 },
-  { signalName: "SIGTERM", exitCode: 143 }
-]) {
-  test(`direct CLI converts ${signalName} into an abort and exits after cleanup`, {
-    skip: process.platform === "win32"
-  }, async () => {
-    const target = await temporaryDirectory();
-    const child = spawn(process.execPath, [path.join(process.cwd(), "bin/cli.js"), "init", target], {
-      cwd: process.cwd(),
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    let stdoutText = "";
-    let stderrText = "";
-    let signalSent = false;
-
-    const result = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        child.kill("SIGKILL");
-        reject(new Error(`direct CLI did not finish after ${signalName}`));
-      }, 5_000);
-      child.stdout.on("data", (chunk) => {
-        stdoutText += chunk;
-        if (!signalSent && stdoutText.includes("项目名称")) {
-          signalSent = true;
-          child.kill(signalName);
-        }
-      });
-      child.stderr.on("data", (chunk) => {
-        stderrText += chunk;
-      });
-      child.once("error", (error) => {
-        clearTimeout(timeout);
-        reject(error);
-      });
-      child.once("close", (code, signal) => {
-        clearTimeout(timeout);
-        resolve({ code, signal });
-      });
-    });
-
-    assert.equal(signalSent, true);
-    assert.deepEqual(result, { code: exitCode, signal: null });
-    assert.match(stderrText, new RegExp(signalName, "u"));
-    assert.equal(existsSync(path.join(target, "ai-native.yaml")), false);
-    assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
-  });
-}
-
-test("an init killed after its first published file is recovered and can be retried", {
-  skip: process.platform === "win32"
+test("init removes its earlier files when a later write fails", {
+  skip: process.platform === "win32" || process.getuid?.() === 0,
 }, async () => {
   const target = await temporaryDirectory();
-  const interruption = await killInitializerAfterFirstPublishedFile(target);
+  const lockedDirectory = path.join(target, ".ai-sdlc");
+  await mkdir(lockedDirectory);
+  await chmod(lockedDirectory, 0o500);
 
-  assert.deepEqual(interruption, { code: null, signal: "SIGKILL" });
-  assert.equal(existsSync(path.join(target, transactionMarkerName)), true);
-  assert.equal(existsSync(path.join(target, "ai-native.yaml")), true);
-
-  assert.equal(await run(["init", target, "--client", "codex"], {
-    prompt: answers(["Recovered project", "Retry after SIGKILL", "", ""]),
-    output: () => {}
-  }), 0);
-
-  assert.equal(existsSync(path.join(target, transactionMarkerName)), false);
-  assert.match(await readFile(path.join(target, "ai-native.yaml"), "utf8"), /name: "Recovered project"/u);
-  assert.equal(
-    (await readdir(target)).some((name) => /^\.ai-native-sdlc-init-.*\.staging$/u.test(name)),
-    false,
-  );
+  try {
+    await assert.rejects(
+      run([
+        "init",
+        target,
+        "--name",
+        "Rollback Test",
+        "--summary",
+        "A later directory cannot be written",
+        "--tool",
+        "claude",
+        ...frontendDevelopmentArgs,
+      ], { output: () => {} }),
+      /permission denied|EACCES/iu,
+    );
+    assert.equal(existsSync(path.join(target, "CLAUDE.md")), false);
+    assert.equal(existsSync(path.join(target, ".mcp.json")), false);
+    assert.deepEqual(await readdir(lockedDirectory), []);
+  } finally {
+    await chmod(lockedDirectory, 0o700);
+  }
 });
 
-test("an unjournaled initializer staging remainder fails closed before prompting", async () => {
+test("rollback removes an unchanged generated project profile", async () => {
   const target = await temporaryDirectory();
-  const remainder = path.join(
-    target,
-    ".ai-native-sdlc-init-550e8400-e29b-41d4-a716-446655440000.staging",
-  );
-  await mkdir(remainder);
-  await writeFile(path.join(remainder, "payload-0000"), "unverified staged bytes\n", "utf8");
-  let promptCount = 0;
 
   await assert.rejects(
-    run(["init", target, "--client", "codex"], {
-      prompt: async () => {
-        promptCount += 1;
-        return "";
+    run([
+      "init",
+      target,
+      "--name",
+      "Profile Rollback",
+      "--summary",
+      "Fails after the profile is written",
+      "--tool",
+      "claude",
+      "--development",
+      "frontend",
+      "--stack",
+      "react-antd",
+      "--validation",
+      "standard",
+    ], {
+      output: () => {},
+      beforeWrite: ({ path: entryPath }) => {
+        if (entryPath === ".ai-sdlc/workflow.md") throw new Error("Planned workflow failure");
       },
+    }),
+    /Planned workflow failure/u,
+  );
+
+  assert.equal(existsSync(path.join(target, "CLAUDE.md")), false);
+  assert.equal(existsSync(path.join(target, ".ai-sdlc/project-profile.md")), false);
+});
+
+test("init preserves a file created by another process after the conflict check", async () => {
+  const target = await temporaryDirectory();
+  const racedFile = path.join(target, ".mcp.json");
+
+  await assert.rejects(
+    run([
+      "init",
+      target,
+      "--name",
+      "Write Race",
+      "--summary",
+      "Preserves a concurrently created file",
+      "--tool",
+      "claude",
+      ...frontendDevelopmentArgs,
+    ], {
+      output: () => {},
+      beforeWrite: async ({ path: entryPath }) => {
+        if (entryPath === ".mcp.json") {
+          await writeFile(racedFile, "Created by another process.\n", "utf8");
+        }
+      },
+    }),
+    /EEXIST|file already exists/iu,
+  );
+
+  assert.equal(await readFile(racedFile, "utf8"), "Created by another process.\n");
+  assert.equal(existsSync(path.join(target, "CLAUDE.md")), false);
+  assert.equal(existsSync(path.join(target, ".ai-sdlc")), false);
+});
+
+test("rollback keeps a generated file that another process changed or replaced", async () => {
+  const cases = [
+    {
+      expected: "Changed by another process.\n",
+      message: /changed during rollback.*CLAUDE\.md/iu,
+      update: async (file) => writeFile(file, "Changed by another process.\n", "utf8"),
+    },
+    {
+      expected: null,
+      message: /replaced during rollback.*CLAUDE\.md/iu,
+      update: async (file) => {
+        const content = await readFile(file, "utf8");
+        await rename(file, `${file}.original`);
+        await writeFile(file, content, "utf8");
+        return content;
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    const target = await temporaryDirectory();
+    const instructions = path.join(target, "CLAUDE.md");
+    let expected = item.expected;
+
+    await assert.rejects(
+      run([
+        "init",
+        target,
+        "--name",
+        "Rollback Guard",
+        "--summary",
+        "Keep outside changes",
+        "--tool",
+        "claude",
+        ...frontendDevelopmentArgs,
+      ], {
+        output: () => {},
+        beforeWrite: async ({ index }) => {
+          if (index !== 1) return;
+          expected = await item.update(instructions) ?? expected;
+          throw new Error("Planned later failure");
+        },
+      }),
+      (error) => error instanceof AggregateError
+        && /Planned later failure/u.test(error.message)
+        && item.message.test(error.message),
+    );
+    assert.equal(await readFile(instructions, "utf8"), expected);
+  }
+});
+
+test("CLI help is short and invalid options fail", async () => {
+  const cliPath = path.join(repositoryRoot, "bin/cli.js");
+  const helpResult = spawnSync(process.execPath, [cliPath, "--help"], {
+    encoding: "utf8",
+  });
+
+  assert.equal(helpResult.status, 0, helpResult.stderr);
+  assert.match(helpResult.stdout, /--tool <tool>/u);
+  assert.match(helpResult.stdout, /--development <mode>/u);
+  assert.match(helpResult.stdout, /--stack <preset>/u);
+  assert.match(helpResult.stdout, /--validation <preference>/u);
+
+  await assert.rejects(run(["init", ".", "--tool", "unknown"]), /Unknown AI tool/u);
+  await assert.rejects(
+    run(["init", ".", "--development", "mobile"]),
+    /Unknown development mode: mobile/u,
+  );
+  await assert.rejects(run(["init", ".", "--stack", "rails"]), /Unknown stack: rails/u);
+  await assert.rejects(
+    run(["init", ".", "--validation", "maximum"]),
+    /Unknown validation preference: maximum/u,
+  );
+  const completeBase = [
+    "init",
+    ".",
+    "--name",
+    "Argument Test",
+    "--summary",
+    "Checks conditional arguments",
+    "--tool",
+    "claude",
+  ];
+  await assert.rejects(run(completeBase, { output: () => {} }), /--development is required/u);
+  await assert.rejects(
+    run([...completeBase, "--development", "frontend"], { output: () => {} }),
+    /--stack is required for frontend development/u,
+  );
+  await assert.rejects(
+    run([
+      ...completeBase,
+      "--development",
+      "frontend",
+      "--stack",
+      "react-shadcn",
+    ], { output: () => {} }),
+    /--validation is required when development is enabled/u,
+  );
+  await assert.rejects(
+    run([
+      ...completeBase,
+      "--stack",
+      "java-spring",
+      "--development",
+      "frontend",
+      "--validation",
+      "standard",
+    ], { output: () => {} }),
+    /Stack java-spring is not valid for frontend development/u,
+  );
+  await assert.rejects(
+    run([...completeBase, "--development", "none", "--stack", "react-shadcn"], {
       output: () => {},
     }),
-    /恢复已拒绝.*没有可验证事务 marker.*原样保留/u,
+    /--stack cannot be used/u,
   );
-
-  assert.equal(promptCount, 0);
-  assert.equal(await readFile(path.join(remainder, "payload-0000"), "utf8"), "unverified staged bytes\n");
-});
-
-test("recovery preserves externally modified transaction content and fails closed", {
-  skip: process.platform === "win32"
-}, async () => {
-  const target = await temporaryDirectory();
-  await killInitializerAfterFirstPublishedFile(target);
-  const markerPath = path.join(target, transactionMarkerName);
-  const journal = JSON.parse(await readFile(markerPath, "utf8"));
-  const stagingPath = path.join(target, journal.staging.path);
-  const stagedEntriesBefore = (await readdir(stagingPath)).sort();
-  const modifiedContent = "externally modified after SIGKILL\n";
-  await writeFile(path.join(target, "ai-native.yaml"), modifiedContent, "utf8");
-  let promptCount = 0;
-
   await assert.rejects(
-    run(["init", target, "--client", "codex"], {
-      prompt: async () => {
-        promptCount += 1;
-        return "";
-      },
-      output: () => {}
+    run([...completeBase, "--development", "none", "--validation", "standard"], {
+      output: () => {},
     }),
-    /恢复已拒绝.*内容已修改/u,
+    /--validation cannot be used/u,
   );
-
-  assert.equal(promptCount, 0);
-  assert.equal(await readFile(path.join(target, "ai-native.yaml"), "utf8"), modifiedContent);
-  assert.equal(existsSync(markerPath), true);
-  assert.deepEqual((await readdir(stagingPath)).sort(), stagedEntriesBefore);
+  await assert.rejects(run(["serve"]), /Use: create-ai-native-sdlc init/u);
+  await assert.rejects(run(["init", ".", "--client", "codex"]), /Unknown option/u);
+  await assert.rejects(run(["init", ".", "--name", "   "]), /--name needs a value/u);
+  await assert.rejects(run(["init", ".", "--development"]), /--development needs a value/u);
+  await assert.rejects(run(["init", ".", "--stack"]), /--stack needs a value/u);
+  await assert.rejects(run(["init", ".", "--validation"]), /--validation needs a value/u);
 });
 
-async function killInitializerAfterFirstPublishedFile(target) {
-  const markerPath = path.join(target, transactionMarkerName);
-  const firstOutput = path.join(target, "ai-native.yaml");
-  const child = spawn(process.execPath, [
-    path.join(process.cwd(), "bin/cli.js"),
+test("README describes current outputs without the old negative capability list", async () => {
+  const readme = await readFile(path.join(repositoryRoot, "README.md"), "utf8");
+
+  assert.match(readme, /## Generated files/u);
+  assert.match(readme, /## Delivery workflow/u);
+  assert.match(readme, /## Architecture Pack/u);
+  assert.match(readme, /docs\/ai-sdlc\/index\.md/u);
+  assert.match(readme, /\.ai-sdlc\/project-profile\.md/u);
+  assert.match(readme, /`none`/u);
+  assert.match(readme, /`frontend`/u);
+  assert.match(readme, /`backend`/u);
+  assert.match(readme, /`react-shadcn`, `react-antd`, `react-mui`/u);
+  assert.match(readme, /`java-spring`, `node-typescript`, `python-fastapi`/u);
+  assert.match(readme, /`frontend-existing`/u);
+  assert.match(readme, /`backend-existing`/u);
+  assert.match(readme, /`lean`, `standard`, or `thorough`/u);
+  assert.doesNotMatch(readme, /## What it does not include/iu);
+  assert.doesNotMatch(
+    readme,
+    /^- No (?:web app|server or database|workflow runner|dashboard|sync or migration engine|large group of reports)/imu,
+  );
+});
+
+test("generated files are plain English and do not contain old platform contracts", async () => {
+  for (const tool of ["copilot", "claude", "codex"]) {
+    const target = await initializedProject(tool);
+    const files = await listFiles(target);
+    assert.equal(files.length, 29);
+
+    for (const file of files) {
+      const content = await readFile(file, "utf8");
+      assert.doesNotMatch(content, /[\u3400-\u9fff]/u, file);
+      assert.doesNotMatch(content, /\{\{[A-Z_]+\}\}/u, file);
+      assert.doesNotMatch(
+        content,
+        /Run-scoped|semantic gate|artifact revision|artifact registry|architecture-rulebook|architecture-selection|catalogDigest|reviewId|optionsArtifactId|selectedAt|selection review UUID|minimum_findings|machine-readable|execution contract|change contract|seven-lens|Tier [ABC]|ai-native\.yaml/iu,
+        file,
+      );
+    }
+  }
+});
+
+async function initializedProject(tool, configuration = {}) {
+  const target = await temporaryDirectory();
+  const development = configuration.development ?? "frontend";
+  const developmentArgs = ["--development", development];
+  if (development !== "none") {
+    developmentArgs.push(
+      "--stack",
+      configuration.stack ?? (development === "frontend" ? "react-shadcn" : "java-spring"),
+      "--validation",
+      configuration.validation ?? "standard",
+    );
+  }
+  await run([
     "init",
     target,
-    "--client",
-    "codex"
-  ], {
-    cwd: process.cwd(),
-    stdio: ["pipe", "pipe", "pipe"]
-  });
-  const promptAnswers = [
-    { marker: "项目名称", answer: "Killed project\n" },
-    { marker: "项目简介", answer: "Interrupted before commit\n" },
-    { marker: "Designer 额外输入", answer: "\n" },
-    { marker: "Designer 组件清单", answer: "\n" }
-  ];
-  let answeredPrompts = 0;
-  let stdoutText = "";
-  let stderrText = "";
-  let killSent = false;
+    "--name",
+    "Test Project",
+    "--summary",
+    "A small test project",
+    "--tool",
+    tool,
+    ...developmentArgs,
+  ], { output: () => {} });
+  return target;
+}
 
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (operation) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      clearInterval(poll);
-      operation();
-    };
-    const poll = setInterval(() => {
-      if (killSent) return;
-      if (!existsSync(markerPath) || !existsSync(firstOutput)) return;
-      const stopped = child.kill("SIGSTOP");
-      killSent = stopped && child.kill("SIGKILL");
-    }, 1);
-    const timeout = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish(() => reject(new Error(
-        `initializer did not reach a recoverable published file; stdout=${stdoutText}; stderr=${stderrText}`,
-      )));
-    }, 15_000);
+async function readCodexInstructions(file) {
+  const generated = await readFile(file, "utf8");
+  const instructions = generated.match(/^developer_instructions = (.+)$/mu);
+  assert.ok(instructions);
+  return JSON.parse(instructions[1]);
+}
 
-    child.stdout.on("data", (chunk) => {
-      stdoutText += chunk;
-      while (answeredPrompts < promptAnswers.length
-        && stdoutText.includes(promptAnswers[answeredPrompts].marker)) {
-        child.stdin.write(promptAnswers[answeredPrompts].answer);
-        answeredPrompts += 1;
-      }
-    });
-    child.stderr.on("data", (chunk) => {
-      stderrText += chunk;
-    });
-    child.once("error", (error) => finish(() => reject(error)));
-    child.once("close", (code, signal) => {
-      finish(() => {
-        if (!killSent) {
-          reject(new Error(
-            `initializer exited before SIGKILL; code=${code}; signal=${signal}; stderr=${stderrText}`,
-          ));
-          return;
-        }
-        resolve({ code, signal });
-      });
-    });
-  });
+function headings(markdown) {
+  return [...markdown.matchAll(/^#{1,6}\s+(.+)$/gmu)].map((match) => match[1]);
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 function answers(values, questions) {
   const queue = [...values];
   return async (question) => {
-    questions?.push(question);
+    questions.push(question);
     return queue.shift() ?? "";
   };
 }
 
-function assertCanonicalRulebookBlock(content, document) {
-  const sentinel = "<!-- ai-sdlc:architecture-rulebook:v1 -->";
-  assert.equal(content.split(sentinel).length - 1, 1);
-  assert.match(content, new RegExp(`${sentinel}[\\s\\S]*\"document\": \"${document}\"`, "u"));
-  assert.match(content, /"catalogDigest": "\{64-character digest from architect\/scripts\/rulebook-digest\.mjs\}"/u);
-}
-
-function validSpec() {
-  return `\`\`\`json
-{
-  "spec_version": "1.0",
-  "title": "Generic design",
-  "mode": "new",
-  "status": "ready-for-engineering",
-  "framework": "web",
-  "source": ["artifact:prd", "artifact:user-stories"],
-  "screens": [{ "id": "main", "layout": "project pattern", "states": ["default"] }],
-  "components": [{ "name": "Action", "source": "project", "props": { "tone": "primary" } }],
-  "acceptance_criteria": [{
-    "id": "US-001-AC-01",
-    "requirement": "A clear action",
-    "design_response": "The main action is identifiable"
-  }],
-  "blockers": [],
-  "deferred_validations": []
-}
-\`\`\`
-
-# Generic design
-
-US-001-AC-01 is addressed by the verified project component.
-
-## Handoff to Software Engineer
-
-The design is ready for the Software Engineer. The required behavior is covered by US-001-AC-01 and there are no blockers.
-
-**Next owner:** Software Engineer
-
-### Build scope
-
-- US-001 and US-001-AC-01.
-
-### Behavior to preserve
-
-- Keep the main action identifiable.
-
-### Do not infer
-
-- None.
-
-### Allowed design flexibility
-
-- None.
-
-### Validation evidence
-
-- The configured project component matched and the SPEC validator passed.
-
-### Deferred verification
-
-- None.
-
-### Open decisions and blockers
-
-- None.
-`;
-}
-
 async function temporaryDirectory() {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "ai-native-interactive-"));
+  const directory = await mkdtemp(path.join(os.tmpdir(), "ai-native-init-"));
   temporaryDirectories.push(directory);
   return directory;
+}
+
+async function listFiles(directory) {
+  const result = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      result.push(...await listFiles(entryPath));
+    } else if (entry.isFile()) {
+      result.push(entryPath);
+    }
+  }
+  return result.sort();
 }

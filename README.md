@@ -1,122 +1,148 @@
 # create-ai-native-sdlc
 
-`create-ai-native-sdlc` installs one canonical AI-native delivery workflow into a target project. The optional local [AI SDLC Platform](platform/README.md) operates initialized projects through a React/Fastify web application.
+A small Node.js CLI that adds an AI-native delivery workflow to an existing project.
 
-| Entry | Use it for | What it does not do |
-|---|---|---|
-| Initializer | Install `ai-native.yaml`, six client-native Agents, shared role procedures, references, and artifact templates | Run Agents, approve gates, or upgrade an initialized project in place |
-| Web Platform | Create Runs, record impact decisions, execute local Codex jobs, review revisions, and enforce platform semantic gates | Provide safe remote or multi-user execution, merge code, or release software |
-
-> **Platform safety:** the current Web platform has no authentication, and its real Codex runner is not isolated by an OS sandbox. Use it only with local, trusted, disposable or otherwise recoverable projects. Do not expose it remotely or register untrusted repositories. See the [security model](platform/docs/security-model.md).
-
-The npm tarball contains the initializer only. Running the Web platform requires a repository checkout.
-
-## Workflow at a glance
-
-Every Run starts from an immutable Change Contract and moves through six fixed phases with one owner each:
-
-```mermaid
-flowchart LR
-  Contract["Immutable Change Contract"] --> Product{"Discovery<br/>Product Impact"}
-  Product --> Design{"Design<br/>Design Impact"}
-  Design --> Architecture{"Architecture<br/>Architecture Impact"}
-  Architecture --> Implementation["Implementation<br/>Software Engineer"]
-  Implementation --> Verification["Verification<br/>Tester"]
-  Verification --> Release["Release<br/>DevOps runbook"]
-  Release --> Human{"Human go/no-go"}
-```
-
-Product, Design, and Architecture use evidence-backed impact dispositions so a role runs only when new work is necessary. `direct`, `skip`, and `reuse` may omit an Agent execution; they never omit evidence or the phase gate. Humans retain product scope, architecture selection and acceptance, risk acceptance, merge, deployment, rollback, and final release authority.
-
-Software Engineer changes the real repository and produces one reviewable engineering evidence pack. Tester independently verifies the accepted contract. When durable E2E is required, the platform authors scripts in an ephemeral staging copy, validates the allowlisted changes, promotes only those files to an explicitly linked separate E2E root, re-hashes the complete promoted executable suite, obtains human approval of that exact baseline, and runs standalone Playwright from the linked root with a real headless Chromium. Playwright MCP remains optional, non-gating exploration.
-
-DevOps prepares an evidence-bound release runbook. It may record the expected required-check contract and missing provider evidence, but only an authorized human or repository/provider system configures CI or required checks and performs release actions.
-
-See [End-to-End Workflow](guidelines/workflow/README.md) for phase contracts, impact routes, handoffs, and feedback loops.
-
-## Choose your starting point
-
-| Goal | Start here |
-|---|---|
-| Install the workflow in a project | [Getting Started](guidelines/getting-started/README.md) |
-| Run the local Web application | [Platform README](platform/README.md) |
-| Understand the six phases and gates | [End-to-End Workflow](guidelines/workflow/README.md) |
-| Understand role ownership and Prompt layers | [Role Relationships](guidelines/roles/README.md) |
-| Configure artifacts and paths | [Configuration Guide](guidelines/configuration/README.md) |
-| Learn the repository in Chinese | [AI-SDLC 学习手册](guidelines/learning/README.md) |
-
-## Initialize a project
+## Setup
 
 Requirements: Node.js 20 or later.
 
-The package is not published on npm yet. Run the current repository version with:
+Initialize the current project:
 
 ```bash
 npx --yes --package=github:davych/my-sdlc-workflow \
   create-ai-native-sdlc init .
 ```
 
-The initializer asks for the project name, project summary, target AI client, and optional Designer inputs. It installs exactly one native Agent set for GitHub Copilot, Claude Code, or Codex.
+The CLI asks for the project name, a short summary, the AI tool, whether the project performs development work, and the relevant stack and validation preferences. Stack and validation questions are skipped when development is not needed.
 
-Initialization is create-only and fail-closed: it does not merge into or overwrite an initialized project. Adopt future workflow changes through an explicit, reviewed incremental backfill that preserves project-owned content. The [Getting Started guide](guidelines/getting-started/README.md) explains the interactive questions, write safety, generated layout, and first Run.
-
-## Start the local Platform
-
-From a repository checkout:
+You can also pass every value directly:
 
 ```bash
-cd platform
-corepack enable
-cp .env.example .env
-yarn install
-yarn db:up
-yarn dev
+npx --yes --package=github:davych/my-sdlc-workflow \
+  create-ai-native-sdlc init ./my-project \
+  --name "My Project" \
+  --summary "A small tool for my team" \
+  --tool codex \
+  --development frontend \
+  --stack react-shadcn \
+  --validation standard
 ```
 
-Before registering a project, set `AI_SDLC_ALLOWED_PROJECT_ROOTS` in `platform/.env` to the narrowest trusted parent directory. The Web app runs at <http://localhost:5174> and the API at <http://localhost:4100>.
+The target defaults to the current directory. Non-interactive use supplies `--development` and, for frontend or backend work, `--stack` and `--validation`.
 
-See the [Platform operator guide](platform/README.md) for setup and the [runtime contract](platform/docs/runtime-contract.md) for execution, revision, E2E, and semantic-gate behavior.
+## Generated files
 
-## Installed contract
+Only the selected AI tool is configured.
+
+| Tool | Project instructions | Role agents | shadcn MCP when selected |
+|---|---|---|---|
+| GitHub Copilot in VS Code | `.github/copilot-instructions.md` | `.github/agents/*.agent.md` | `.vscode/mcp.json` |
+| Claude Code | `CLAUDE.md` | `.claude/agents/*.md` | `.mcp.json` |
+| Codex | `AGENTS.md` | `.codex/agents/*.toml` | `.codex/config.toml` |
+
+The MCP file is generated only for the `react-shadcn` frontend preset and runs `npx shadcn@latest mcp`. Registries can be configured through the target project's `components.json`. See the [shadcn MCP documentation](https://ui.shadcn.com/docs/mcp). Codex supports project-scoped MCP configuration in trusted projects; see the [official OpenAI MCP documentation](https://developers.openai.com/codex/mcp).
+
+Initialization writes `.ai-sdlc/project-profile.md` as the single description of whether development is enabled, the frontend or backend area, stack preference, UI system, validation depth, active phases, dedicated agents, and detected project evidence.
+
+| Development | Stack presets | Dedicated agents |
+|---|---|---|
+| `none` | Not applicable | PM / BA, Designer, Architect |
+| `frontend` | `react-shadcn`, `react-antd`, `react-mui`, `frontend-existing` | All six roles |
+| `backend` | `java-spring`, `node-typescript`, `python-fastapi`, `backend-existing` | All six roles |
+
+The `*-existing` choices keep an established project on its current stack when none of the named presets is accurate. Root project files mark a named preset as `project evidence; recommended` only when the matching evidence is present. An existing target without a matching preset recommends `*-existing`; an empty target shows the questionnaire's ordinary default as `recommended`. Validation uses `lean`, `standard`, or `thorough`. These settings guide the agents; they do not install dependencies, create an application, or authorize a framework migration.
+
+Every tool also gets the shared workflow and artifact templates:
 
 ```text
-ai-native.yaml
 .ai-sdlc/
-  workflows/    # shared phase order and artifact resolution
-  roles/        # role procedures, configs, and focused references
-  templates/    # output schemas
-
-# Exactly one native Agent set:
-.github/agents/*.agent.md   # GitHub Copilot
-.claude/agents/*.md         # Claude Code
-.codex/agents/*.toml        # Codex
+  project-profile.md
+  workflow.md
+  templates/
+    prd.md
+    story.md
+    design-baseline.md
+    design-spec.md
+    architecture.md
+    architecture-discovery-context.md
+    architecture-options.md
+    architecture-c4-context.mmd
+    architecture-c4-containers.mmd
+    architecture-adr.md
+    architecture-patterns.md
+    architecture-nfrs.md
+    architecture-risk-review.md
+    implementation-plan.md
+    implementation-tasks.md
+    implementation-notes.md
+    test-report.md
+    release-runbook.md
+docs/
+  ai-sdlc/
+    index.md
 ```
 
-The repository keeps six canonical role sources in `templates/agents/`. The initializer renders the selected client's native files from those sources; client files are not separate role definitions. Detailed role procedures live under `templates/shared/.ai-sdlc/roles/<role>/`, and output schemas live under `templates/shared/.ai-sdlc/templates/`.
+Templates are used only when they add value. Working documents are created under `docs/ai-sdlc/`. The artifact index lists only documents that actually exist, with a link and a short description. A frontend, backend, or another tool can use `docs/ai-sdlc/index.md` as the stable discovery entry point.
 
-Artifact IDs in `ai-native.yaml` are the stable interface. The platform gives Run-specific artifacts a task-and-Run-namespaced physical path, so consumers resolve an artifact through its registered owner instead of guessing a filename. See [Configuration](guidelines/configuration/README.md).
+## Delivery workflow
 
-## Role guides
+The workflow keeps this phase order and ownership:
 
-| Role | Human-facing overview |
-|---|---|
-| PM / BA | [Product impact and product evidence](guidelines/roles/pm-ba/README.md) |
-| Designer | [Design impact and engineering handoff](guidelines/roles/designer/README.md) |
-| Architect | [Options, decisions, NFRs, and acceptance](guidelines/roles/architect/README.md) |
-| Software Engineer | [Implementation and engineering evidence](guidelines/roles/software-engineer/README.md) |
-| Tester | [Independent Verification and E2E](guidelines/roles/tester/README.md) |
-| DevOps | [Release preparation and human boundary](guidelines/roles/devops/README.md) |
+| Phase | Owner | Typical work |
+|---|---|---|
+| Discovery | PM / BA | PRD, user stories, business rules, and acceptance criteria |
+| Design | Designer | Project baseline, user flow, real states, responsive and accessible behavior, and configured UI-system choices |
+| Architecture | Architect | Architecture Pack, C4 context and containers, ADRs, patterns, NFRs, and material risks |
+| Implementation | Software Engineer | Plan and tasks when useful, production changes, tests, checks, and implementation notes |
+| Verification | Tester | Requirement and risk-based test results |
+| Release | DevOps | Release, health-check, monitoring, and rollback steps |
 
-## Validate this repository
+Start a change with:
+
+```text
+Follow .ai-sdlc/workflow.md for this change: <describe the change>.
+```
+
+The roles coordinate through the existing artifacts listed in `docs/ai-sdlc/index.md`.
+
+The six phases and owners remain fixed. A `none` development profile keeps Discovery, Design, and Architecture active; the workflow records that Implementation, Verification, and Release have no active work without generating their dedicated agents or filler documents.
+
+When work needs a human decision, the agent asks immediately with two or three clear options and a recommended choice. It continues after the answer and records the selected result instead of leaving an unresolved question at the end of a document.
+
+## Architecture Pack
+
+The Architecture Pack is a project-level baseline that is maintained when architecture changes. Small changes can reuse it without producing filler documents.
+
+- `architecture.md` summarizes the current direction and links the pack.
+- C4 Context records people, the focal system, and external systems.
+- C4 Containers records deployable frontends, services, data stores, and their relationships.
+- Architecture Patterns contains the required project-wide rules and reusable implementation patterns.
+- ADRs record durable choices, cross-repository decisions, migrations, and exceptions.
+- Options, NFRs, discovery context, and risk review are used when the decision needs them.
+
+## Write safety
+
+Initialization is create-only. It checks every planned destination before writing and stops when any destination already exists. If a later write fails, it removes only unchanged files created by that command.
+
+## CLI reference
+
+```text
+create-ai-native-sdlc init [target] [options]
+
+--name <name>               Project name
+--summary <text>            Short project summary
+--tool <tool>               copilot, claude, or codex
+--development <mode>        none, frontend, or backend
+--stack <preset>            Frontend or backend stack preset
+--validation <preference>   lean, standard, or thorough
+-h, --help                  Show help
+```
+
+## Development
 
 ```bash
 npm test
 npm pack --dry-run
-
-cd platform
-yarn typecheck
-yarn test
-yarn build
 ```
 
 ## License

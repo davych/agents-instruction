@@ -1,49 +1,39 @@
-# Architecture Pattern Decisions: {topic}
+# Architecture Patterns: <System or scope>
 
-**Selected option:** {option link}
-**C4 container view:** {relative link}
+**Updated:** <YYYY-MM-DD>
+**Authoritative OpenAPI YAML:** <Repository path or canonical URL>
 
-## Adopted Patterns
+## Required project-wide baseline
 
-| Pattern | Rule IDs | C4 L2 Location | Constraint Addressed | Trade-off | How It Stays True |
-|---------|----------|-----------------|----------------------|-----------|-------------------|
-| {pattern} | {rule IDs or None} | {container or relationship alias} | {constraint ID} | {specific cost} | {ADR, test, or review} |
+These rules apply to project-controlled frontend/backend HTTP APIs. A compatibility exception or change to a rule requires an ADR with scope, trade-offs, and migration impact.
 
-## Rejected Patterns
+| ID | Area | Required pattern | Project decision or evidence |
+|---|---|---|---|
+| API-REST-001 | RESTful boundary | Model first-party HTTP APIs as resources with consistent URIs and HTTP methods. Keep frontend/backend communication as an explicit RESTful contract. | <Resource and versioning convention> |
+| API-STATUS-001 | Request outcome | HTTP status codes are the authoritative transport outcome. Use suitable `2xx`, `4xx`, and `5xx` codes; do not return `200` for a failed request and rely on a body flag to signal failure. | <Status and error mapping> |
+| API-ENVELOPE-001 | JSON body | Use one documented JSON envelope family for project-controlled success and error bodies. Define success data, stable domain error code and message, optional details, metadata, and correlation fields without hiding HTTP status semantics. Document bodyless, file, stream, health, webhook, or third-party exceptions. | <Schema or OpenAPI component links> |
+| API-PAGE-001 | Pagination | Every paginated contract names cursor or offset pagination. Prefer an opaque cursor with a stable unique order for mutable, large, or feed-like collections. Use offset only when bounded or administrative random-page access or total counts justify it. Define limit, order, filters, boundaries, and invalid or stale cursor behavior. | <Choice and reason per contract> |
+| API-OPENAPI-001 | Contract source | Keep one authoritative OpenAPI YAML contract. Update paths, methods, parameters, request and response schemas, status codes, and examples in the same change as the API behavior, then run the project's OpenAPI lint or contract check. | <YAML path and check command> |
 
-| Pattern | Why It Was Considered | Project-specific Reason for Rejection |
-|---------|-----------------------|---------------------------------------|
-| {pattern} | {reason} | {constraint or trade-off} |
+## Active implementation patterns
 
-## Rule Disposition Register
+Record only patterns that are adopted or seriously considered. Do not copy the baseline rows here.
 
-> After human option selection, list every rule × affected scope from every Applicable pack exactly once. `Not triggered` needs contrary trigger evidence. A `DEFAULT` whose catalog policy is `Reason allowed` may use `Justified deviation`; `ADR required` and any `MUST`/`FORBIDDEN` waiver use `Exception` and a human-approved ADR. `Blocked` prevents readiness.
+| Pattern | Concern | Location | Why it fits | Trade-off | Evidence or enforcement |
+|---|---|---|---|---|---|
+| <Pattern> | <API / Data / Integration / Security / Observability / Frontend> | <C4 container or relationship> | <Constraint addressed> | <Cost> | <ADR, source, test, or review> |
 
-| Rule ID | Scope | Level | Trigger Evidence | Disposition | Architecture Evidence | Decision or Blocker |
-|---------|-------|-------|------------------|-------------|-----------------------|---------------------|
-| {rule ID} | {scope ID} | {MUST / DEFAULT / WHEN / FORBIDDEN} | {source} | {Adopted / Not triggered / Justified deviation / Exception / Blocked} | {C4 alias, ADR, Pattern, NFR, test, or None} | {reason, ADR, owner/evidence needed, or None} |
+## Concern prompts
 
-Do not add a pattern only because it is common. Every adopted pattern needs a location and a cost. A rule name without trigger evidence and an implementation location does not count as conformance.
+- **API:** contract ownership, resource and versioning rules, status/error mapping, envelope, pagination, and OpenAPI.
+- **Data:** system of record, write and transaction boundaries, migration, consistency, cache, and retention.
+- **Integration:** synchronous or asynchronous interaction, timeout, retry, idempotency, failure handling, and contract translation.
+- **Security:** identity propagation, server-side authorization, trust boundaries, secrets, and sensitive-data handling.
+- **Observability:** structured logs, metrics, traces when useful, correlation, redaction, and visible failure signals.
+- **Frontend:** framework and rendering mode, routing, state ownership, server-data caching, design-system boundary, and compatibility.
 
-## Machine-readable Rulebook Contract
+## Rejected or replaced patterns
 
-> Keep exactly one block with this sentinel. Include every applicable rule once per affected Discovery scope. `justified_deviation` is allowed only when that `DEFAULT` rule's catalog policy is `Reason allowed` and uses `decisionRef: null`. `exception` requires an `accepted-adr:ADR-NNN` reference to a human revision whose accepted ADR names that rule and scope. `blocked` prevents approval. A Greenfield frontend default may be `satisfied` on a Brownfield/existing scope only when `decisionRef` names a human-approved migration ADR for that scope.
-
-<!-- ai-sdlc:architecture-rulebook:v1 -->
-```json
-{
-  "schemaVersion": 1,
-  "document": "patterns",
-  "catalogDigest": "{64-character digest from architect/scripts/rulebook-digest.mjs}",
-  "selection": { "optionId": "{platform-selected option ID}", "reviewId": "{selection review UUID}", "optionsArtifactId": "{reviewed options artifact UUID}", "selectedAt": "{selection timestamp}" },
-  "dispositions": [
-    {
-      "ruleId": "{RULE-ID}",
-      "scopeId": "{scope-id-from-discovery}",
-      "state": "{satisfied|not_triggered|justified_deviation|exception|blocked}",
-      "evidenceRefs": ["{C4 alias, ADR, Pattern row, NFR, test, or contrary trigger evidence}"],
-      "decisionRef": null
-    }
-  ]
-}
-```
+| Pattern | Why considered | Why rejected or replaced | Related ADR |
+|---|---|---|---|
+| <Pattern> | <Reason> | <Project-specific trade-off> | <Link or None> |

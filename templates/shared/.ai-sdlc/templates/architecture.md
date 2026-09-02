@@ -1,99 +1,60 @@
-# Architecture Pack: {topic}
+# Architecture Pack: <System or topic>
 
-**Status:** {Awaiting human selection / Drafting / Blocked / Ready for human acceptance / Accepted for implementation}
-**Updated:** {YYYY-MM-DD}
-**Selected option:** {option ID or Not selected}
-**Selection evidence:** {human decision link or Not provided}
-**Accepted by:** {human owner or Not accepted}
-**Acceptance evidence:** {decision link or Not provided}
+**Updated:** <YYYY-MM-DD>
+**Sources:** <Product, design, repository, operational evidence, or Inline request>
 
-## Problem and Inputs
+## Problem and scope
 
-{State the architecture problem in one short paragraph.}
+<Describe the architecture question, affected systems, and important boundaries.>
 
-| Input | Resolved Path | Revision or Date | Status |
-|-------|---------------|------------------|--------|
-| {artifact or source} | {path} | {revision} | {Confirmed / Assumed / Stale} |
+## Current direction
 
-## Selected Direction
+<Summarize the current architecture and the selected direction. Link decisions instead of copying them.>
 
-{Summarize the human-selected direction and why it fits the confirmed constraints. If no option is selected, link the options document, state that selected-state artifacts are pending, and continue to the Pack Index.}
+## Constraints
 
-## Hard Constraints
+- <Accepted ADR, required pattern, compatibility constraint, or measurable target>
 
-> Include applicable rulebook requirements and rules from accepted ADRs that still apply. Link the source ID; do not promote a recommendation or Pending rule to a hard constraint.
+## Concern summary
 
-| Source | Level | Constraint | Evidence |
-|--------|-------|------------|----------|
-| {rule ID or ADR link} | {MUST / triggered WHEN / FORBIDDEN / Accepted ADR} | {active constraint or prohibited choice} | {artifact or decision link} |
+| Concern | Applies | Current decision or known gap | Evidence |
+|---|---|---|---|
+| API | <Yes / No / Unknown> | <Contract, versioning, status, envelope, pagination, OpenAPI> | <Pattern, ADR, spec, or source> |
+| Data | <Yes / No / Unknown> | <Ownership, transactions, migration, cache, consistency> | <C4, ADR, pattern, or source> |
+| Integration | <Yes / No / Unknown> | <Sync or async boundary, timeout, retry, idempotency> | <C4, ADR, pattern, or source> |
+| Security | <Yes / No / Unknown> | <Identity, authorization, trust, sensitive data> | <C4, ADR, pattern, or source> |
+| Observability | <Yes / No / Unknown> | <Logs, metrics, traces, correlation, failure signals> | <Pattern, NFR, or source> |
+| Frontend | <Yes / No / Unknown> | <Framework, rendering, routing, state, server data, design system> | <C4, ADR, pattern, or source> |
 
-## Rulebook Conformance
+## Pack index
 
-**Project mode:** {Greenfield / Brownfield / Hybrid and discovery link}
+List only pack files that exist.
 
-| Pack | Status | Rule IDs | Evidence | Exceptions or Blocks |
-|------|--------|----------|----------|----------------------|
-| API | {Applicable / Not applicable / Blocked} | {IDs or None} | {C4, ADR, Pattern, NFR, test, or discovery link} | {ADR, human decision, blocker, or None} |
-| Data | {Applicable / Not applicable / Blocked} | {IDs or None} | {C4, ADR, Pattern, NFR, test, or discovery link} | {ADR, human decision, blocker, or None} |
-| Integration | {Applicable / Not applicable / Blocked} | {IDs or None} | {C4, ADR, Pattern, NFR, test, or discovery link} | {ADR, human decision, blocker, or None} |
-| Security | {Applicable / Not applicable / Blocked} | {IDs or None} | {C4, ADR, Pattern, NFR, test, or discovery link} | {ADR, human decision, blocker, or None} |
-| Observability | {Applicable / Not applicable / Blocked} | {IDs or None} | {C4, ADR, Pattern, NFR, test, or discovery link} | {ADR, human decision, blocker, or None} |
-| Frontend | {Applicable / Not applicable / Blocked} | {IDs or None} | {C4, ADR, Pattern, NFR, test, or discovery link} | {ADR, human decision, blocker, or None} |
+| Artifact | Link | Purpose | Status |
+|---|---|---|---|
+| Discovery context | <relative link or None> | Business, product, engineering, policy, and current-system context | <Current / Stale / Not needed> |
+| Architecture options | <relative link or None> | Genuine alternatives and trade-offs | <Current / Stale / Not needed> |
+| C4 system context | <relative link or None> | People, focal system, and external systems | <Current / Stale / Not needed> |
+| C4 containers | <relative link or None> | Deployable applications, services, stores, and relationships | <Current / Stale / Not needed> |
+| ADRs | <directory or ADR links> | Durable choices, migrations, and exceptions | <Current / Stale / Not needed> |
+| Architecture patterns | <relative link or None> | Required baseline and reusable implementation rules | <Current / Stale / Not needed> |
+| NFRs | <relative link or None> | Measurable quality targets | <Current / Stale / Not needed> |
+| Risk review | <relative link or None> | Material failure scenarios and responses | <Current / Stale / Not needed> |
 
-The detailed per-rule disposition register lives in the Pattern Decisions artifact. A Blocked applicable pack or unresolved mandatory rule prevents readiness.
+## Active ADRs
 
-## Pack Index
+| ADR | Status | Decision in force | Scope |
+|---|---|---|---|
+| <Link> | <Proposed / Accepted / Superseded> | <Short decision> | <Affected repositories or boundaries> |
 
-> Resolve these links from the artifact paths in `ai-native.yaml`. Do not assume the default directory names.
-> If the active execution contract selected an artifact that is blocked on human option selection, link its materialized non-empty Pending scaffold here. A Pending link records the blocker; it does not make the child artifact active or satisfy the completion gate.
+## Decision record and open risks
 
-| Artifact | Relative Link | Status | Last Checked |
-|----------|---------------|--------|--------------|
-| Discovery context | {relative link} | {status} | {date} |
-| Options | {relative link} | {status} | {date} |
-| C4 system context | {relative link} | {status} | {date} |
-| C4 containers | {relative link} | {status} | {date} |
-| ADR directory | {relative link} | {status} | {date} |
-| Pattern decisions | {relative link} | {status} | {date} |
-| NFR budgets | {relative link} | {status} | {date} |
-| Independent adversarial review | {relative link} | {status} | {date} |
+### Decisions
 
-## ADR Register
+| Topic | Selected option | Decided by | Source |
+|---|---|---|---|
+| <Topic or None> | <Selected answer> | <Person> | <Conversation or link> |
 
-| ADR | Status | Applies Now | Agent-readable Rule |
-|-----|--------|-------------|---------------------|
-| {link} | {Proposed / Accepted / Rejected / Superseded} | {Yes / No} | Must: {rule}. Do not: {rule}. |
+### Open risks
 
-## Open Human Decisions
-
-- [ ] {decision, owner, evidence needed, and impact}
-
-## Handoff
-
-**Complete:** {items}
-**Provisional:** {items}
-**Blocked:** {items and reason}
-**Next owner:** {human or workflow role}
-
-## Machine-readable Rulebook Contract
-
-> Keep exactly one block with this sentinel and exactly six pack entries. At the checkpoint use `awaiting_selection` with `selection: null`; after selected-state evidence is complete use `ready_for_human_acceptance` and replace `null` with the exact platform values `{ "optionId": "...", "reviewId": "...", "optionsArtifactId": "...", "selectedAt": "..." }`. For each applicable pack, `ruleIds` is its exact catalog rule set. Deviation, exception, and blocked lists must match the detailed Pattern Decisions register.
-
-<!-- ai-sdlc:architecture-rulebook:v1 -->
-```json
-{
-  "schemaVersion": 1,
-  "document": "architecture",
-  "catalogDigest": "{64-character digest from architect/scripts/rulebook-digest.mjs}",
-  "state": "{awaiting_selection|ready_for_human_acceptance|blocked}",
-  "selection": null,
-  "packs": [
-    { "id": "api", "status": "{applicable|not_applicable|blocked}", "ruleIds": ["{applicable API rule IDs or empty}"], "justifiedDeviationRuleIds": [], "exceptionRuleIds": [], "blockedRuleIds": [] },
-    { "id": "data", "status": "{applicable|not_applicable|blocked}", "ruleIds": ["{applicable Data rule IDs or empty}"], "justifiedDeviationRuleIds": [], "exceptionRuleIds": [], "blockedRuleIds": [] },
-    { "id": "integration", "status": "{applicable|not_applicable|blocked}", "ruleIds": ["{applicable Integration rule IDs or empty}"], "justifiedDeviationRuleIds": [], "exceptionRuleIds": [], "blockedRuleIds": [] },
-    { "id": "security", "status": "{applicable|not_applicable|blocked}", "ruleIds": ["{applicable Security rule IDs or empty}"], "justifiedDeviationRuleIds": [], "exceptionRuleIds": [], "blockedRuleIds": [] },
-    { "id": "observability", "status": "{applicable|not_applicable|blocked}", "ruleIds": ["{applicable Observability rule IDs or empty}"], "justifiedDeviationRuleIds": [], "exceptionRuleIds": [], "blockedRuleIds": [] },
-    { "id": "frontend", "status": "{applicable|not_applicable|blocked}", "ruleIds": ["{applicable Frontend rule IDs or empty}"], "justifiedDeviationRuleIds": [], "exceptionRuleIds": [], "blockedRuleIds": [] }
-  ]
-}
-```
+- <Risk, owner, needed evidence, or None>

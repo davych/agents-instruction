@@ -1,30 +1,34 @@
 # Design Baseline
 
-**Status:** Draft for human review
 **Updated:** <YYYY-MM-DD>
 
-## Sources and freshness
+## Sources
 
-| Source | What It Confirms | Checked | Confidence |
-|--------|------------------|---------|------------|
-| <project path, component catalog, reference, or decision> | <fact> | <date> | <high / medium / low> |
+| Source | What it confirms | Confidence |
+|---|---|---|
+| <Project path, approved reference, or decision> | <Verified fact> | <High / Medium / Low> |
 
-## Verified component and token sources
+## Product shell and information architecture
 
-- <source, supported use, and known limit>
+- <Navigation, layout, density, or hierarchy convention>
 
-## Layout and responsive conventions
+## Components, styling, and tokens
 
-- <verified shell, spacing, grid, viewport, or responsive rule>
+- <Existing project component or configured UI-system convention>
+- <Theme, spacing, typography, icon, or asset source>
 
-## Accessibility and content conventions
+## Responsive behavior
 
-- <verified keyboard, focus, label, error, reading-order, i18n, or copy rule>
+- <Verified viewport or layout behavior>
 
-## Deviations and unknowns
+## Accessibility and content
 
-- <deviation or unknown, impact, and owner>
+- <Keyboard, focus, label, error, reading-order, i18n, or copy convention>
+
+## Known deviations and unknowns
+
+- <Deviation or unknown and its impact>
 
 ## Human-curated notes
 
-Preserve this section when the baseline is refreshed.
+<Preserve this section when the baseline is refreshed.>

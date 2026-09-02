@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 
-import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { link, lstat, mkdir, open, readFile, readdir, rmdir, unlink, writeFile } from "node:fs/promises";
+import { lstatSync, realpathSync } from "node:fs";
+import {
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  unlink,
+} from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -10,37 +15,186 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const templateRoot = path.join(packageRoot, "templates");
-const transactionMarkerName = ".ai-native-sdlc-init-transaction.json";
-const transactionFormat = "create-ai-native-sdlc/init-transaction";
-const transactionVersion = 1;
+const coreRoleIds = [
+  "pm-ba",
+  "designer",
+  "architect",
+];
+const developmentRoleIds = [
+  "software-engineer",
+  "tester",
+  "devops",
+];
+const roleIds = [...coreRoleIds, ...developmentRoleIds];
 
-const clients = {
+const developmentProfiles = {
+  none: {
+    label: "No development",
+    roleIds: coreRoleIds,
+    activePhases: ["Discovery", "Design", "Architecture"],
+    stackIds: [],
+    defaultStack: null,
+  },
+  frontend: {
+    label: "Frontend",
+    roleIds,
+    activePhases: [
+      "Discovery",
+      "Design",
+      "Architecture",
+      "Implementation",
+      "Verification",
+      "Release",
+    ],
+    stackIds: ["react-shadcn", "react-antd", "react-mui", "frontend-existing"],
+    defaultStack: "react-shadcn",
+  },
+  backend: {
+    label: "Backend",
+    roleIds,
+    activePhases: [
+      "Discovery",
+      "Design",
+      "Architecture",
+      "Implementation",
+      "Verification",
+      "Release",
+    ],
+    stackIds: ["java-spring", "node-typescript", "python-fastapi", "backend-existing"],
+    defaultStack: "java-spring",
+  },
+};
+
+const stackProfiles = {
+  "react-shadcn": {
+    development: "frontend",
+    label: "React + Vite + Tailwind + shadcn/ui",
+    uiSystem: "shadcn/ui",
+    uiMcp: "shadcn",
+    validationFocus: "For frontend work, prioritize configured type checks, lint, unit or component tests, and the production build.",
+  },
+  "react-antd": {
+    development: "frontend",
+    label: "React + Vite + Ant Design",
+    uiSystem: "Ant Design",
+    uiMcp: null,
+    validationFocus: "For frontend work, prioritize configured type checks, lint, unit or component tests, and the production build.",
+  },
+  "react-mui": {
+    development: "frontend",
+    label: "React + Vite + Material UI",
+    uiSystem: "Material UI",
+    uiMcp: null,
+    validationFocus: "For frontend work, prioritize configured type checks, lint, unit or component tests, and the production build.",
+  },
+  "frontend-existing": {
+    development: "frontend",
+    label: "Use the existing frontend stack",
+    uiSystem: "Follow existing project conventions",
+    uiMcp: null,
+    validationFocus: "For frontend work, follow the project's configured build, type, lint, and test conventions.",
+  },
+  "java-spring": {
+    development: "backend",
+    label: "Java + Spring Boot",
+    uiSystem: "Not applicable",
+    uiMcp: null,
+    validationFocus: "For Java backend work, prioritize the configured build, unit or service tests, and API or OpenAPI contract checks.",
+  },
+  "node-typescript": {
+    development: "backend",
+    label: "Node.js + TypeScript",
+    uiSystem: "Not applicable",
+    uiMcp: null,
+    validationFocus: "For Node.js backend work, prioritize configured type checks, lint, unit or API tests, and contract checks.",
+  },
+  "python-fastapi": {
+    development: "backend",
+    label: "Python + FastAPI",
+    uiSystem: "Not applicable",
+    uiMcp: null,
+    validationFocus: "For Python backend work, prioritize configured lint or type checks, unit or API tests, and contract checks.",
+  },
+  "backend-existing": {
+    development: "backend",
+    label: "Use the existing backend stack",
+    uiSystem: "Not applicable",
+    uiMcp: null,
+    validationFocus: "For backend work, follow the project's configured build, lint, type, test, and contract conventions.",
+  },
+};
+
+const validationProfiles = {
+  lean: {
+    label: "Lean",
+    guidance: "Use the smallest existing build, type, lint, or test checks that cover the changed behavior.",
+  },
+  standard: {
+    label: "Standard",
+    guidance: "Use relevant tests plus the project's normal build, type, lint, and contract checks.",
+  },
+  thorough: {
+    label: "Thorough",
+    guidance: "Start with Standard and add relevant integration, end-to-end, security, or compatibility checks when the project supports them.",
+  },
+};
+
+const aiTools = {
   copilot: {
-    id: "github-copilot",
     label: "GitHub Copilot",
-    directory: ".github/agents",
-    fileName: (roleId) => `${roleId}.agent.md`,
-    render: renderMarkdownAgent
+    instructionsPath: ".github/copilot-instructions.md",
+    agentsDirectory: ".github/agents",
+    mcpPath: ".vscode/mcp.json",
+    mcpContent: [
+      "{",
+      '  "servers": {',
+      '    "shadcn": {',
+      '      "command": "npx",',
+      '      "args": ["shadcn@latest", "mcp"]',
+      "    }",
+      "  }",
+      "}",
+    ].join("\n"),
+    roleFileName: (roleId) => `${roleId}.agent.md`,
+    renderRole: renderMarkdownAgent,
   },
   claude: {
-    id: "claude-code",
     label: "Claude Code",
-    directory: ".claude/agents",
-    fileName: (roleId) => `${roleId}.md`,
-    render: renderMarkdownAgent
+    instructionsPath: "CLAUDE.md",
+    agentsDirectory: ".claude/agents",
+    mcpPath: ".mcp.json",
+    mcpContent: [
+      "{",
+      '  "mcpServers": {',
+      '    "shadcn": {',
+      '      "command": "npx",',
+      '      "args": ["shadcn@latest", "mcp"]',
+      "    }",
+      "  }",
+      "}",
+    ].join("\n"),
+    roleFileName: (roleId) => `${roleId}.md`,
+    renderRole: renderMarkdownAgent,
   },
   codex: {
-    id: "codex",
     label: "Codex",
-    directory: ".codex/agents",
-    fileName: (roleId) => `${roleId}.toml`,
-    render: renderCodexAgent
-  }
+    instructionsPath: "AGENTS.md",
+    agentsDirectory: ".codex/agents",
+    mcpPath: ".codex/config.toml",
+    mcpContent: [
+      "[mcp_servers.shadcn]",
+      'command = "npx"',
+      'args = ["shadcn@latest", "mcp"]',
+    ].join("\n"),
+    roleFileName: (roleId) => `${roleId}.toml`,
+    renderRole: renderCodexAgent,
+  },
 };
 
 export async function run(args = process.argv.slice(2), context = {}) {
   const options = parseArgs(args);
   const output = context.output ?? ((message) => stdout.write(message));
+
   if (options.help) {
     output(help());
     return 0;
@@ -48,112 +202,627 @@ export async function run(args = process.argv.slice(2), context = {}) {
 
   const cwd = context.cwd ?? process.cwd();
   const target = path.resolve(cwd, options.target);
-  const signal = context.signal;
-  signal?.throwIfAborted();
-  if (await recoverInterruptedInitialization(target, signal)) {
-    output("检测到未完成的初始化事务；已验证并清理其遗留项。\n");
-  }
-  signal?.throwIfAborted();
-  if (lstatIfPresent(path.join(target, "ai-native.yaml"))) {
-    throw new Error("目标项目已经存在 ai-native.yaml，初始化已取消");
-  }
-
+  const detected = await detectProject(target);
   let terminal;
   let prompt = context.prompt;
-  if (!prompt) {
+
+  if (!prompt && needsInteractiveInput(options) && stdin.isTTY && context.output === undefined) {
     terminal = createInterface({ input: stdin, output: stdout });
     prompt = (question) => terminal.question(question);
   }
 
-  const createdFiles = [];
-  const createdDirectories = [];
   try {
     const defaultName = path.basename(target);
-    const projectName = (await ask(prompt, `项目名称（默认 ${defaultName}）：`, signal)) || defaultName;
-    const projectSummary = await askRequired(prompt, output, "项目简介：", signal);
-    const clientId = options.client ?? await askForClient(prompt, output, signal);
-    const client = clients[clientId];
-    const designerInputs = await askForDesignerInputs(prompt, output, signal);
-    const componentCatalogModule = await askForComponentCatalog(prompt, output, signal);
+    const projectName = options.name
+      ?? (await ask(prompt, `Project name (default: ${defaultName}): `))
+      ?? defaultName;
+    const resolvedName = projectName || defaultName;
+    const projectSummary = options.summary
+      ?? await askRequired(prompt, output, "Project summary: ");
+    const toolKey = options.tool ?? await askForTool(prompt, output);
+    const tool = aiTools[toolKey];
+    const configuration = await resolveConfiguration(options, prompt, output, detected);
     const entries = await buildEntries(
-      projectName,
+      resolvedName,
       projectSummary,
-      client,
-      designerInputs,
-      componentCatalogModule,
-      signal
+      tool,
+      configuration,
     );
-
-    signal?.throwIfAborted();
     const conflicts = findConflicts(target, entries);
-    if (conflicts.length) {
-      throw new Error(`目标路径存在冲突，未写入任何文件：\n${conflicts.map((item) => `- ${item}`).join("\n")}`);
-    }
 
-    const preparedEntries = entries.map((entry) => {
-      const content = ensureNewline(entry.content);
-      return { ...entry, content, sha256: hashContent(content) };
-    });
-    for (const entry of preparedEntries) {
-      await ensureDirectory(target, path.dirname(path.join(target, entry.path)), createdDirectories, signal);
-    }
-    const transaction = await createInitializationTransaction(
-      target,
-      preparedEntries,
-      createdFiles,
-      createdDirectories,
-      signal,
-    );
-
-    for (const entry of transaction.entries) {
-      signal?.throwIfAborted();
-      const destination = path.join(target, entry.path);
-      await ensureDirectory(target, path.dirname(destination), createdDirectories, signal);
-      signal?.throwIfAborted();
-      await link(entry.staged.path, destination);
-      const published = await lstat(destination, { bigint: true });
-      if (!published.isFile() || !sameIdentity(published, entry.staged)) {
-        throw new Error(`初始化输出发布后身份校验失败：${entry.path}`);
-      }
-      createdFiles.push({
-        path: destination,
-        dev: published.dev,
-        ino: published.ino,
-        sha256: entry.sha256,
-      });
-    }
-
-    signal?.throwIfAborted();
-    await commitInitializationTransaction(transaction, signal);
-    output(`\n初始化完成：${projectName}\n`);
-    output(`AI 客户端：${client.label}\n`);
-    output(`Agent 目录：${client.directory}\n`);
-    output(`写入 ${entries.length} 个文件。\n`);
-    if (!componentCatalogModule) {
-      output("Designer 组件查询尚未配置，可编辑 .ai-sdlc/roles/designer/scripts/component-query.mjs。\n");
-    }
-    return 0;
-  } catch (error) {
-    try {
-      await rollbackCreatedEntries(createdFiles, createdDirectories);
-    } catch (rollbackError) {
-      throw new AggregateError(
-        [error, rollbackError],
-        `初始化失败，且无法完整回滚本次创建的文件：${rollbackError.message}`,
+    if (conflicts.length > 0) {
+      throw new Error(
+        `Initialization stopped. These paths already exist or are unsafe:\n${conflicts
+          .map((item) => `- ${item}`)
+          .join("\n")}`,
       );
     }
-    throw error;
+
+    await writeEntries(target, entries, context.beforeWrite);
+    output(`Created ${entries.length} files for ${resolvedName}.\n`);
+    output(`Tool: ${tool.label}\n`);
+    output(`Instructions: ${tool.instructionsPath}\n`);
+    output("Profile: .ai-sdlc/project-profile.md\n");
+    output(`Development work: ${configuration.development === "none" ? "No" : "Yes"}\n`);
+    output(`Development area: ${configuration.development === "none" ? "Not applicable" : configuration.developmentProfile.label}\n`);
+    if (configuration.stack) output(`Stack: ${configuration.stack.label}\n`);
+    if (configuration.validation) output(`Validation: ${configuration.validation.label}\n`);
+    output(`Role agents: ${tool.agentsDirectory}\n`);
+    output(`Dedicated agents: ${configuration.roleIds.join(", ")}\n`);
+    if (configuration.stack?.uiMcp === "shadcn") {
+      output(`shadcn MCP: ${tool.mcpPath}\n`);
+    }
+    return 0;
   } finally {
     terminal?.close();
   }
 }
 
-function findConflicts(target, entries) {
-  const conflicts = new Set(findPlannedConflicts(entries));
+async function ask(prompt, question) {
+  if (!prompt) return null;
+  return String((await prompt(question)) ?? "").trim();
+}
+
+async function askRequired(prompt, output, question) {
+  while (true) {
+    const answer = await ask(prompt, question);
+    if (answer) return answer;
+    if (!prompt) throw new Error(`${question.trim()} is required.`);
+    output("Please enter a value.\n");
+  }
+}
+
+async function askForTool(prompt, output) {
+  const question = [
+    "Choose your AI tool:",
+    "  1. GitHub Copilot",
+    "  2. Claude Code",
+    "  3. Codex",
+    "Enter 1, 2, or 3: ",
+  ].join("\n");
+
+  while (true) {
+    const answer = await ask(prompt, question);
+    const tool = normalizeTool(answer);
+    if (tool) return tool;
+    if (!prompt) throw new Error("--tool is required.");
+    output("Choose 1, 2, or 3.\n");
+  }
+}
+
+function needsInteractiveInput(options) {
+  return !options.name
+    || !options.summary
+    || !options.tool
+    || !options.development
+    || (options.development !== "none" && (!options.stack || !options.validation));
+}
+
+async function resolveConfiguration(options, prompt, output, detected) {
+  let development = options.development;
+
+  if (!development) {
+    const enabled = await askForDevelopmentWork(prompt, output, detected);
+    development = enabled
+      ? await askForDevelopmentArea(prompt, output, detected)
+      : "none";
+  }
+
+  const developmentProfile = developmentProfiles[development];
+  if (development === "none") {
+    if (options.stack) {
+      throw new Error("--stack cannot be used when --development is none.");
+    }
+    if (options.validation) {
+      throw new Error("--validation cannot be used when --development is none.");
+    }
+    return {
+      development,
+      developmentProfile,
+      stackId: "none",
+      stack: null,
+      validationId: "not-applicable",
+      validation: null,
+      roleIds: [...developmentProfile.roleIds],
+      activePhases: [...developmentProfile.activePhases],
+      detected,
+    };
+  }
+
+  const stackId = options.stack
+    ?? await askForStack(prompt, output, development, detected);
+  const stack = stackProfiles[stackId];
+  if (stack?.development !== development) {
+    throw new Error(`Stack ${stackId} is not valid for ${development} development.`);
+  }
+
+  const validationId = options.validation ?? await askForValidation(prompt, output);
+  const validation = validationProfiles[validationId];
+  return {
+    development,
+    developmentProfile,
+    stackId,
+    stack,
+    validationId,
+    validation,
+    roleIds: [...developmentProfile.roleIds],
+    activePhases: [...developmentProfile.activePhases],
+    detected,
+  };
+}
+
+async function askForDevelopmentWork(prompt, output, detected) {
+  if (!prompt) throw new Error("--development is required.");
+  const detectedNote = detected.recommendedDevelopment
+    ? ` Detected ${detected.recommendedDevelopment} project evidence.`
+    : "";
+  const question = [
+    `Will this project perform code development?${detectedNote}`,
+    "  1. Yes",
+    "  2. No - product, design, and architecture work only",
+    "Enter 1 or 2: ",
+  ].join("\n");
+
+  while (true) {
+    const answer = String(await ask(prompt, question)).toLowerCase();
+    if (["1", "yes", "y"].includes(answer)) return true;
+    if (["2", "no", "n"].includes(answer)) return false;
+    output("Choose 1 or 2.\n");
+  }
+}
+
+async function askForDevelopmentArea(prompt, output, detected) {
+  if (!prompt) throw new Error("--development is required.");
+  const mark = (value) => detected.recommendedDevelopment === value
+    ? " (detected; recommended)"
+    : "";
+  const question = [
+    "What development work does this project own?",
+    `  1. Frontend${mark("frontend")}`,
+    `  2. Backend${mark("backend")}`,
+    "Enter 1 or 2: ",
+  ].join("\n");
+
+  while (true) {
+    const answer = normalizeDevelopment(await ask(prompt, question));
+    if (answer === "frontend" || answer === "backend") return answer;
+    output("Choose 1 or 2.\n");
+  }
+}
+
+async function askForStack(prompt, output, development, detected) {
+  if (!prompt) throw new Error(`--stack is required for ${development} development.`);
+  const profile = developmentProfiles[development];
+  const detectedStack = detected.recommendedStacks[development];
+  const recommended = profile.stackIds.includes(detectedStack)
+    ? detectedStack
+    : profile.defaultStack;
+  const choices = profile.stackIds.map((stackId, index) => {
+    const suffix = stackId === recommended
+      ? detectedStack === stackId ? " (project evidence; recommended)" : " (recommended)"
+      : "";
+    return `  ${index + 1}. ${stackProfiles[stackId].label}${suffix}`;
+  });
+  const answerRange = choiceRange(profile.stackIds.length);
+  const question = [
+    `Choose a ${development} stack preference:`,
+    ...choices,
+    `Enter ${answerRange}: `,
+  ].join("\n");
+
+  while (true) {
+    const raw = await ask(prompt, question);
+    const numeric = Number.parseInt(raw, 10);
+    const stackId = Number.isInteger(numeric) && String(numeric) === raw
+      ? profile.stackIds[numeric - 1]
+      : normalizeStack(raw);
+    if (profile.stackIds.includes(stackId)) return stackId;
+    output(`Choose ${answerRange}.\n`);
+  }
+}
+
+function choiceRange(count) {
+  const choices = Array.from({ length: count }, (_, index) => String(index + 1));
+  return choices.length === 2
+    ? `${choices[0]} or ${choices[1]}`
+    : `${choices.slice(0, -1).join(", ")}, or ${choices.at(-1)}`;
+}
+
+async function askForValidation(prompt, output) {
+  if (!prompt) throw new Error("--validation is required when development is enabled.");
+  const ids = ["standard", "lean", "thorough"];
+  const question = [
+    "Choose a validation preference:",
+    "  1. Standard - normal tests and project checks (recommended)",
+    "  2. Lean - smallest checks for the changed behavior",
+    "  3. Thorough - add relevant integration or end-to-end checks",
+    "Enter 1, 2, or 3: ",
+  ].join("\n");
+
+  while (true) {
+    const raw = await ask(prompt, question);
+    const numeric = Number.parseInt(raw, 10);
+    const validationId = Number.isInteger(numeric) && String(numeric) === raw
+      ? ids[numeric - 1]
+      : normalizeValidation(raw);
+    if (validationId) return validationId;
+    output("Choose 1, 2, or 3.\n");
+  }
+}
+
+async function buildEntries(projectName, projectSummary, tool, configuration) {
+  const projectSource = await readFile(path.join(templateRoot, "project.md"), "utf8");
+  const projectInstructions = replaceValues(projectSource, {
+    PROJECT_NAME: projectName,
+    PROJECT_SUMMARY: projectSummary,
+    AGENTS_DIRECTORY: tool.agentsDirectory,
+  });
+  const profileSource = await readFile(path.join(templateRoot, "project-profile.md"), "utf8");
+  const projectProfile = replaceValues(profileSource, profileValues(configuration));
+
+  const sharedRoot = path.join(templateRoot, "shared");
+  const sharedEntries = await readTemplateDirectory(sharedRoot, sharedRoot);
+  const roleEntries = [];
+
+  for (const roleId of configuration.roleIds) {
+    const source = await readFile(path.join(templateRoot, "agents", `${roleId}.md`), "utf8");
+    roleEntries.push({
+      path: `${tool.agentsDirectory}/${tool.roleFileName(roleId)}`,
+      content: tool.renderRole(roleId, source),
+    });
+  }
+
+  const entries = [
+    { path: tool.instructionsPath, content: projectInstructions },
+  ];
+  if (configuration.stack?.uiMcp === "shadcn") {
+    entries.push({ path: tool.mcpPath, content: tool.mcpContent });
+  }
+  entries.push(
+    { path: ".ai-sdlc/project-profile.md", content: projectProfile },
+    ...sharedEntries,
+    ...roleEntries,
+  );
+  return entries;
+}
+
+async function readTemplateDirectory(root, directory) {
+  const entries = [];
+  const children = await readdir(directory, { withFileTypes: true });
+  children.sort((left, right) => left.name.localeCompare(right.name));
+
+  for (const child of children) {
+    const sourcePath = path.join(directory, child.name);
+    if (child.isDirectory()) {
+      entries.push(...await readTemplateDirectory(root, sourcePath));
+      continue;
+    }
+    if (!child.isFile()) {
+      throw new Error(`Template is not a regular file: ${sourcePath}`);
+    }
+
+    entries.push({
+      path: path.relative(root, sourcePath).split(path.sep).join("/"),
+      content: await readFile(sourcePath, "utf8"),
+    });
+  }
+
+  return entries;
+}
+
+function profileValues(configuration) {
+  const evidenceRows = configuration.detected.evidence.length > 0
+    ? configuration.detected.evidence.map((item) => [
+      markdownCell(item.path),
+      markdownCell(item.signal),
+      markdownCell(item.usedFor),
+    ].join(" | ")).map((row) => `| ${row} |`).join("\n")
+    : "| None | No supported stack files were detected | No recommendation |";
+
+  return {
+    DEVELOPMENT_WORK: configuration.development === "none" ? "No" : "Yes",
+    DEVELOPMENT_AREA: configuration.development === "none"
+      ? "Not applicable"
+      : configuration.developmentProfile.label,
+    STACK: configuration.stack?.label ?? "Not applicable",
+    UI_SYSTEM: configuration.stack?.uiSystem ?? "Not applicable",
+    UI_MCP: configuration.stack?.uiMcp ?? "None",
+    VALIDATION: configuration.validation?.label ?? "Not applicable",
+    ACTIVE_PHASES: configuration.activePhases.join(", "),
+    DEDICATED_AGENTS: configuration.roleIds.join(", "),
+    VALIDATION_GUIDANCE: configuration.validation
+      ? `${configuration.validation.guidance} ${configuration.stack.validationFocus}`
+      : "Code validation is not configured because this project does not perform development work.",
+    DETECTED_EVIDENCE_ROWS: evidenceRows,
+  };
+}
+
+function markdownCell(value) {
+  return String(value).replace(/\|/gu, "\\|").replace(/\r?\n/gu, " ");
+}
+
+async function detectProject(target) {
+  const evidence = [];
+  let frontendDetected = false;
+  let backendDetected = false;
+  const recommendedStacks = { frontend: null, backend: null };
+  const backendStackCandidates = new Set();
+  let react = false;
+  let vite = false;
+  let tailwind = false;
+  let antDesign = false;
+  let materialUi = false;
+  let nodeBackend = false;
+  let typeScript = false;
   const targetStats = lstatIfPresent(target);
   if (targetStats && (!targetStats.isDirectory() || targetStats.isSymbolicLink())) {
-    conflicts.add(target);
-    return [...conflicts];
+    return { evidence, recommendedDevelopment: null, recommendedStacks };
+  }
+  const targetHasContent = targetStats?.isDirectory()
+    ? (await readdir(target)).length > 0
+    : false;
+
+  const packageSource = await readProjectFile(target, "package.json");
+  if (packageSource !== null) {
+    const signals = ["Node.js package manifest"];
+    try {
+      const manifest = JSON.parse(packageSource);
+      const packages = {
+        ...(manifest.dependencies ?? {}),
+        ...(manifest.devDependencies ?? {}),
+      };
+      const has = (name) => Object.hasOwn(packages, name);
+      const scripts = Object.keys(manifest.scripts ?? {})
+        .filter((name) => ["build", "lint", "test", "typecheck"].includes(name));
+
+      react = has("react");
+      vite = has("vite");
+      tailwind = has("tailwindcss");
+      antDesign = has("antd");
+      materialUi = has("@mui/material");
+      nodeBackend = ["@nestjs/core", "express", "fastify"].some(has);
+      typeScript = has("typescript");
+
+      if (react) {
+        frontendDetected = true;
+        signals.push("React dependency");
+      }
+      if (vite) signals.push("Vite dependency");
+      if (tailwind) signals.push("Tailwind CSS dependency");
+      if (antDesign) {
+        frontendDetected = true;
+        signals.push("Ant Design dependency");
+      }
+      if (materialUi) {
+        frontendDetected = true;
+        signals.push("Material UI dependency");
+      }
+      if (nodeBackend) {
+        backendDetected = true;
+        signals.push("Node.js backend dependency");
+      }
+      if (typeScript) signals.push("TypeScript dependency");
+      if (scripts.length > 0) signals.push(`scripts: ${scripts.join(", ")}`);
+    } catch {
+      signals.push("content could not be parsed");
+    }
+    evidence.push({
+      path: "package.json",
+      signal: signals.join("; "),
+      usedFor: frontendDetected || backendDetected
+        ? "development area, stack preference, and validation evidence"
+        : "existing-stack and validation evidence",
+    });
+  }
+
+  if (hasProjectFile(target, "tsconfig.json")) {
+    typeScript = true;
+    evidence.push({
+      path: "tsconfig.json",
+      signal: "TypeScript project configuration",
+      usedFor: nodeBackend ? "backend stack evidence" : "project evidence",
+    });
+  }
+
+  if (nodeBackend) {
+    backendStackCandidates.add(typeScript ? "node-typescript" : "backend-existing");
+  }
+
+  const componentsSource = await readProjectFile(target, "components.json");
+  const shadcn = componentsSource !== null && isShadcnConfiguration(componentsSource);
+  if (componentsSource !== null) {
+    if (shadcn) frontendDetected = true;
+    evidence.push({
+      path: "components.json",
+      signal: shadcn
+        ? "shadcn/ui project configuration"
+        : "components.json present; shadcn/ui configuration not confirmed",
+      usedFor: shadcn ? "frontend stack and UI MCP evidence" : "project evidence only",
+    });
+  }
+
+  if (frontendDetected) {
+    const frontendStackCandidates = [];
+    const shadcnMatchesPreset = react && vite && tailwind && shadcn;
+    const antDesignMatchesPreset = react && vite && antDesign;
+    const materialUiMatchesPreset = react && vite && materialUi;
+    if (shadcnMatchesPreset) frontendStackCandidates.push("react-shadcn");
+    if (antDesignMatchesPreset) frontendStackCandidates.push("react-antd");
+    if (materialUiMatchesPreset) frontendStackCandidates.push("react-mui");
+
+    const incompleteUiEvidence = (shadcn && !shadcnMatchesPreset)
+      || (antDesign && !antDesignMatchesPreset)
+      || (materialUi && !materialUiMatchesPreset);
+    recommendedStacks.frontend = frontendStackCandidates.length === 1 && !incompleteUiEvidence
+      ? frontendStackCandidates[0]
+      : "frontend-existing";
+  }
+
+  for (const [file, signal] of [
+    ["pnpm-lock.yaml", "pnpm lockfile"],
+    ["yarn.lock", "Yarn lockfile"],
+    ["package-lock.json", "npm lockfile"],
+  ]) {
+    if (hasProjectFile(target, file)) {
+      evidence.push({ path: file, signal, usedFor: "package-manager evidence" });
+    }
+  }
+
+  const javaFiles = ["pom.xml", "build.gradle", "build.gradle.kts"];
+  for (const file of javaFiles) {
+    const source = await readProjectFile(target, file);
+    if (source === null) continue;
+    backendDetected = true;
+    const spring = /spring[.-]boot|org\.springframework\.boot/iu.test(source);
+    backendStackCandidates.add(spring ? "java-spring" : "backend-existing");
+    evidence.push({
+      path: file,
+      signal: spring ? "Java build with Spring Boot" : "Java build file",
+      usedFor: spring
+        ? "backend stack and validation recommendation"
+        : "backend area, existing-stack, and validation recommendation",
+    });
+  }
+  for (const [file, signal] of [
+    ["mvnw", "Maven wrapper"],
+    ["gradlew", "Gradle wrapper"],
+  ]) {
+    if (hasProjectFile(target, file)) {
+      evidence.push({ path: file, signal, usedFor: "validation command evidence" });
+    }
+  }
+
+  for (const file of ["pyproject.toml", "requirements.txt"]) {
+    const source = await readProjectFile(target, file);
+    if (source === null) continue;
+    backendDetected = true;
+    const fastApi = /\bfastapi\b/iu.test(source);
+    backendStackCandidates.add(fastApi ? "python-fastapi" : "backend-existing");
+    evidence.push({
+      path: file,
+      signal: fastApi ? "Python project with FastAPI" : "Python project file",
+      usedFor: fastApi
+        ? "backend stack and validation recommendation"
+        : "backend area, existing-stack, and validation recommendation",
+    });
+  }
+
+  if (backendStackCandidates.size === 1) {
+    [recommendedStacks.backend] = backendStackCandidates;
+  } else if (backendStackCandidates.size > 1) {
+    recommendedStacks.backend = "backend-existing";
+  }
+
+  if (targetHasContent) {
+    recommendedStacks.frontend ??= "frontend-existing";
+    recommendedStacks.backend ??= "backend-existing";
+    if (evidence.length === 0) {
+      evidence.push({
+        path: ".",
+        signal: "Target directory is not empty",
+        usedFor: "existing-stack recommendation",
+      });
+    }
+  }
+
+  return {
+    evidence,
+    recommendedDevelopment: frontendDetected === backendDetected
+      ? null
+      : frontendDetected ? "frontend" : "backend",
+    recommendedStacks,
+  };
+}
+
+function isShadcnConfiguration(source) {
+  try {
+    const configuration = JSON.parse(source);
+    return configuration !== null
+      && typeof configuration === "object"
+      && !Array.isArray(configuration)
+      && typeof configuration.$schema === "string"
+      && /ui\.shadcn\.com\/schema\.json/iu.test(configuration.$schema);
+  } catch {
+    return false;
+  }
+}
+
+function hasProjectFile(target, relativePath) {
+  const stats = lstatIfPresent(path.join(target, relativePath));
+  return Boolean(stats?.isFile() && !stats.isSymbolicLink());
+}
+
+async function readProjectFile(target, relativePath) {
+  const file = path.join(target, relativePath);
+  const stats = lstatIfPresent(file);
+  if (!stats?.isFile() || stats.isSymbolicLink()) return null;
+  return readFile(file, "utf8");
+}
+
+function renderMarkdownAgent(roleId, source) {
+  return [
+    "---",
+    `name: ${JSON.stringify(roleId)}`,
+    `description: ${JSON.stringify(readRoleDescription(source))}`,
+    "---",
+    "",
+    source.trim(),
+  ].join("\n");
+}
+
+function renderCodexAgent(roleId, source) {
+  return [
+    `name = ${JSON.stringify(roleId)}`,
+    `description = ${JSON.stringify(readRoleDescription(source))}`,
+    `developer_instructions = ${JSON.stringify(source.trim())}`,
+  ].join("\n");
+}
+
+function readRoleDescription(source) {
+  const description = source
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith("#"));
+
+  if (!description) throw new Error("Each role needs a short description.");
+  return description;
+}
+
+function replaceValues(source, values) {
+  return source.replace(/\{\{([A-Z_]+)\}\}/gu, (token, key) => values[key] ?? token);
+}
+
+function findConflicts(target, entries) {
+  const conflicts = new Set();
+  const planned = new Map();
+
+  for (const entry of entries) {
+    assertSafeRelativePath(entry.path);
+    const key = comparablePath(entry.path);
+    if (planned.has(key)) {
+      conflicts.add(planned.get(key));
+      conflicts.add(entry.path);
+    } else {
+      planned.set(key, entry.path);
+    }
+  }
+
+  for (const [key, originalPath] of planned) {
+    let slash = key.lastIndexOf("/");
+    while (slash >= 0) {
+      const parentKey = key.slice(0, slash);
+      if (planned.has(parentKey)) {
+        conflicts.add(planned.get(parentKey));
+        conflicts.add(originalPath);
+      }
+      slash = parentKey.lastIndexOf("/");
+    }
+  }
+
+  const targetStats = lstatIfPresent(target);
+  if (targetStats && (!targetStats.isDirectory() || targetStats.isSymbolicLink())) {
+    conflicts.add(".");
+    return [...conflicts].sort();
   }
 
   for (const entry of entries) {
@@ -166,41 +835,25 @@ function findConflicts(target, entries) {
       const stats = lstatIfPresent(parent);
       if (!stats) continue;
       if (!stats.isDirectory() || stats.isSymbolicLink()) {
-        conflicts.add(`${path.relative(target, parent)}/`);
+        conflicts.add(`${path.relative(target, parent).split(path.sep).join("/")}/`);
         break;
       }
     }
   }
-  return [...conflicts];
+
+  return [...conflicts].sort();
 }
 
-function findPlannedConflicts(entries) {
-  const files = new Map();
-  const conflicts = new Set();
-
-  for (const entry of entries) {
-    const key = comparablePath(entry.path);
-    if (files.has(key)) {
-      conflicts.add(files.get(key));
-      conflicts.add(entry.path);
-    } else {
-      files.set(key, entry.path);
-    }
+function assertSafeRelativePath(value) {
+  if (
+    typeof value !== "string"
+    || !value
+    || path.isAbsolute(value)
+    || value.includes("\\")
+    || value.split("/").some((part) => !part || part === "." || part === "..")
+  ) {
+    throw new Error(`Unsafe output path: ${value}`);
   }
-
-  for (const [key, originalPath] of files) {
-    let slash = key.lastIndexOf("/");
-    while (slash >= 0) {
-      const parentKey = key.slice(0, slash);
-      if (files.has(parentKey)) {
-        conflicts.add(files.get(parentKey));
-        conflicts.add(originalPath);
-      }
-      slash = parentKey.lastIndexOf("/");
-    }
-  }
-
-  return conflicts;
 }
 
 function comparablePath(value) {
@@ -216,900 +869,292 @@ function lstatIfPresent(value) {
   }
 }
 
-async function ask(prompt, question, signal) {
-  signal?.throwIfAborted();
-  const answer = await waitForAbort(Promise.resolve().then(() => prompt(question)), signal);
-  signal?.throwIfAborted();
-  return String(answer ?? "").trim();
-}
+async function writeEntries(target, entries, beforeWrite) {
+  const createdFiles = [];
 
-async function askRequired(prompt, output, question, signal) {
-  while (true) {
-    const answer = await ask(prompt, question, signal);
-    if (answer) return answer;
-    signal?.throwIfAborted();
-    output("此项不能为空。\n");
-  }
-}
-
-async function askForClient(prompt, output, signal) {
-  const question = [
-    "选择 AI 客户端：",
-    "  1. GitHub Copilot",
-    "  2. Claude Code",
-    "  3. Codex",
-    "请输入 1、2 或 3："
-  ].join("\n");
-
-  while (true) {
-    const answer = (await ask(prompt, question, signal)).toLowerCase();
-    const aliases = {
-      "1": "copilot",
-      copilot: "copilot",
-      "github copilot": "copilot",
-      "github-copilot": "copilot",
-      "2": "claude",
-      claude: "claude",
-      "claude code": "claude",
-      "claude-code": "claude",
-      "3": "codex",
-      codex: "codex"
-    };
-    if (aliases[answer]) return aliases[answer];
-    signal?.throwIfAborted();
-    output("请选择 1、2 或 3。\n");
-  }
-}
-
-async function askForDesignerInputs(prompt, output, signal) {
-  while (true) {
-    const answer = await ask(
-      prompt,
-      "Designer 额外输入 Markdown（项目相对路径，多个用逗号分隔，可留空）：",
-      signal
-    );
-    if (!answer) return [];
-    const values = answer.split(/[,，]/u).map((value) => value.trim()).filter(Boolean);
-    if (values.length && values.every((value) => isSafeProjectFile(value, ".md"))) return values;
-    signal?.throwIfAborted();
-    output("请输入项目内的 .md 相对路径，不能包含 .. 或反斜杠。\n");
-  }
-}
-
-async function askForComponentCatalog(prompt, output, signal) {
-  while (true) {
-    const answer = await ask(
-      prompt,
-      "Designer 组件清单模块（项目相对 .mjs 路径，可留空）：",
-      signal
-    );
-    if (!answer || isSafeProjectFile(answer, ".mjs")) return answer || null;
-    signal?.throwIfAborted();
-    output("请输入项目内的 .mjs 相对路径，不能包含 .. 或反斜杠。\n");
-  }
-}
-
-async function buildEntries(
-  projectName,
-  projectSummary,
-  client,
-  designerInputs,
-  componentCatalogModule,
-  signal
-) {
-  const rolePaths = Object.fromEntries(
-    ["pm-ba", "designer", "architect", "software-engineer", "tester", "devops"]
-      .map((roleId) => [roleId, `${client.directory}/${client.fileName(roleId)}`])
-  );
-  signal?.throwIfAborted();
-  const configTemplate = await readFile(path.join(templateRoot, "ai-native.yaml"), {
-    encoding: "utf8",
-    signal,
-  });
-  const config = configTemplate
-    .replaceAll("{{PROJECT_NAME}}", JSON.stringify(projectName))
-    .replaceAll("{{PROJECT_SUMMARY}}", JSON.stringify(projectSummary))
-    .replaceAll("{{AI_CLIENT}}", JSON.stringify(client.id))
-    .replaceAll("{{AGENTS_DIRECTORY}}", JSON.stringify(client.directory));
-
-  const designerInputConfig = designerInputs.length
-    ? `  markdown:\n${designerInputs.map((input) => `    - ${JSON.stringify(input)}`).join("\n")}`
-    : "  markdown: []";
-  const sharedRoot = path.join(templateRoot, "shared");
-  const sharedEntries = await readTemplateDirectory(sharedRoot, sharedRoot, signal);
-  for (const entry of sharedEntries) {
-    entry.content = entry.content
-      .replaceAll("{{PM_BA_ROLE_PATH}}", JSON.stringify(rolePaths["pm-ba"]))
-      .replaceAll("{{ARCHITECT_ROLE_PATH}}", JSON.stringify(rolePaths.architect))
-      .replaceAll("{{SOFTWARE_ENGINEER_ROLE_PATH}}", JSON.stringify(rolePaths["software-engineer"]))
-      .replaceAll("{{DESIGNER_INPUTS}}", designerInputConfig)
-      .replaceAll("{{DESIGNER_ROLE_PATH}}", JSON.stringify(rolePaths.designer))
-      .replaceAll(
-        JSON.stringify("__AI_SDLC_COMPONENT_CATALOG_MODULE__"),
-        JSON.stringify(componentCatalogModule)
-      );
-  }
-
-  const agentRoot = path.join(templateRoot, "agents");
-  const agentEntries = await readTemplateDirectory(agentRoot, agentRoot, signal);
-  for (const entry of agentEntries) {
-    const roleId = path.basename(entry.path, ".md");
-    entry.path = rolePaths[roleId];
-    entry.content = client.render(roleId, entry.content);
-  }
-
-  return [{ path: "ai-native.yaml", content: config }, ...sharedEntries, ...agentEntries];
-}
-
-function isSafeProjectFile(value, extension) {
-  if (!value.toLowerCase().endsWith(extension) || path.isAbsolute(value) || value.includes("\\")) {
-    return false;
-  }
-  return !value.split("/").some((segment) => !segment || segment === "." || segment === "..");
-}
-
-function renderMarkdownAgent(roleId, source) {
-  const description = readAgentDescription(source);
-  return [
-    "---",
-    `name: ${JSON.stringify(roleId)}`,
-    `description: ${JSON.stringify(description)}`,
-    "---",
-    "",
-    source.trim()
-  ].join("\n");
-}
-
-function renderCodexAgent(roleId, source) {
-  return [
-    `name = ${JSON.stringify(roleId)}`,
-    `description = ${JSON.stringify(readAgentDescription(source))}`,
-    `developer_instructions = ${JSON.stringify(source.trim())}`
-  ].join("\n");
-}
-
-function readAgentDescription(source) {
-  const withoutHeading = source.replace(/^#\s+[^\n]+\n+/u, "");
-  const description = withoutHeading.split(/\n\s*\n/u, 1)[0]?.trim();
-  if (!description) throw new Error("Agent 模板缺少标题后的角色描述");
-  return description;
-}
-
-async function readTemplateDirectory(directory, current = directory, signal) {
-  signal?.throwIfAborted();
-  const entries = [];
-  const directoryEntries = await readdir(current, { withFileTypes: true });
-  directoryEntries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
-
-  for (const entry of directoryEntries) {
-    signal?.throwIfAborted();
-    const source = path.join(current, entry.name);
-    if (entry.isDirectory()) {
-      entries.push(...await readTemplateDirectory(directory, source, signal));
-    } else if (entry.isFile()) {
-      entries.push({
-        path: path.relative(directory, source).split(path.sep).join("/"),
-        content: await readFile(source, { encoding: "utf8", signal })
-      });
+  try {
+    if (!lstatIfPresent(target)) await mkdir(target, { recursive: true });
+    const targetStats = lstatIfPresent(target);
+    if (!targetStats?.isDirectory() || targetStats.isSymbolicLink()) {
+      throw new Error("The target must be a real directory.");
     }
+
+    for (const [index, entry] of entries.entries()) {
+      await beforeWrite?.({ index, path: entry.path, target });
+      const content = ensureNewline(entry.content);
+      const destination = path.join(target, entry.path);
+      await ensureDirectory(target, path.dirname(destination));
+      const handle = await open(destination, "wx");
+      const created = {
+        path: destination,
+        device: null,
+        inode: null,
+        snapshot: null,
+      };
+      createdFiles.push(created);
+      try {
+        const stats = await handle.stat();
+        created.device = stats.dev;
+        created.inode = stats.ino;
+        await handle.writeFile(content, "utf8");
+        created.snapshot = content;
+      } catch (error) {
+        try {
+          created.snapshot = await readFile(destination, "utf8");
+        } catch {
+          // Keep the file if rollback cannot prove what this command wrote.
+        }
+        throw error;
+      } finally {
+        await handle.close();
+      }
+    }
+  } catch (error) {
+    const rollbackErrors = await rollback(createdFiles);
+    if (rollbackErrors.length > 0) {
+      const causes = [error, ...rollbackErrors]
+        .map((cause) => `- ${cause.message}`)
+        .join("\n");
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        `Initialization failed, and some files could not be removed safely:\n${causes}`,
+      );
+    }
+    throw error;
   }
-  return entries;
 }
 
-function parseArgs(args) {
-  if (!args.length) return { target: ".", help: false };
-  if (args.length === 1 && ["help", "--help", "-h"].includes(args[0])) {
-    return { target: ".", help: true };
-  }
-  if (args[0] !== "init") throw new Error(`仅支持 init，收到：${args[0]}`);
-  if (args.length === 2 && ["--help", "-h"].includes(args[1])) {
-    return { target: ".", help: true };
-  }
-  let target = ".";
-  let targetSeen = false;
-  let client;
-  for (let index = 1; index < args.length; index += 1) {
-    const argument = args[index];
-    if (argument === "--client") {
-      if (client) throw new Error("--client 不能重复");
-      const requested = args[index + 1];
-      if (!requested || !clients[requested]) {
-        throw new Error("--client 仅支持 copilot、claude 或 codex");
-      }
-      client = requested;
-      index += 1;
+async function ensureDirectory(target, directory) {
+  const relative = path.relative(target, directory);
+  if (!relative) return;
+
+  let current = target;
+  for (const segment of relative.split(path.sep)) {
+    current = path.join(current, segment);
+    const stats = lstatIfPresent(current);
+    if (!stats) {
+      await mkdir(current);
       continue;
     }
-    if (argument.startsWith("-")) throw new Error(`未知选项：${argument}`);
-    if (targetSeen) throw new Error("用法：create-ai-native-sdlc init [target] [--client <client>]");
-    target = argument;
-    targetSeen = true;
-  }
-  return { target, client, help: false };
-}
-
-async function createInitializationTransaction(
-  target,
-  entries,
-  createdFiles,
-  createdDirectories,
-  signal,
-) {
-  const transactionId = randomUUID();
-  const stagingName = transactionStagingName(transactionId);
-  const stagingPath = path.join(target, stagingName);
-  const liveDirectories = createdDirectories.filter((directory) => isWithinTarget(target, directory.path));
-
-  signal?.throwIfAborted();
-  await mkdir(stagingPath, { mode: 0o700 });
-  const staging = await rememberCreatedDirectory(stagingPath, createdDirectories);
-
-  const stagedEntries = [];
-  for (const [index, entry] of entries.entries()) {
-    const stagedPath = path.join(stagingPath, transactionPayloadName(index));
-    const staged = await createTrackedFile(
-      stagedPath,
-      entry.content,
-      createdFiles,
-      signal,
-      { mode: 0o666, sync: true },
-    );
-    stagedEntries.push({ ...entry, staged });
-  }
-
-  const journal = {
-    format: transactionFormat,
-    version: transactionVersion,
-    transactionId,
-    ownerPid: process.pid,
-    entries: stagedEntries.map((entry) => ({
-      path: entry.path,
-      sha256: entry.sha256,
-      dev: entry.staged.dev.toString(),
-      ino: entry.staged.ino.toString(),
-    })),
-    directories: liveDirectories.map((directory) => ({
-      path: projectRelativePath(target, directory.path),
-      dev: directory.dev.toString(),
-      ino: directory.ino.toString(),
-    })),
-    staging: {
-      path: stagingName,
-      dev: staging.dev.toString(),
-      ino: staging.ino.toString(),
-    },
-  };
-  const markerContent = `${JSON.stringify(journal, null, 2)}\n`;
-  const temporaryMarker = await createTrackedFile(
-    path.join(target, transactionMarkerTemporaryName(transactionId)),
-    markerContent,
-    createdFiles,
-    signal,
-    { mode: 0o600, sync: true },
-  );
-  const marker = {
-    path: path.join(target, transactionMarkerName),
-    dev: temporaryMarker.dev,
-    ino: temporaryMarker.ino,
-    sha256: temporaryMarker.sha256,
-  };
-  await link(temporaryMarker.path, marker.path);
-  createdFiles.push(marker);
-  const publishedMarker = await lstat(marker.path, { bigint: true });
-  if (!publishedMarker.isFile() || !sameIdentity(publishedMarker, marker)) {
-    throw new Error("初始化事务 marker 发布后身份校验失败");
-  }
-  await unlinkRecordedFile(temporaryMarker);
-
-  return {
-    entries: stagedEntries,
-    marker,
-    staging,
-  };
-}
-
-async function commitInitializationTransaction(transaction, signal) {
-  for (const entry of [...transaction.entries].reverse()) {
-    signal?.throwIfAborted();
-    await unlinkRecordedFile(entry.staged);
-  }
-  signal?.throwIfAborted();
-  await rmdirRecordedDirectory(transaction.staging, { tolerateNonEmpty: false });
-  // The marker unlink is the transaction commit point. A signal observed
-  // before this call rolls back; a signal delivered after it starts loses the
-  // race to a completed commit and the direct CLI reports success.
-  signal?.throwIfAborted();
-  await unlinkRecordedFile(transaction.marker, { allowMissing: false });
-}
-
-async function recoverInterruptedInitialization(target, signal) {
-  const targetStats = lstatIfPresent(target);
-  if (!targetStats) return false;
-  if (!targetStats.isDirectory() || targetStats.isSymbolicLink()) {
-    throw new Error(`初始化目标不是普通目录：${target}`);
-  }
-
-  const markerPath = path.join(target, transactionMarkerName);
-  const markerStats = lstatIfPresent(markerPath);
-  if (!markerStats) {
-    const unjournaled = (await readdir(target)).filter(isInitializerTransactionRemainder);
-    if (unjournaled.length > 0) {
-      throw recoveryRefusal(
-        `发现没有可验证事务 marker 的初始化遗留项，已原样保留供人工检查：${unjournaled.join(", ")}`,
-      );
-    }
-    return false;
-  }
-  if (!markerStats.isFile() || markerStats.isSymbolicLink()) {
-    throw recoveryRefusal(`事务 marker 不是普通文件：${markerPath}`);
-  }
-
-  signal?.throwIfAborted();
-  const marker = await inspectStableRegularFile(markerPath, { maximumBytes: 4 * 1024 * 1024 });
-  if (!marker) throw recoveryRefusal("事务 marker 在读取期间消失");
-  const journal = parseTransactionJournal(marker.content);
-  if (isProcessAlive(journal.ownerPid)) {
-    throw recoveryRefusal(`事务仍由活动进程 ${journal.ownerPid} 持有`);
-  }
-  const expectedMarker = { ...marker, sha256: hashContent(marker.content) };
-  const stagingPath = path.join(target, journal.staging.path);
-  const temporaryMarkerPath = path.join(
-    target,
-    transactionMarkerTemporaryName(journal.transactionId),
-  );
-
-  const directoryChecks = [];
-  for (const directory of journal.directories) {
-    const directoryPath = directory.path === "." ? target : path.join(target, directory.path);
-    const current = await inspectExpectedDirectory(directoryPath, directory);
-    if (current) directoryChecks.push({ ...directory, path: directoryPath });
-  }
-  const stagingDirectory = await inspectExpectedDirectory(stagingPath, journal.staging);
-  if (stagingDirectory) {
-    const allowedNames = new Set(journal.entries.map((_, index) => transactionPayloadName(index)));
-    const unexpected = (await readdir(stagingPath)).filter((name) => !allowedNames.has(name));
-    if (unexpected.length > 0) {
-      throw recoveryRefusal(`staging 目录包含未知条目：${unexpected.join(", ")}`);
-    }
-  }
-
-  const temporaryMarker = await inspectExpectedFile(
-    temporaryMarkerPath,
-    expectedMarker,
-    expectedMarker.sha256,
-  );
-  const stagedFiles = [];
-  const liveFiles = [];
-  for (const [index, entry] of journal.entries.entries()) {
-    signal?.throwIfAborted();
-    const stagedPath = path.join(stagingPath, transactionPayloadName(index));
-    const staged = await inspectExpectedFile(stagedPath, entry, entry.sha256);
-    if (staged) stagedFiles.push({ path: stagedPath, expected: entry });
-
-    await assertSafeProjectParentChain(target, entry.path);
-    const destination = path.join(target, entry.path);
-    const live = await inspectExpectedFile(destination, entry, entry.sha256);
-    if (live) liveFiles.push({ path: destination, expected: entry });
-  }
-
-  signal?.throwIfAborted();
-  for (const file of [...liveFiles].reverse()) {
-    await removeExpectedFile(file.path, file.expected, file.expected.sha256, signal);
-  }
-  for (const file of [...stagedFiles].reverse()) {
-    await removeExpectedFile(file.path, file.expected, file.expected.sha256, signal);
-  }
-  if (stagingDirectory) {
-    await removeExpectedDirectory(stagingPath, journal.staging, { tolerateNonEmpty: false });
-  }
-  for (const directory of directoryChecks
-    .filter((entry) => entry.path !== target)
-    .sort((left, right) => right.path.length - left.path.length)) {
-    await removeExpectedDirectory(directory.path, directory, { tolerateNonEmpty: true });
-  }
-  if (temporaryMarker) {
-    await removeExpectedFile(
-      temporaryMarkerPath,
-      expectedMarker,
-      expectedMarker.sha256,
-      signal,
-    );
-  }
-  await removeExpectedFile(markerPath, expectedMarker, expectedMarker.sha256, signal, {
-    allowMissing: false,
-  });
-
-  const targetDirectory = directoryChecks.find((entry) => entry.path === target);
-  if (targetDirectory) {
-    await removeExpectedDirectory(target, targetDirectory, { tolerateNonEmpty: true });
-  }
-  return true;
-}
-
-function parseTransactionJournal(content) {
-  let value;
-  try {
-    value = JSON.parse(content.toString("utf8"));
-  } catch {
-    throw recoveryRefusal("事务 marker 不是有效 JSON");
-  }
-  if (!isPlainObject(value)
-    || value.format !== transactionFormat
-    || value.version !== transactionVersion
-    || !isTransactionId(value.transactionId)
-    || !Array.isArray(value.entries)
-    || value.entries.length === 0
-    || value.entries.length > 10_000
-    || !Array.isArray(value.directories)
-    || !isPlainObject(value.staging)) {
-    throw recoveryRefusal("事务 marker 结构或版本无效");
-  }
-  assertExactKeys(value, [
-    "format",
-    "version",
-    "transactionId",
-    "ownerPid",
-    "entries",
-    "directories",
-    "staging"
-  ]);
-  if (!Number.isSafeInteger(value.ownerPid) || value.ownerPid <= 0) {
-    throw recoveryRefusal("事务 owner PID 无效");
-  }
-
-  const stagingName = transactionStagingName(value.transactionId);
-  const staging = parseJournalIdentity(value.staging, "staging 目录");
-  if (staging.path !== stagingName) throw recoveryRefusal("staging 目录名与事务 ID 不匹配");
-
-  const entries = value.entries.map((entry, index) => {
-    assertExactKeys(entry, ["path", "sha256", "dev", "ino"]);
-    if (!isInitializerOutputPath(entry.path)) {
-      throw recoveryRefusal(`输出路径不属于初始化器：${String(entry.path)}`);
-    }
-    if (typeof entry.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(entry.sha256)) {
-      throw recoveryRefusal(`输出哈希无效：${entry.path}`);
-    }
-    return { ...parseJournalIdentity(entry, `输出 ${index}`), sha256: entry.sha256 };
-  });
-  if (!entries.some((entry) => entry.path === "ai-native.yaml")) {
-    throw recoveryRefusal("事务 marker 缺少 ai-native.yaml");
-  }
-  if (findPlannedConflicts(entries).size > 0) {
-    throw recoveryRefusal("事务 marker 包含重复或相互覆盖的输出路径");
-  }
-
-  const allowedDirectories = plannedParentDirectories(entries.map((entry) => entry.path));
-  const directoryKeys = new Set();
-  const directories = value.directories.map((directory, index) => {
-    const parsed = parseJournalIdentity(directory, `目录 ${index}`);
-    if (parsed.path !== "." && !isSafeRelativePath(parsed.path)) {
-      throw recoveryRefusal(`目录路径无效：${parsed.path}`);
-    }
-    if (!allowedDirectories.has(parsed.path)) {
-      throw recoveryRefusal(`目录不属于预期输出路径：${parsed.path}`);
-    }
-    const key = comparablePath(parsed.path);
-    if (directoryKeys.has(key)) throw recoveryRefusal(`目录路径重复：${parsed.path}`);
-    directoryKeys.add(key);
-    return parsed;
-  });
-
-  return {
-    transactionId: value.transactionId,
-    ownerPid: value.ownerPid,
-    entries,
-    directories,
-    staging,
-  };
-}
-
-function parseJournalIdentity(value, label) {
-  if (!isPlainObject(value)) throw recoveryRefusal(`${label} 不是对象`);
-  assertExactKeys(value, ["path", "dev", "ino"], ["sha256"]);
-  if (typeof value.path !== "string"
-    || typeof value.dev !== "string"
-    || !/^\d+$/u.test(value.dev)
-    || typeof value.ino !== "string"
-    || !/^\d+$/u.test(value.ino)) {
-    throw recoveryRefusal(`${label} 的路径或 inode 身份无效`);
-  }
-  return { path: value.path, dev: BigInt(value.dev), ino: BigInt(value.ino) };
-}
-
-function assertExactKeys(value, required, optional = []) {
-  if (!isPlainObject(value)) throw recoveryRefusal("事务 marker 字段不是对象");
-  const allowed = new Set([...required, ...optional]);
-  if (required.some((key) => !Object.hasOwn(value, key))
-    || Object.keys(value).some((key) => !allowed.has(key))) {
-    throw recoveryRefusal("事务 marker 含有缺失或未知字段");
-  }
-}
-
-function isPlainObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function isTransactionId(value) {
-  return typeof value === "string"
-    && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(value);
-}
-
-function isProcessAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error?.code === "ESRCH") return false;
-    return true;
-  }
-}
-
-function isInitializerOutputPath(value) {
-  return isSafeRelativePath(value) && (
-    value === "ai-native.yaml"
-    || value.startsWith(".ai-sdlc/")
-    || value.startsWith(".github/agents/")
-    || value.startsWith(".claude/agents/")
-    || value.startsWith(".codex/agents/")
-  );
-}
-
-function isSafeRelativePath(value) {
-  if (typeof value !== "string" || !value || path.isAbsolute(value) || value.includes("\\")) {
-    return false;
-  }
-  return !value.split("/").some((segment) => !segment || segment === "." || segment === "..");
-}
-
-function plannedParentDirectories(paths) {
-  const directories = new Set(["."]);
-  for (const value of paths) {
-    const segments = value.split("/").slice(0, -1);
-    for (let length = 1; length <= segments.length; length += 1) {
-      directories.add(segments.slice(0, length).join("/"));
-    }
-  }
-  return directories;
-}
-
-function transactionStagingName(transactionId) {
-  return `.ai-native-sdlc-init-${transactionId}.staging`;
-}
-
-function transactionMarkerTemporaryName(transactionId) {
-  return `.ai-native-sdlc-init-${transactionId}.journal.tmp`;
-}
-
-function isInitializerTransactionRemainder(name) {
-  return /^\.ai-native-sdlc-init-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:staging|journal\.tmp)$/iu.test(name);
-}
-
-function transactionPayloadName(index) {
-  return `${String(index).padStart(6, "0")}.payload`;
-}
-
-function projectRelativePath(target, value) {
-  const relative = path.relative(target, value);
-  return relative ? relative.split(path.sep).join("/") : ".";
-}
-
-function isWithinTarget(target, value) {
-  const relative = path.relative(target, value);
-  return !relative || (!relative.startsWith(`..${path.sep}`) && relative !== "..");
-}
-
-function hashContent(value) {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function sameIdentity(stats, expected) {
-  return stats.dev === expected.dev && stats.ino === expected.ino;
-}
-
-function sameFileSnapshot(left, right) {
-  return sameIdentity(left, right)
-    && left.size === right.size
-    && left.mtimeNs === right.mtimeNs
-    && left.ctimeNs === right.ctimeNs;
-}
-
-function recoveryRefusal(message) {
-  return new Error(`未完成初始化事务恢复已拒绝：${message}`);
-}
-
-async function inspectStableRegularFile(filePath, options = {}) {
-  let before;
-  try {
-    before = await lstat(filePath, { bigint: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  }
-  if (!before.isFile() || before.isSymbolicLink()) {
-    throw recoveryRefusal(`遗留路径不是普通文件：${filePath}`);
-  }
-  if (options.maximumBytes !== undefined && before.size > BigInt(options.maximumBytes)) {
-    throw recoveryRefusal(`事务 marker 超过大小限制：${filePath}`);
-  }
-
-  let handle;
-  try {
-    handle = await open(filePath, "r");
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  }
-  try {
-    const opened = await handle.stat({ bigint: true });
-    if (!opened.isFile() || !sameIdentity(opened, before)) {
-      throw recoveryRefusal(`遗留文件在打开前被替换：${filePath}`);
-    }
-    const content = await handle.readFile();
-    const after = await handle.stat({ bigint: true });
-    if (!sameFileSnapshot(opened, after)) {
-      throw recoveryRefusal(`遗留文件在读取期间被修改：${filePath}`);
-    }
-    return { path: filePath, content, dev: after.dev, ino: after.ino };
-  } finally {
-    await handle.close();
-  }
-}
-
-async function inspectExpectedFile(filePath, expected, expectedHash) {
-  const current = await inspectStableRegularFile(filePath);
-  if (!current) return null;
-  if (!sameIdentity(current, expected)) {
-    throw recoveryRefusal(`遗留文件 inode 不匹配，已保留：${filePath}`);
-  }
-  if (hashContent(current.content) !== expectedHash) {
-    throw recoveryRefusal(`遗留文件内容已修改，已保留：${filePath}`);
-  }
-  return current;
-}
-
-async function removeExpectedFile(filePath, expected, expectedHash, signal, options = {}) {
-  signal?.throwIfAborted();
-  const current = await inspectExpectedFile(filePath, expected, expectedHash);
-  if (!current) {
-    if (options.allowMissing === false) throw recoveryRefusal(`必须存在的遗留文件已消失：${filePath}`);
-    return false;
-  }
-  await unlink(filePath);
-  return true;
-}
-
-async function inspectExpectedDirectory(directoryPath, expected) {
-  let current;
-  try {
-    current = await lstat(directoryPath, { bigint: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  }
-  if (!current.isDirectory() || current.isSymbolicLink()) {
-    throw recoveryRefusal(`遗留目录类型不安全，已保留：${directoryPath}`);
-  }
-  if (!sameIdentity(current, expected)) {
-    throw recoveryRefusal(`遗留目录 inode 不匹配，已保留：${directoryPath}`);
-  }
-  return current;
-}
-
-async function removeExpectedDirectory(directoryPath, expected, options = {}) {
-  const current = await inspectExpectedDirectory(directoryPath, expected);
-  if (!current) return false;
-  try {
-    await rmdir(directoryPath);
-    return true;
-  } catch (error) {
-    if (options.tolerateNonEmpty && ["ENOTEMPTY", "EEXIST"].includes(error?.code)) return false;
-    throw error;
-  }
-}
-
-async function assertSafeProjectParentChain(target, relativePath) {
-  let cursor = target;
-  for (const segment of relativePath.split("/").slice(0, -1)) {
-    cursor = path.join(cursor, segment);
-    const stats = lstatIfPresent(cursor);
-    if (!stats) return;
     if (!stats.isDirectory() || stats.isSymbolicLink()) {
-      throw recoveryRefusal(`输出父目录链不安全：${cursor}`);
+      throw new Error(`Output parent is not a real directory: ${path.relative(target, current)}`);
     }
   }
 }
 
-async function createTrackedFile(filePath, content, createdFiles, signal, options = {}) {
-  signal?.throwIfAborted();
-  const handle = await open(filePath, "wx", options.mode ?? 0o666);
-  try {
-    const stats = await handle.stat({ bigint: true });
-    const record = { path: filePath, dev: stats.dev, ino: stats.ino };
-    createdFiles.push(record);
-    await writeFile(handle, content, { encoding: "utf8", signal });
-    if (options.sync) await handle.sync();
-    record.sha256 = hashContent(content);
-    return record;
-  } finally {
-    await handle.close();
-  }
-}
+async function rollback(createdFiles) {
+  const errors = [];
 
-async function rememberCreatedDirectory(directoryPath, createdDirectories) {
-  const stats = await lstat(directoryPath, { bigint: true });
-  if (!stats.isDirectory() || stats.isSymbolicLink()) {
-    throw new Error(`新建目录身份校验失败：${directoryPath}`);
-  }
-  const record = { path: directoryPath, dev: stats.dev, ino: stats.ino };
-  createdDirectories.push(record);
-  return record;
-}
-
-async function unlinkRecordedFile(record, options = {}) {
-  let current;
-  if (record.sha256) {
-    current = await inspectStableRegularFile(record.path);
-    if (!current && options.allowMissing !== false) return false;
-    if (!current) {
-      const error = new Error(`必须存在的初始化文件已消失：${record.path}`);
-      error.code = "ENOENT";
-      throw error;
-    }
-  } else {
+  for (const created of [...createdFiles].reverse()) {
     try {
-      current = await lstat(record.path, { bigint: true });
-    } catch (error) {
-      if (error?.code === "ENOENT" && options.allowMissing !== false) return false;
-      throw error;
-    }
-  }
-  if (!sameIdentity(current, record)) {
-    throw new Error(`拒绝删除 inode 不匹配的路径：${record.path}`);
-  }
-  if (record.sha256 && hashContent(current.content) !== record.sha256) {
-    throw new Error(`拒绝删除内容已修改的路径：${record.path}`);
-  }
-  await unlink(record.path);
-  return true;
-}
-
-async function rmdirRecordedDirectory(record, options = {}) {
-  let current;
-  try {
-    current = await lstat(record.path, { bigint: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return false;
-    throw error;
-  }
-  if (!current.isDirectory() || !sameIdentity(current, record)) {
-    throw new Error(`拒绝删除身份已变化的目录：${record.path}`);
-  }
-  try {
-    await rmdir(record.path);
-    return true;
-  } catch (error) {
-    if (options.tolerateNonEmpty && ["ENOTEMPTY", "EEXIST"].includes(error?.code)) return false;
-    throw error;
-  }
-}
-
-async function ensureDirectory(target, directory, createdDirectories, signal) {
-  if (path.relative(target, directory).startsWith(`..${path.sep}`)) {
-    throw new Error(`目标目录逃逸初始化范围：${directory}`);
-  }
-  const missingTargetChain = [];
-  let existingAncestor = target;
-  while (!lstatIfPresent(existingAncestor)) {
-    missingTargetChain.unshift(existingAncestor);
-    const parent = path.dirname(existingAncestor);
-    if (parent === existingAncestor) break;
-    existingAncestor = parent;
-  }
-  for (const candidate of missingTargetChain) {
-    signal?.throwIfAborted();
-    await mkdir(candidate);
-    await rememberCreatedDirectory(candidate, createdDirectories);
-  }
-  const targetStats = lstatIfPresent(target);
-  if (!targetStats?.isDirectory() || targetStats.isSymbolicLink()) {
-    throw new Error(`初始化目标不是普通目录：${target}`);
-  }
-  let cursor = target;
-  for (const segment of path.relative(target, directory).split(path.sep).filter(Boolean)) {
-    signal?.throwIfAborted();
-    cursor = path.join(cursor, segment);
-    const existing = lstatIfPresent(cursor);
-    if (existing) {
-      if (!existing.isDirectory() || existing.isSymbolicLink()) {
-        throw new Error(`目标目录链包含非普通目录：${cursor}`);
+      const stats = lstatIfPresent(created.path);
+      if (!stats) continue;
+      if (created.device === null || created.inode === null) {
+        throw new Error(`A created file could not be checked during rollback and was kept: ${created.path}`);
       }
-      continue;
-    }
-    try {
-      await mkdir(cursor);
-      await rememberCreatedDirectory(cursor, createdDirectories);
+      if (stats.dev !== created.device || stats.ino !== created.inode) {
+        throw new Error(`A created file was replaced during rollback and was kept: ${created.path}`);
+      }
+      if (created.snapshot === null) {
+        throw new Error(`A created file could not be checked during rollback and was kept: ${created.path}`);
+      }
+      const current = await readFile(created.path, "utf8");
+      if (current !== created.snapshot) {
+        throw new Error(`A created file changed during rollback and was kept: ${created.path}`);
+      }
+      await unlink(created.path);
     } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      const raced = lstatIfPresent(cursor);
-      if (!raced?.isDirectory() || raced.isSymbolicLink()) throw error;
+      if (error?.code !== "ENOENT") errors.push(error);
     }
   }
-}
 
-async function rollbackCreatedEntries(createdFiles, createdDirectories) {
-  const failures = [];
-  for (const file of [...createdFiles].reverse()) {
-    try {
-      await unlinkRecordedFile(file);
-    } catch (error) {
-      if (error?.code !== "ENOENT") failures.push(error);
-    }
-  }
-  for (const directory of [...createdDirectories].reverse()) {
-    try {
-      await rmdirRecordedDirectory(directory, { tolerateNonEmpty: true });
-    } catch (error) {
-      failures.push(error);
-    }
-  }
-  if (failures.length > 0) {
-    throw new AggregateError(
-      failures,
-      `回滚本次初始化输出失败：${failures.map((error) => error.message).join("；")}`,
-    );
-  }
-}
-
-async function waitForAbort(operation, signal) {
-  if (!signal) return operation;
-  signal.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const aborted = () => reject(signal.reason ?? new Error("initialization aborted"));
-    signal.addEventListener("abort", aborted, { once: true });
-    operation.then(
-      (value) => {
-        signal.removeEventListener("abort", aborted);
-        resolve(value);
-      },
-      (error) => {
-        signal.removeEventListener("abort", aborted);
-        reject(error);
-      },
-    );
-  });
+  return errors;
 }
 
 function ensureNewline(value) {
   return `${value.trimEnd()}\n`;
 }
 
-function help() {
-  return `create-ai-native-sdlc\n\n用法：\n  create-ai-native-sdlc init [target] [--client <copilot|claude|codex>]\n\nCLI 会询问项目名称、项目简介、未显式指定的 AI 客户端，以及可选的 Designer 输入和组件清单模块。\n`;
+function normalizeTool(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  const aliases = {
+    "1": "copilot",
+    copilot: "copilot",
+    github: "copilot",
+    "github-copilot": "copilot",
+    "github copilot": "copilot",
+    "2": "claude",
+    claude: "claude",
+    "claude-code": "claude",
+    "claude code": "claude",
+    "3": "codex",
+    codex: "codex",
+  };
+  return aliases[normalized] ?? null;
 }
 
-const entryPath = process.argv[1];
-const isDirect = entryPath && existsSync(entryPath) && realpathSync(entryPath) === fileURLToPath(import.meta.url);
-if (isDirect) {
-  const controller = new AbortController();
-  const signalExitCodes = { SIGINT: 130, SIGTERM: 143 };
-  let receivedSignal;
-  const abortForSignal = (signalName) => {
-    if (receivedSignal) return;
-    receivedSignal = signalName;
-    controller.abort(new Error(`收到 ${signalName}，初始化已取消`));
+function normalizeDevelopment(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  const aliases = {
+    "1": "frontend",
+    frontend: "frontend",
+    front: "frontend",
+    "front-end": "frontend",
+    "2": "backend",
+    backend: "backend",
+    back: "backend",
+    "back-end": "backend",
+    none: "none",
+    no: "none",
+    docs: "none",
+    documentation: "none",
+    "no-development": "none",
   };
-  const onSigint = () => abortForSignal("SIGINT");
-  const onSigterm = () => abortForSignal("SIGTERM");
-  process.on("SIGINT", onSigint);
-  process.on("SIGTERM", onSigterm);
+  return aliases[normalized] ?? null;
+}
 
-  run(process.argv.slice(2), { signal: controller.signal }).then((code) => {
+function normalizeStack(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  const aliases = {
+    "react-shadcn": "react-shadcn",
+    shadcn: "react-shadcn",
+    "shadcn/ui": "react-shadcn",
+    "react-antd": "react-antd",
+    antd: "react-antd",
+    "ant-design": "react-antd",
+    "ant design": "react-antd",
+    "react-mui": "react-mui",
+    mui: "react-mui",
+    "material-ui": "react-mui",
+    "material ui": "react-mui",
+    "frontend-existing": "frontend-existing",
+    "existing-frontend": "frontend-existing",
+    "java-spring": "java-spring",
+    java: "java-spring",
+    spring: "java-spring",
+    "spring-boot": "java-spring",
+    "node-typescript": "node-typescript",
+    node: "node-typescript",
+    typescript: "node-typescript",
+    "python-fastapi": "python-fastapi",
+    python: "python-fastapi",
+    fastapi: "python-fastapi",
+    "backend-existing": "backend-existing",
+    "existing-backend": "backend-existing",
+  };
+  return aliases[normalized] ?? null;
+}
+
+function normalizeValidation(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  const aliases = {
+    lean: "lean",
+    light: "lean",
+    minimal: "lean",
+    standard: "standard",
+    normal: "standard",
+    thorough: "thorough",
+    full: "thorough",
+    complete: "thorough",
+  };
+  return aliases[normalized] ?? null;
+}
+
+function parseArgs(args) {
+  if (args.includes("--help") || args.includes("-h")) {
+    return { help: true, target: "." };
+  }
+
+  const values = [...args];
+  const command = values.shift();
+  if (command !== "init") {
+    throw new Error("Use: create-ai-native-sdlc init [target]");
+  }
+
+  const options = {
+    help: false,
+    target: ".",
+    name: null,
+    summary: null,
+    tool: null,
+    development: null,
+    stack: null,
+    validation: null,
+  };
+  let targetSet = false;
+
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (value === "--name") {
+      options.name = optionValue(values, ++index, "--name");
+    } else if (value === "--summary") {
+      options.summary = optionValue(values, ++index, "--summary");
+    } else if (value === "--tool") {
+      const rawTool = optionValue(values, ++index, value);
+      options.tool = normalizeTool(rawTool);
+      if (!options.tool) throw new Error(`Unknown AI tool: ${rawTool}`);
+    } else if (value === "--development") {
+      const rawDevelopment = optionValue(values, ++index, value);
+      options.development = normalizeDevelopment(rawDevelopment);
+      if (!options.development) {
+        throw new Error(`Unknown development mode: ${rawDevelopment}`);
+      }
+    } else if (value === "--stack") {
+      const rawStack = optionValue(values, ++index, value);
+      options.stack = normalizeStack(rawStack);
+      if (!options.stack) throw new Error(`Unknown stack: ${rawStack}`);
+    } else if (value === "--validation") {
+      const rawValidation = optionValue(values, ++index, value);
+      options.validation = normalizeValidation(rawValidation);
+      if (!options.validation) {
+        throw new Error(`Unknown validation preference: ${rawValidation}`);
+      }
+    } else if (value.startsWith("-")) {
+      throw new Error(`Unknown option: ${value}`);
+    } else if (!targetSet) {
+      options.target = value;
+      targetSet = true;
+    } else {
+      throw new Error(`Unexpected argument: ${value}`);
+    }
+  }
+
+  return options;
+}
+
+function optionValue(values, index, option) {
+  const value = values[index];
+  if (!value || value.startsWith("-") || !value.trim()) {
+    throw new Error(`${option} needs a value.`);
+  }
+  return value.trim();
+}
+
+function help() {
+  return `create-ai-native-sdlc
+
+Usage:
+  create-ai-native-sdlc init [target] [options]
+
+Options:
+  --name <name>               Project name
+  --summary <text>            Short project summary
+  --tool <tool>               copilot, claude, or codex
+  --development <mode>        none, frontend, or backend
+  --stack <preset>            Stack preset for frontend or backend development
+  --validation <preference>   lean, standard, or thorough
+  -h, --help                  Show help
+`;
+}
+
+const isDirect = process.argv[1]
+  && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirect) {
+  run().then((code) => {
     process.exitCode = code;
   }).catch((error) => {
-    process.stderr.write(`错误：${error.message}\n`);
-    process.exitCode = receivedSignal ? signalExitCodes[receivedSignal] : 1;
-  }).finally(() => {
-    process.removeListener("SIGINT", onSigint);
-    process.removeListener("SIGTERM", onSigterm);
+    process.stderr.write(`Error: ${error.message}\n`);
+    process.exitCode = 1;
   });
 }

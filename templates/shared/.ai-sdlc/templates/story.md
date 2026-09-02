@@ -1,64 +1,59 @@
 # <US-ID>: <Story title>
 
-**Category:** <business-category>
-**PRD:** [PRD]({relative-path-from-story-to-prd.md})
-**Status:** Draft for human review
-**Sources:** <Source paths or Not provided>
-**Priority:** See the PRD story index
+**PRD:** [PRD](<relative-path-to-prd.md>)
+**Status:** <Draft / Confirmed / Superseded>
+**Sources:** <Links, paths, or Inline request>
 
 ## User story
 
 As a <user>, I want <capability>, so that <user or business value>.
 
-## Outcome and confirmed boundary
+## Outcome and boundary
 
 - **Expected outcome:** <Observable value>
-- **Included:** <Confirmed behavior this story covers>
-- **Not included:** <Confirmed behavior this story does not cover, or None confirmed>
+- **Included:** <Behavior covered by this story>
+- **Not included:** <Important boundary or None>
 
 ## Business flow
 
 ### Core path
 
-1. <User situation or action>
+1. <Starting situation or user action>
 2. <Observable product behavior>
 3. <Completed outcome>
 
-### Failure or alternate paths
+### Alternate and failure paths
 
-- **<Named situation>:** <Business condition> → <Observable response>
+- **<Situation>:** <Condition> → <Observable response>
 
 ## Business rules
 
-- `<BR-ID>`: <Rule used by this story>
+- `BR-001`: <Applicable rule>
 
 ## Acceptance criteria
 
-### <US-ID>-AC-01: <Core path>
+### <US-ID>-AC-01: <Core behavior>
 
 ```gherkin
 Given <starting business context>
 When <user action or business event>
 Then <observable outcome>
-And <other observable outcome, if needed>
 ```
 
-### <US-ID>-AC-02: <Relevant failure path>
+### <US-ID>-AC-02: <Relevant alternate or failure behavior>
 
 ```gherkin
-Given <failure condition supported by the evidence>
+Given <supported condition>
 When <user action or business event>
 Then <observable handling or recovery>
 ```
-
-### <US-ID>-AC-03: <Real boundary, if needed>
-
-Write a Gherkin scenario only when a confirmed business boundary applies. Otherwise write `Not applicable — no business boundary is defined.`
 
 ## Assumptions
 
 - <Assumption or None>
 
-## Open questions for a human
+## Decision record
 
-- [ ] <Question or None>
+| Topic | Selected option | Decided by | Source |
+|---|---|---|---|
+| <Topic or None> | <Selected answer> | <Person> | <Conversation or link> |
