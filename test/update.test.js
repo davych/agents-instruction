@@ -113,6 +113,340 @@ test("update keeps a no-role installation without creating an agents directory",
   assert.equal(existsSync(path.join(target, ".codex/agents")), false);
 });
 
+test("AC-09 update preserves a rapid installation choice and project-owned state", async () => {
+  const target = await initializedProject("claude", "architect", "rapid");
+  const installationPath = path.join(target, ".ai-sdlc/installation.json");
+  const profilePath = path.join(target, ".ai-sdlc/project-profile.md");
+  const registryPath = path.join(target, ".ai-sdlc/artifact-hosts.json");
+  const deliveryArtifactPath = path.join(target, "docs/ai-sdlc/architecture.md");
+  const rolePath = path.join(target, ".claude/agents/architect.md");
+  const workflowPath = path.join(target, ".ai-sdlc/workflow.md");
+  const installation = await readFile(installationPath, "utf8");
+  const profile = await readFile(profilePath, "utf8");
+  const registry = await readFile(registryPath, "utf8");
+  const deliveryArtifact = "# Current architecture\n\nProject-owned decision.\n";
+  const output = [];
+
+  await writeFile(deliveryArtifactPath, deliveryArtifact, "utf8");
+  await writeFile(rolePath, "Outdated managed role.\n", "utf8");
+  await writeFile(workflowPath, "Outdated workflow.\n", "utf8");
+
+  assert.equal(await run(["update", target], { output: (value) => output.push(value) }), 0);
+  assert.equal(await readFile(installationPath, "utf8"), installation);
+  assert.equal(
+    JSON.parse(await readFile(installationPath, "utf8")).deliveryMode,
+    "rapid",
+  );
+  assert.equal(await readFile(profilePath, "utf8"), profile);
+  assert.equal(await readFile(registryPath, "utf8"), registry);
+  assert.equal(await readFile(deliveryArtifactPath, "utf8"), deliveryArtifact);
+  assert.equal(await readFile(rolePath, "utf8"), await expectedRole("claude", "architect"));
+  assert.match(output.join(""), /Delivery mode: rapid/iu);
+});
+
+test("AC-09 schemaVersion 1 metadata without deliveryMode remains compatible as formal", async () => {
+  const target = await initializedProject("claude", "tester");
+  const installationPath = path.join(target, ".ai-sdlc/installation.json");
+  const workflowPath = path.join(target, ".ai-sdlc/workflow.md");
+  const installation = JSON.parse(await readFile(installationPath, "utf8"));
+  const output = [];
+  delete installation.deliveryMode;
+
+  await writeFile(installationPath, `${JSON.stringify(installation, null, 2)}\n`, "utf8");
+  await writeFile(workflowPath, "Outdated workflow.\n", "utf8");
+
+  assert.equal(await run(["update", target], { output: (value) => output.push(value) }), 0);
+  assert.equal(
+    await readFile(workflowPath, "utf8"),
+    await expectedSharedFile(".ai-sdlc/workflow.md"),
+  );
+  assert.match(output.join(""), /Delivery mode: formal/iu);
+});
+
+test("AC-09 legacy update imports only a canonical profile mode and otherwise defaults to formal", async () => {
+  const cases = [
+    {
+      initializedMode: "rapid",
+      change: (profile) => profile,
+      expectedMode: "rapid",
+      source: /canonical legacy project profile/iu,
+    },
+    {
+      initializedMode: "formal",
+      change: (profile) => profile.replace(/^\| Delivery mode \| formal \|\r?\n/mu, ""),
+      expectedMode: "formal",
+      source: /legacy default/iu,
+    },
+    {
+      initializedMode: "rapid",
+      change: (profile) => profile.replace(
+        "| Delivery mode | rapid |",
+        "| **Delivery mode** | rapid |",
+      ),
+      expectedMode: "formal",
+      source: /legacy default/iu,
+    },
+    ...[
+      "```md\n| Setting | Choice |\n|---|---|\n| Delivery mode | rapid |\n```\n",
+      "<!-- example\n| Setting | Choice |\n|---|---|\n| Delivery mode | rapid |\n-->\n",
+      "Example only:\n| Setting | Choice |\n|---|---|\n| Delivery mode | rapid |\n",
+    ].map((example) => ({
+      initializedMode: "formal",
+      change: (profile) => profile.replace(
+        "## Configuration\n",
+        `## Configuration\n\n${example}`,
+      ),
+      expectedMode: "formal",
+      source: /legacy default/iu,
+    })),
+    ...[
+      "```md\n## Configuration\n\n| Setting | Choice |\n|---|---|\n| Delivery mode | rapid |\n```\n",
+      "<!-- example\n## Configuration\n\n| Setting | Choice |\n|---|---|\n| Delivery mode | rapid |\n-->\n",
+    ].map((example) => ({
+      initializedMode: "formal",
+      change: (profile) => profile.replace(
+        "# Project Profile\n",
+        `# Project Profile\n\n${example}`,
+      ),
+      expectedMode: "formal",
+      source: /legacy default/iu,
+    })),
+  ];
+
+  for (const item of cases) {
+    const target = await initializedProject("claude", "architect", item.initializedMode);
+    const installationPath = path.join(target, ".ai-sdlc/installation.json");
+    const profilePath = path.join(target, ".ai-sdlc/project-profile.md");
+    const registryPath = path.join(target, ".ai-sdlc/artifact-hosts.json");
+    const profile = item.change(await readFile(profilePath, "utf8"));
+    const registry = await readFile(registryPath, "utf8");
+    const output = [];
+
+    await writeFile(profilePath, profile, "utf8");
+    await rm(installationPath);
+    assert.equal(
+      await run(["update", target], { output: (value) => output.push(value) }),
+      0,
+    );
+
+    const createdInstallation = JSON.parse(await readFile(installationPath, "utf8"));
+    assert.equal(createdInstallation.deliveryMode, item.expectedMode);
+    assert.equal(await readFile(profilePath, "utf8"), profile);
+    assert.equal(await readFile(registryPath, "utf8"), registry);
+    assert.match(output.join(""), new RegExp(`Delivery mode: ${item.expectedMode}`, "iu"));
+    assert.match(output.join(""), item.source);
+  }
+});
+
+test("AC-09 legacy update rejects an invalid or duplicate canonical delivery mode", async () => {
+  const changes = [
+    (profile) => profile.replace(
+      "| Delivery mode | formal |",
+      "| Delivery mode | warp-speed |",
+    ),
+    (profile) => profile.replace(
+      "| Delivery mode | formal |",
+      "| Delivery mode | formal |\n| Delivery mode | rapid |",
+    ),
+  ];
+
+  for (const change of changes) {
+    const target = await initializedProject("claude", "architect", "formal");
+    const installationPath = path.join(target, ".ai-sdlc/installation.json");
+    const profilePath = path.join(target, ".ai-sdlc/project-profile.md");
+    const workflowPath = path.join(target, ".ai-sdlc/workflow.md");
+
+    await rm(installationPath);
+    await writeFile(profilePath, change(await readFile(profilePath, "utf8")), "utf8");
+    await writeFile(workflowPath, "Outdated workflow.\n", "utf8");
+
+    await assert.rejects(
+      run(["update", target], { output: () => {} }),
+      /legacy project profile.*delivery[- ]mode/iu,
+    );
+    assert.equal(await readFile(workflowPath, "utf8"), "Outdated workflow.\n");
+    assert.equal(existsSync(installationPath), false);
+  }
+});
+
+test("AC-09 installation metadata is authoritative over the profile snapshot", async () => {
+  const target = await initializedProject("claude", "architect", "rapid");
+  const installationPath = path.join(target, ".ai-sdlc/installation.json");
+  const profilePath = path.join(target, ".ai-sdlc/project-profile.md");
+  const workflowPath = path.join(target, ".ai-sdlc/workflow.md");
+  const output = [];
+  const changedProfile = (await readFile(profilePath, "utf8"))
+    .replace("| Delivery mode | rapid |", "| Delivery mode | formal |")
+    .concat("\nUnrelated note: Delivery mode is not a configuration row.\n");
+
+  await writeFile(profilePath, changedProfile, "utf8");
+  await writeFile(workflowPath, "Outdated workflow.\n", "utf8");
+
+  assert.equal(
+    await run(["update", target], { output: (value) => output.push(value) }),
+    0,
+  );
+  assert.equal(
+    JSON.parse(await readFile(installationPath, "utf8")).deliveryMode,
+    "rapid",
+  );
+  assert.equal(await readFile(profilePath, "utf8"), changedProfile);
+  assert.equal(
+    await readFile(workflowPath, "utf8"),
+    await expectedSharedFile(".ai-sdlc/workflow.md"),
+  );
+  assert.match(output.join(""), /Delivery mode: rapid/iu);
+  assert.match(output.join(""), /Delivery mode source: \.ai-sdlc\/installation\.json/iu);
+});
+
+test("AC-09 update rechecks authoritative metadata after planning hooks", async () => {
+  const target = await initializedProject("claude", "architect", "formal");
+  const installationPath = path.join(target, ".ai-sdlc/installation.json");
+  const workflowPath = path.join(target, ".ai-sdlc/workflow.md");
+  await writeFile(workflowPath, "Outdated workflow.\n", "utf8");
+
+  await assert.rejects(
+    run(["update", target], {
+      output: () => {},
+      beforePlan: async () => {
+        const installation = JSON.parse(await readFile(installationPath, "utf8"));
+        installation.deliveryMode = "rapid";
+        await writeFile(
+          installationPath,
+          `${JSON.stringify(installation, null, 2)}\n`,
+          "utf8",
+        );
+      },
+    }),
+    /configuration source changed|installation configuration changed/iu,
+  );
+  assert.equal(await readFile(workflowPath, "utf8"), "Outdated workflow.\n");
+});
+
+test("AC-09 update rechecks authoritative metadata immediately before each write", async () => {
+  const target = await initializedProject("claude", "architect", "formal");
+  const installationPath = path.join(target, ".ai-sdlc/installation.json");
+  const workflowPath = path.join(target, ".ai-sdlc/workflow.md");
+  await writeFile(workflowPath, "Outdated workflow.\n", "utf8");
+
+  await assert.rejects(
+    run(["update", target], {
+      output: () => {},
+      beforeWrite: async ({ index }) => {
+        if (index !== 0) return;
+        const installation = JSON.parse(await readFile(installationPath, "utf8"));
+        installation.deliveryMode = "rapid";
+        await writeFile(
+          installationPath,
+          `${JSON.stringify(installation, null, 2)}\n`,
+          "utf8",
+        );
+      },
+    }),
+    /configuration source changed|installation configuration changed/iu,
+  );
+  assert.equal(await readFile(workflowPath, "utf8"), "Outdated workflow.\n");
+});
+
+test("AC-09 modern profile changes during update do not switch the active mode", async () => {
+  const target = await initializedProject("claude", "architect", "formal");
+  const profilePath = path.join(target, ".ai-sdlc/project-profile.md");
+  const workflowPath = path.join(target, ".ai-sdlc/workflow.md");
+  const output = [];
+  await writeFile(workflowPath, "Outdated workflow.\n", "utf8");
+
+  assert.equal(
+    await run(["update", target], {
+      output: (value) => output.push(value),
+      beforeWrite: async ({ index }) => {
+        if (index !== 0) return;
+        const profile = await readFile(profilePath, "utf8");
+        await writeFile(
+          profilePath,
+          profile.replace("| Delivery mode | formal |", "| Delivery mode | rapid |"),
+          "utf8",
+        );
+      },
+    }),
+    0,
+  );
+  assert.match(await readFile(profilePath, "utf8"), /\| Delivery mode \| rapid \|/u);
+  assert.match(output.join(""), /Delivery mode: formal/iu);
+  assert.match(output.join(""), /Delivery mode source: \.ai-sdlc\/installation\.json/iu);
+});
+
+test("AC-09 legacy profile source is protected until installation metadata is created", async () => {
+  const target = await initializedProject("claude", "architect", "rapid");
+  const installationPath = path.join(target, ".ai-sdlc/installation.json");
+  const profilePath = path.join(target, ".ai-sdlc/project-profile.md");
+  const workflowPath = path.join(target, ".ai-sdlc/workflow.md");
+
+  await rm(installationPath);
+  await writeFile(workflowPath, "Outdated workflow.\n", "utf8");
+
+  await assert.rejects(
+    run(["update", target], {
+      output: () => {},
+      beforePlan: async () => {
+        const profile = await readFile(profilePath, "utf8");
+        await writeFile(
+          profilePath,
+          profile.replace("| Delivery mode | rapid |", "| Delivery mode | formal |"),
+          "utf8",
+        );
+      },
+    }),
+    /configuration source changed/iu,
+  );
+  assert.equal(await readFile(workflowPath, "utf8"), "Outdated workflow.\n");
+  assert.equal(existsSync(installationPath), false);
+});
+
+test("AC-09 legacy profile remains protected across installation metadata creation", async () => {
+  const contextFactories = [
+    (mutateProfile) => ({
+      beforeCreateOpen: async ({ path: entryPath }) => {
+        if (entryPath === ".ai-sdlc/installation.json") await mutateProfile();
+      },
+    }),
+    (mutateProfile) => ({
+      writeCreatedFile: async ({ handle, content, path: entryPath }) => {
+        await handle.writeFile(content, "utf8");
+        if (entryPath === ".ai-sdlc/installation.json") await mutateProfile();
+      },
+    }),
+  ];
+
+  for (const contextFactory of contextFactories) {
+    const target = await initializedProject("claude", "architect", "rapid");
+    const installationPath = path.join(target, ".ai-sdlc/installation.json");
+    const profilePath = path.join(target, ".ai-sdlc/project-profile.md");
+    const workflowPath = path.join(target, ".ai-sdlc/workflow.md");
+    const mutateProfile = async () => {
+      const profile = await readFile(profilePath, "utf8");
+      await writeFile(
+        profilePath,
+        profile.replace("| Delivery mode | rapid |", "| Delivery mode | formal |"),
+        "utf8",
+      );
+    };
+
+    await rm(installationPath);
+    await writeFile(workflowPath, "Outdated workflow.\n", "utf8");
+
+    await assert.rejects(
+      run(["update", target], {
+        output: () => {},
+        ...contextFactory(mutateProfile),
+      }),
+      /configuration source changed/iu,
+    );
+    assert.equal(existsSync(installationPath), false);
+    assert.equal(await readFile(workflowPath, "utf8"), "Outdated workflow.\n");
+    assert.match(await readFile(profilePath, "utf8"), /\| Delivery mode \| formal \|/u);
+  }
+});
+
 test("update replaces every managed shared file and creates newly added managed files", async () => {
   const target = await initializedProject("claude", "tester");
   const managedFiles = (await listTemplateFiles(path.join(repositoryRoot, "templates/shared")))
@@ -165,6 +499,7 @@ test("update upgrades a legacy installation that predates profile and routing fi
       schemaVersion: 1,
       tool: "claude",
       roles: ["pm-ba", "designer", "architect", "software-engineer", "tester", "devops"],
+      deliveryMode: "formal",
     },
   );
   assert.match(
@@ -218,8 +553,13 @@ test("legacy Dedicated agents metadata restores a missing configured role", asyn
 
   assert.equal(await readFile(designerAgent, "utf8"), await expectedRole("claude", "designer"));
   assert.deepEqual(
-    JSON.parse(await readFile(path.join(target, ".ai-sdlc/installation.json"), "utf8")).roles,
-    ["pm-ba", "designer", "architect"],
+    JSON.parse(await readFile(path.join(target, ".ai-sdlc/installation.json"), "utf8")),
+    {
+      schemaVersion: 1,
+      tool: "claude",
+      roles: ["pm-ba", "designer", "architect"],
+      deliveryMode: "formal",
+    },
   );
 });
 
@@ -357,7 +697,7 @@ test("legacy update requires --tool for more than one generated tool instruction
   assert.equal(await readFile(codexRole, "utf8"), originalCodexRole);
   assert.deepEqual(
     JSON.parse(await readFile(path.join(target, ".ai-sdlc/installation.json"), "utf8")),
-    { schemaVersion: 1, tool: "claude", roles: ["tester"] },
+    { schemaVersion: 1, tool: "claude", roles: ["tester"], deliveryMode: "formal" },
   );
 });
 
@@ -408,6 +748,9 @@ test("invalid installation metadata fails closed before managed files change", a
   const invalidRecords = [
     { schemaVersion: 1, tool: "unknown", roles: [] },
     { schemaVersion: 1, tool: "claude", roles: [null] },
+    { schemaVersion: 1, tool: "claude", roles: ["tester"], deliveryMode: "fast" },
+    { schemaVersion: 1, tool: "claude", roles: ["tester"], deliveryMode: null },
+    { schemaVersion: 1, tool: "claude", roles: ["tester"], deliveryMode: ["formal"] },
   ];
 
   for (const record of invalidRecords) {
@@ -421,6 +764,29 @@ test("invalid installation metadata fails closed before managed files change", a
     await assert.rejects(
       run(["update", target], { output: () => {} }),
       /installation\.json.*(?:unsupported|invalid)/iu,
+    );
+    assert.equal(await readFile(workflow, "utf8"), "Outdated workflow.\n");
+  }
+});
+
+test("duplicate top-level installation keys fail closed before managed files change", async () => {
+  const duplicateRecords = [
+    '{"schemaVersion":1,"tool":"claude","roles":["tester"],"deliveryMode":"formal","deliveryMode":"rapid"}\n',
+    '{"schemaVersion":1,"tool":"claude","roles":["tester"],"deliveryMode":"formal","deliveryMode":"formal"}\n',
+    '{"schemaVersion":1,"tool":"claude","roles":["tester"],"deliveryMode":"formal","delivery\\u004dode":"rapid"}\n',
+  ];
+
+  for (const source of duplicateRecords) {
+    const target = await initializedProject("claude", "tester");
+    const installation = path.join(target, ".ai-sdlc/installation.json");
+    const workflow = path.join(target, ".ai-sdlc/workflow.md");
+
+    await writeFile(installation, source, "utf8");
+    await writeFile(workflow, "Outdated workflow.\n", "utf8");
+
+    await assert.rejects(
+      run(["update", target], { output: () => {} }),
+      /installation\.json.*duplicate top-level key/iu,
     );
     assert.equal(await readFile(workflow, "utf8"), "Outdated workflow.\n");
   }
@@ -719,7 +1085,7 @@ test("update rollback keeps a managed file changed concurrently after it was wri
   assert.deepEqual(await snapshotFiles(target), expected);
 });
 
-test("CLI help and parser describe the update command and its only option", async () => {
+test("AC-10 update rejects the initialization-only delivery-mode option", async () => {
   const cliPath = path.join(repositoryRoot, "bin/cli.js");
   const helpResult = spawnSync(process.execPath, [cliPath, "--help"], {
     encoding: "utf8",
@@ -734,6 +1100,10 @@ test("CLI help and parser describe the update command and its only option", asyn
     run(["update", ".", "--roles", "all"]),
     /--roles is only available with init/u,
   );
+  await assert.rejects(
+    run(["update", ".", "--delivery-mode", "rapid"]),
+    /--delivery-mode is only available with init/u,
+  );
   await assert.rejects(run(["update", ".", "extra"]), /Unexpected argument/u);
 
   const target = await initializedProject("claude", "architect");
@@ -744,9 +1114,9 @@ test("CLI help and parser describe the update command and its only option", asyn
   }), 0);
 });
 
-async function initializedProject(tool, roles) {
+async function initializedProject(tool, roles, deliveryMode) {
   const target = await temporaryDirectory();
-  await run([
+  const args = [
     "init",
     target,
     "--name",
@@ -757,7 +1127,9 @@ async function initializedProject(tool, roles) {
     tool,
     "--roles",
     roles,
-  ], { output: () => {} });
+  ];
+  if (deliveryMode) args.push("--delivery-mode", deliveryMode);
+  await run(args, { output: () => {} });
   return target;
 }
 

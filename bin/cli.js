@@ -21,6 +21,12 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const templateRoot = path.join(packageRoot, "templates");
 const installationPath = ".ai-sdlc/installation.json";
 const installationSchemaVersion = 1;
+const defaultDeliveryMode = "formal";
+const deliveryModes = {
+  formal: "Large-team formal",
+  rapid: "Small-team rapid iteration",
+};
+const deliveryModeRoleIds = new Set(["pm-ba", "designer", "architect"]);
 const roleDefinitions = [
   {
     id: "pm-ba",
@@ -179,6 +185,9 @@ async function runInit(target, options, context, output) {
     output("Artifact bridge: .agents/skills/sdlc-artifact-bridge/SKILL.md\n");
     output(`Role agents: ${configuration.roleIds.length > 0 ? tool.agentsDirectory : "None"}\n`);
     output(`Selected roles: ${formatList(configuration.roleIds)}\n`);
+    output(
+      `Delivery mode: ${configuration.deliveryMode} (${deliveryModes[configuration.deliveryMode]})\n`,
+    );
     return 0;
   } finally {
     terminal?.close();
@@ -187,22 +196,45 @@ async function runInit(target, options, context, output) {
 
 async function runUpdate(target, options, context, output) {
   const targetIdentity = assertUpdateTarget(target);
+  const installationSnapshot = await captureUpdateSource(
+    target,
+    installationPath,
+    targetIdentity,
+  );
+  const legacyProfileSnapshot = installationSnapshot
+    ? null
+    : await captureUpdateSource(
+      target,
+      ".ai-sdlc/project-profile.md",
+      targetIdentity,
+    );
   const installation = await detectInstallation(target, options.tool, targetIdentity);
+  const assertConfiguration = createUpdateConfigurationGuard(
+    target,
+    installation,
+    installationSnapshot,
+    legacyProfileSnapshot,
+    targetIdentity,
+  );
+  await assertConfiguration();
   const tool = aiTools[installation.toolKey];
   const entries = await buildUpdateEntries(
     target,
     installation.toolKey,
     tool,
     installation.roleIds,
+    installation.deliveryMode,
     targetIdentity,
   );
   await context.beforePlan?.({ target, entries });
   assertUpdateTarget(target, targetIdentity);
+  await assertConfiguration();
   const result = await updateEntries(
     target,
     entries,
     context,
     targetIdentity,
+    assertConfiguration,
   );
 
   output(`Refreshed SDLC-managed files for ${tool.label}.\n`);
@@ -211,6 +243,10 @@ async function runUpdate(target, options, context, output) {
   output(`Added: ${result.created}\n`);
   output(`Unchanged: ${result.unchanged}\n`);
   output(`Selected roles: ${formatList(installation.roleIds)}\n`);
+  output(
+    `Delivery mode: ${installation.deliveryMode} (${deliveryModes[installation.deliveryMode]})\n`,
+  );
+  output(`Delivery mode source: ${formatDeliveryModeSource(installation.modeSource)}\n`);
   output("Preserved project settings and delivery artifacts.\n");
   return 0;
 }
@@ -251,16 +287,43 @@ function needsInteractiveInput(options) {
   return !options.name
     || !options.summary
     || !options.tool
-    || options.roles === null;
+    || options.roles === null
+    || (
+      options.deliveryMode === null
+      && options.roles.some((roleId) => deliveryModeRoleIds.has(roleId))
+    );
 }
 
 async function resolveConfiguration(options, prompt, output, detected) {
   const selectedRoleIds = options.roles ?? await askForRoles(prompt, output);
+  const usesDeliveryMode = selectedRoleIds.some((roleId) => deliveryModeRoleIds.has(roleId));
+  const deliveryMode = options.deliveryMode
+    ?? (usesDeliveryMode ? await askForDeliveryMode(prompt, output) : defaultDeliveryMode);
   return {
     roleIds: [...selectedRoleIds],
     activePhases: selectedRoleIds.map((roleId) => roleById.get(roleId).phase),
+    deliveryMode,
     detected,
   };
+}
+
+async function askForDeliveryMode(prompt, output) {
+  if (!prompt) return defaultDeliveryMode;
+  const question = [
+    "Choose the delivery mode for PM / BA, Designer, and Architect:",
+    "  1. Large-team formal - keep structured, reviewable handoffs",
+    "  2. Small-team rapid iteration - deliver the smallest useful result and mark risks or blockers",
+    "Enter 1 or 2: ",
+  ].join("\n");
+
+  while (true) {
+    const answer = await ask(prompt, question);
+    const deliveryMode = answer === "1"
+      ? "formal"
+      : answer === "2" ? "rapid" : normalizeDeliveryMode(answer);
+    if (deliveryMode) return deliveryMode;
+    output("Choose 1 or 2.\n");
+  }
 }
 
 async function askForRoles(prompt, output) {
@@ -316,7 +379,11 @@ async function buildEntries(projectName, projectSummary, toolKey, tool, configur
     { path: ".ai-sdlc/artifact-hosts.json", content: renderArtifactHosts(configuration) },
     {
       path: installationPath,
-      content: renderInstallation(toolKey, configuration.roleIds),
+      content: renderInstallation(
+        toolKey,
+        configuration.roleIds,
+        configuration.deliveryMode,
+      ),
     },
   ];
   entries.push(
@@ -332,6 +399,7 @@ async function buildUpdateEntries(
   toolKey,
   tool,
   installedRoleIds,
+  deliveryMode,
   targetIdentity,
 ) {
   assertTargetIdentity(target, targetIdentity);
@@ -354,13 +422,14 @@ async function buildUpdateEntries(
   const configuration = {
     roleIds: installedRoleIds,
     activePhases: installedRoleIds.map((roleId) => roleById.get(roleId).phase),
+    deliveryMode,
     detected: profileMissing ? await detectProject(target) : { evidence: [] },
   };
 
   if (!lstatIfPresent(path.join(target, installationPath))) {
     configurationEntries.push({
       path: installationPath,
-      content: renderInstallation(toolKey, installedRoleIds),
+      content: renderInstallation(toolKey, installedRoleIds, deliveryMode),
       createOnly: true,
     });
   }
@@ -432,6 +501,7 @@ function profileValues(configuration) {
   return {
     LOCAL_ROLE_AGENTS: formatList(configuration.roleIds),
     ACTIVE_LOCAL_PHASES: formatList(configuration.activePhases),
+    DELIVERY_MODE: configuration.deliveryMode,
     ROLE_COVERAGE_ROWS: roleCoverageRows,
     DETECTED_EVIDENCE_ROWS: evidenceRows,
   };
@@ -461,11 +531,12 @@ function renderArtifactHosts(configuration) {
   }, null, 2);
 }
 
-function renderInstallation(tool, selectedRoleIds) {
+function renderInstallation(tool, selectedRoleIds, deliveryMode) {
   return JSON.stringify({
     schemaVersion: installationSchemaVersion,
     tool,
     roles: selectedRoleIds,
+    deliveryMode,
   }, null, 2);
 }
 
@@ -676,7 +747,12 @@ async function detectInstallation(target, requestedTool, targetIdentity) {
         `Update stopped. This SDLC installation uses ${record.tool}, not ${requestedTool}.`,
       );
     }
-    return { toolKey: record.tool, roleIds: record.roles };
+    return {
+      toolKey: record.tool,
+      roleIds: record.roles,
+      deliveryMode: record.deliveryMode,
+      modeSource: "installation",
+    };
   }
 
   if (!hasLegacyInstallationLayout(target)) {
@@ -709,9 +785,15 @@ async function detectInstallation(target, requestedTool, targetIdentity) {
     throw new Error(`Update stopped. ${detail}`);
   }
 
+  const [installedRoleIds, legacyMode] = await Promise.all([
+    detectInstalledRoleIds(target, selected[1], targetIdentity),
+    readLegacyProfileDeliveryMode(target, targetIdentity),
+  ]);
   return {
     toolKey: selected[0],
-    roleIds: await detectInstalledRoleIds(target, selected[1], targetIdentity),
+    roleIds: installedRoleIds,
+    deliveryMode: legacyMode.deliveryMode,
+    modeSource: legacyMode.source,
   };
 }
 
@@ -722,12 +804,17 @@ async function readInstallation(target, targetIdentity) {
 
   let record;
   try {
-    record = JSON.parse(await readSafeProjectFile(
+    const source = await readSafeProjectFile(
       target,
       installationPath,
       stats,
       targetIdentity,
-    ));
+    );
+    record = JSON.parse(source);
+    const duplicateKey = findDuplicateTopLevelJsonKey(source);
+    if (duplicateKey !== null) {
+      throw new Error(`duplicate top-level key: ${duplicateKey}`);
+    }
   } catch (error) {
     throw new Error(`Update stopped. ${installationPath} is invalid: ${error.message}`);
   }
@@ -747,9 +834,172 @@ async function readInstallation(target, targetIdentity) {
   if (hasUnknownRole || new Set(record.roles).size !== record.roles.length) {
     throw new Error(`Update stopped. ${installationPath} contains invalid roles.`);
   }
+  const deliveryMode = Object.hasOwn(record, "deliveryMode")
+    ? record.deliveryMode
+    : defaultDeliveryMode;
+  if (
+    typeof deliveryMode !== "string"
+    || !Object.hasOwn(deliveryModes, deliveryMode)
+  ) {
+    throw new Error(`Update stopped. ${installationPath} contains an invalid delivery mode.`);
+  }
   return {
     tool: record.tool,
     roles: roleIds.filter((roleId) => record.roles.includes(roleId)),
+    deliveryMode,
+  };
+}
+
+function findDuplicateTopLevelJsonKey(source) {
+  const keys = new Set();
+  let objectDepth = 0;
+  let arrayDepth = 0;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '"') {
+      const start = index;
+      index += 1;
+      while (index < source.length && source[index] !== '"') {
+        index += source[index] === "\\" ? 2 : 1;
+      }
+      const end = index + 1;
+      if (objectDepth === 1 && arrayDepth === 0) {
+        let next = end;
+        while (/\s/u.test(source[next] ?? "")) next += 1;
+        if (source[next] === ":") {
+          const key = JSON.parse(source.slice(start, end));
+          if (keys.has(key)) return key;
+          keys.add(key);
+        }
+      }
+      continue;
+    }
+    if (character === "{") objectDepth += 1;
+    else if (character === "}") objectDepth -= 1;
+    else if (character === "[") arrayDepth += 1;
+    else if (character === "]") arrayDepth -= 1;
+  }
+  return null;
+}
+
+async function captureUpdateSource(target, relativePath, targetIdentity) {
+  const stats = lstatIfPresent(path.join(target, relativePath));
+  if (!stats) return null;
+  return {
+    relativePath,
+    device: stats.dev,
+    inode: stats.ino,
+    content: await readSafeProjectFile(
+      target,
+      relativePath,
+      stats,
+      targetIdentity,
+    ),
+  };
+}
+
+async function assertUpdateSourceUnchanged(
+  target,
+  relativePath,
+  snapshot,
+  targetIdentity,
+) {
+  const stats = lstatIfPresent(path.join(target, relativePath));
+  if (!snapshot) {
+    if (stats) {
+      throw new Error(`Update stopped. A configuration source changed: ${relativePath}`);
+    }
+    return;
+  }
+  if (
+    !stats
+    || stats.dev !== snapshot.device
+    || stats.ino !== snapshot.inode
+  ) {
+    throw new Error(`Update stopped. A configuration source changed: ${relativePath}`);
+  }
+  const content = await readSafeProjectFile(
+    target,
+    relativePath,
+    stats,
+    targetIdentity,
+  );
+  if (content !== snapshot.content) {
+    throw new Error(`Update stopped. A configuration source changed: ${relativePath}`);
+  }
+}
+
+function createUpdateConfigurationGuard(
+  target,
+  expected,
+  initialInstallationSnapshot,
+  legacyProfileSnapshot,
+  targetIdentity,
+) {
+  let installationSnapshot = initialInstallationSnapshot;
+  let installationObserved = installationSnapshot !== null;
+  const legacyBootstrap = expected.modeSource !== "installation";
+
+  return async ({ complete = false } = {}) => {
+    assertTargetIdentity(target, targetIdentity);
+    if (installationSnapshot) {
+      await assertUpdateSourceUnchanged(
+        target,
+        installationPath,
+        installationSnapshot,
+        targetIdentity,
+      );
+    } else {
+      const current = await captureUpdateSource(
+        target,
+        installationPath,
+        targetIdentity,
+      );
+      if (current) {
+        if (legacyBootstrap && !installationObserved) {
+          await assertUpdateSourceUnchanged(
+            target,
+            ".ai-sdlc/project-profile.md",
+            legacyProfileSnapshot,
+            targetIdentity,
+          );
+        }
+        installationSnapshot = current;
+        installationObserved = true;
+      }
+    }
+    if (legacyBootstrap && !installationObserved) {
+      await assertUpdateSourceUnchanged(
+        target,
+        ".ai-sdlc/project-profile.md",
+        legacyProfileSnapshot,
+        targetIdentity,
+      );
+    }
+
+    const installation = await readInstallation(target, targetIdentity);
+    if (installation) {
+      installationObserved = true;
+      if (
+        installation.tool !== expected.toolKey
+        || installation.deliveryMode !== expected.deliveryMode
+        || installation.roles.length !== expected.roleIds.length
+        || installation.roles.some((roleId, index) => roleId !== expected.roleIds[index])
+      ) {
+        throw new Error("Update stopped. The installation configuration changed during update.");
+      }
+    } else if (installationObserved || complete) {
+      throw new Error(`Update stopped. A configuration source changed: ${installationPath}`);
+    }
+    if (installationSnapshot) {
+      await assertUpdateSourceUnchanged(
+        target,
+        installationPath,
+        installationSnapshot,
+        targetIdentity,
+      );
+    }
   };
 }
 
@@ -824,6 +1074,69 @@ async function detectInstalledRoleIds(target, tool, targetIdentity) {
     detected.push(roleId);
   }
   return detected;
+}
+
+async function readLegacyProfileDeliveryMode(target, targetIdentity) {
+  const profilePath = ".ai-sdlc/project-profile.md";
+  const profileStats = lstatIfPresent(path.join(target, profilePath));
+  if (!profileStats) {
+    return { deliveryMode: defaultDeliveryMode, source: "legacy-default" };
+  }
+
+  const profile = await readSafeProjectFile(
+    target,
+    profilePath,
+    profileStats,
+    targetIdentity,
+  );
+  const profileTemplate = await readFile(
+    path.join(templateRoot, "project-profile.md"),
+    "utf8",
+  );
+  const firstConfigurationRow = "| Local role agents | {{LOCAL_ROLE_AGENTS}} |";
+  const prefixEnd = profileTemplate.indexOf(firstConfigurationRow);
+  if (prefixEnd === -1) {
+    throw new Error("The project profile template has an unsupported format.");
+  }
+  const normalizedProfile = profile.replace(/\r\n/gu, "\n");
+  const canonicalPrefix = profileTemplate.slice(0, prefixEnd).replace(/\r\n/gu, "\n");
+  if (!normalizedProfile.startsWith(canonicalPrefix)) {
+    return { deliveryMode: defaultDeliveryMode, source: "legacy-default" };
+  }
+
+  const lines = normalizedProfile.slice(canonicalPrefix.length).split("\n");
+  if (
+    !/^\| Local role agents \| [^|\n]+ \|$/u.test(lines[0] ?? "")
+    || !/^\| Active local phases \| [^|\n]+ \|$/u.test(lines[1] ?? "")
+  ) {
+    return { deliveryMode: defaultDeliveryMode, source: "legacy-default" };
+  }
+
+  const tableRows = [];
+  for (const line of lines) {
+    if (!line.startsWith("|")) break;
+    tableRows.push(line);
+  }
+  const candidates = tableRows.filter(
+    (line) => line.startsWith("| Delivery mode |"),
+  );
+  if (candidates.length > 1) {
+    throw new Error("Update stopped. The legacy project profile contains duplicate delivery modes.");
+  }
+  if (candidates.length === 0) {
+    return { deliveryMode: defaultDeliveryMode, source: "legacy-default" };
+  }
+  if (candidates[0] !== tableRows[2]) {
+    return { deliveryMode: defaultDeliveryMode, source: "legacy-default" };
+  }
+
+  const match = candidates[0].match(
+    /^\| Delivery mode \| (formal|rapid) \|$/u,
+  );
+  if (!match) {
+    throw new Error("Update stopped. The legacy project profile contains an invalid delivery mode.");
+  }
+  return { deliveryMode: match[1], source: "legacy-profile" };
 }
 
 function renderMarkdownAgent(roleId, source) {
@@ -1069,6 +1382,7 @@ async function writeEntries(target, entries, beforeWrite) {
         await handle.close();
       }
     }
+    await assertCreatedFilesUnchanged(createdFiles);
   } catch (error) {
     const rollbackErrors = await rollback(createdFiles);
     if (rollbackErrors.length > 0) {
@@ -1084,8 +1398,53 @@ async function writeEntries(target, entries, beforeWrite) {
   }
 }
 
-async function updateEntries(target, entries, context, targetIdentity) {
+async function assertCreatedFilesUnchanged(createdFiles) {
+  for (const created of createdFiles) {
+    const changedMessage = `A created file changed before initialization completed: ${created.path}`;
+    let handle;
+    try {
+      handle = await open(created.path, existingOpenFlags(false));
+    } catch {
+      throw new Error(changedMessage);
+    }
+    try {
+      const stats = await handle.stat();
+      if (
+        !stats.isFile()
+        || stats.nlink !== 1
+        || stats.dev !== created.device
+        || stats.ino !== created.inode
+        || created.snapshot === null
+        || await handle.readFile("utf8") !== created.snapshot
+      ) {
+        throw new Error(changedMessage);
+      }
+      const pathStats = lstatIfPresent(created.path);
+      if (
+        !pathStats?.isFile()
+        || pathStats.isSymbolicLink()
+        || pathStats.nlink !== 1
+        || pathStats.dev !== created.device
+        || pathStats.ino !== created.inode
+      ) {
+        throw new Error(changedMessage);
+      }
+    } finally {
+      await handle.close();
+    }
+  }
+}
+
+async function updateEntries(
+  target,
+  entries,
+  context,
+  targetIdentity,
+  assertConfiguration,
+) {
+  await assertConfiguration();
   const plan = await planUpdateEntries(target, entries, targetIdentity);
+  await assertConfiguration();
   const applied = [];
   const createdDirectories = [];
 
@@ -1093,6 +1452,7 @@ async function updateEntries(target, entries, context, targetIdentity) {
     for (const [index, change] of plan.changes.entries()) {
       assertTargetIdentity(target, targetIdentity);
       await context.beforeWrite?.({ index, path: change.path, target, command: "update" });
+      await assertConfiguration();
       assertTargetIdentity(target, targetIdentity);
       const destination = path.join(target, change.path);
       await ensureUpdateDirectory(
@@ -1111,6 +1471,7 @@ async function updateEntries(target, entries, context, targetIdentity) {
           destination,
           target,
         });
+        await assertConfiguration();
         const handle = await open(destination, createOpenFlags());
         const record = {
           kind: "created",
@@ -1150,6 +1511,7 @@ async function updateEntries(target, entries, context, targetIdentity) {
         } finally {
           await handle.close();
         }
+        await assertConfiguration();
         continue;
       }
 
@@ -1208,7 +1570,9 @@ async function updateEntries(target, entries, context, targetIdentity) {
       } finally {
         await handle.close();
       }
+      await assertConfiguration();
     }
+    await assertConfiguration({ complete: true });
   } catch (error) {
     const rollbackErrors = await rollbackUpdates(
       target,
@@ -1692,6 +2056,20 @@ function normalizeTool(value) {
   return aliases[normalized] ?? null;
 }
 
+function normalizeDeliveryMode(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return Object.hasOwn(deliveryModes, normalized) ? normalized : null;
+}
+
+function formatDeliveryModeSource(source) {
+  const labels = {
+    installation: installationPath,
+    "legacy-profile": "canonical legacy project profile",
+    "legacy-default": "legacy default",
+  };
+  return labels[source] ?? source;
+}
+
 function parseRoles(value) {
   const raw = String(value ?? "").trim().toLowerCase();
   if (raw === "all") return [...roleIds];
@@ -1746,6 +2124,7 @@ function parseArgs(args) {
     summary: null,
     tool: null,
     roles: null,
+    deliveryMode: null,
   };
   let targetSet = false;
 
@@ -1764,6 +2143,15 @@ function parseArgs(args) {
     } else if (value === "--roles") {
       if (command !== "init") throw new Error("--roles is only available with init.");
       options.roles = parseRoles(optionValue(values, ++index, value));
+    } else if (value === "--delivery-mode") {
+      if (command !== "init") {
+        throw new Error("--delivery-mode is only available with init.");
+      }
+      const rawDeliveryMode = optionValue(values, ++index, value);
+      options.deliveryMode = normalizeDeliveryMode(rawDeliveryMode);
+      if (!options.deliveryMode) {
+        throw new Error(`Unknown delivery mode: ${rawDeliveryMode}`);
+      }
     } else if (value === "--development") {
       if (command !== "init") throw new Error("--development is not available with update.");
       throw new Error("--development was removed. Select independent local agents with --roles.");
@@ -1807,6 +2195,7 @@ Init options:
   --summary <text>            Short project summary
   --tool <tool>               copilot, claude, or codex
   --roles <list>              Comma-separated role IDs, all, or none
+  --delivery-mode <mode>      formal or rapid (default: formal)
 
 Update options:
   --tool <tool>               Resolve multiple detected legacy AI tools

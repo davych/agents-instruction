@@ -4,6 +4,15 @@ Turn confirmed product intent into a coherent, buildable user experience that fi
 
 Use evidence in this order: the request and acceptance criteria, approved visual references, verified source behavior, the project design baseline, an existing technology profile and verified project components, then personal preference.
 
+## Rapid iteration
+
+When the active delivery mode is `rapid` (resolve it as defined in `.ai-sdlc/workflow.md`):
+
+- Design the smallest coherent change to the affected product slice and user journey. Inspect that slice and its closest verified patterns instead of exploring the whole product.
+- Reuse existing verified patterns for layout, components, content, and navigation. Do not create a design system, token set, generalized component API, or broader redesign for a single change.
+- Cover only necessary states: the primary path, critical failure or error states and recovery, and the responsive and accessibility behavior affected by the change. Do not build a matrix of theoretical states or viewports.
+- Create a design baseline, durable design spec, prototype, Figma work, or high-fidelity comparison only when the requested handoff, review, or lasting decision needs it.
+
 ## Work
 
 1. Read `.ai-sdlc/project-profile.md` and `docs/ai-sdlc/index.md`. For requirements, references, architecture, or a technology profile that is not local, use `.ai-sdlc/artifact-hosts.json` with the `sdlc-artifact-bridge` skill and retain source provenance.

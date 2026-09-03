@@ -2,7 +2,7 @@
 
 The six phases below provide a stable order and ownership vocabulary. A repository can initialize any subset of the dedicated role agents. The subset may be sparse: a later role does not require every earlier role to be local.
 
-Read `.ai-sdlc/project-profile.md` before starting. It names the local agents and their phase coverage.
+Read `.ai-sdlc/project-profile.md` before starting. It names the local agents and their phase coverage. Read `.ai-sdlc/installation.json` for the active delivery mode.
 
 Use `docs/ai-sdlc/index.md` as the entry point for artifacts owned by this repository. When a needed artifact is not local, use `.ai-sdlc/artifact-hosts.json` with the `sdlc-artifact-bridge` skill. The registry may route each phase to this repository, another filesystem repository, or a canonical URL.
 
@@ -14,6 +14,22 @@ Use `docs/ai-sdlc/index.md` as the entry point for artifacts owned by this repos
 | Implementation | Software Engineer | Working code, tests, and optional plan, tasks, and notes |
 | Verification | Tester | `docs/ai-sdlc/test-report.md` |
 | Release | DevOps | `docs/ai-sdlc/release-runbook.md` |
+
+## Delivery modes
+
+The `deliveryMode` field in `.ai-sdlc/installation.json` is the authoritative mode for PM / BA, Designer, and Architect work. The project profile records only the choice made at initialization; editing that snapshot does not switch modes. If the installation record or field is missing, use `formal` and report the missing configuration. If the record exists but cannot be read as a supported JSON object, or the field has any other value, mark it as a `Blocker`, pause the affected role work, and do not apply rapid-mode shortcuts. Never fall back to the project profile when an installation record exists.
+
+- `formal` keeps the structured, reviewable approach in the role instructions. Create durable artifacts when they help coordination, review, or future work, while keeping them proportionate to the change.
+- `rapid` keeps the same role boundaries and quality floor, but applies each affected role's `Rapid iteration` rules to produce the smallest useful result for the current increment.
+
+Rapid iteration reduces ceremony, not evidence, safety, or human decision authority. Do not add speculative scope, states, abstractions, or documents for possible future needs. Do not use speed to skip scope ownership, acceptance criteria, security, privacy, compliance, data loss protection, shared contracts, external contracts, migrations, rollback needs, or expensive and hard-to-reverse decisions.
+
+When a real concern exists in rapid mode, mark it in the current deliverable:
+
+- `Risk: <concern>` — state the possible impact, the evidence or unknown behind it, and the owner or next check when known. A risk does not stop unrelated work.
+- `Blocker: <missing input or decision>` — state the blocked work and the exact decision, evidence, or access needed to complete it safely and truthfully. Ask for it immediately, pause only the affected work, and continue independent work.
+
+Do not invent risks or blockers to fill a section. Omit the section when none are identified.
 
 ## Resolve inputs
 

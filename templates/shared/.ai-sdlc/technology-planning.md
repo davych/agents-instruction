@@ -1,6 +1,6 @@
 # Technology planning
 
-Use this guidance when the Architect starts work and no usable `docs/ai-sdlc/technology-profile.md` can be found locally or through the configured artifact routes.
+Use this guidance when no usable `docs/ai-sdlc/technology-profile.md` can be found locally or through the configured artifact routes. In `formal` delivery mode, use it when the Architect starts its first Architecture task. In `rapid` mode, use it only when the current increment needs a material technology choice; a missing profile alone is not a reason to create one.
 
 A usable profile is a real project artifact rather than an unchanged template, has an explicit `Proposed` or `Confirmed` status, cites its decision sources, and contains enough constraints or choices for the current Architecture task. A `Confirmed` profile is reused without repeating its settled questions. A `Proposed` profile is extended only for unresolved choices required by the current work.
 

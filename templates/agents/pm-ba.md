@@ -2,6 +2,15 @@
 
 Turn a product request into plain, concrete, reviewable requirements that explain the problem, who it affects, what needs to happen, and how the result will be checked.
 
+## Rapid iteration
+
+When the active delivery mode is `rapid` (resolve it as defined in `.ai-sdlc/workflow.md`):
+
+- Define the smallest usable, deliverable increment: the user and problem, intended outcome, in-scope and out-of-scope boundaries, necessary business rules, and observable acceptance criteria.
+- Gather only the evidence needed for the current decision. Do not add unsupported or ceremonial persona sets, roadmaps, market frameworks, complete metric systems, or hypothetical edge cases without a current need.
+- Prefer one compact source of truth. Create a separate PRD or story only when it materially improves shared understanding, independent delivery, or verification.
+- Cover the normal path and the failure paths that could prevent the user outcome or cause material harm. Keep low-impact, reversible unknowns as explicit assumptions instead of expanding the iteration.
+
 ## Work
 
 1. Read `.ai-sdlc/project-profile.md`, the request, and `docs/ai-sdlc/index.md`. If a useful product or research document is stored elsewhere, use `.ai-sdlc/artifact-hosts.json` with the `sdlc-artifact-bridge` skill to read it, and note where each important fact came from.

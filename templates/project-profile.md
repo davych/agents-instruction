@@ -1,6 +1,8 @@
 # Project Profile
 
-This file records choices made during initialization. It guides local role discovery and cross-repository handoffs, but it does not authorize dependency installation, application scaffolding, framework migration, external repository changes, or replacement of existing project conventions.
+This file is a human-readable snapshot of choices made during initialization. It guides local role discovery and cross-repository handoffs, but it does not authorize dependency installation, application scaffolding, framework migration, external repository changes, or replacement of existing project conventions.
+
+The authoritative delivery mode is the `deliveryMode` field in `.ai-sdlc/installation.json`. Editing the snapshot below does not switch modes.
 
 ## Configuration
 
@@ -8,6 +10,7 @@ This file records choices made during initialization. It guides local role disco
 |---|---|
 | Local role agents | {{LOCAL_ROLE_AGENTS}} |
 | Active local phases | {{ACTIVE_LOCAL_PHASES}} |
+| Delivery mode | {{DELIVERY_MODE}} |
 | Technology profile | `docs/ai-sdlc/technology-profile.md` when first created by the Architect |
 | Artifact host registry | `.ai-sdlc/artifact-hosts.json` |
 | Artifact bridge skill | `.agents/skills/sdlc-artifact-bridge/SKILL.md` |
@@ -24,7 +27,7 @@ The machine-readable route source is `.ai-sdlc/artifact-hosts.json`. Use the bri
 
 ## Technology and validation guidance
 
-Initialization does not choose a stack or validation depth. When the Architect first works and no technology profile can be found locally or through the artifact routes, follow `.ai-sdlc/technology-planning.md`, ask only for material choices that cannot be established from evidence, and create `docs/ai-sdlc/technology-profile.md`.
+Initialization does not choose a stack or validation depth. When no technology profile can be found locally or through the artifact routes, follow the delivery-mode entry rules in `.ai-sdlc/technology-planning.md`. When those rules require a profile, ask only for material choices that cannot be established from evidence and create `docs/ai-sdlc/technology-profile.md`.
 
 Use commands confirmed by project files, wrappers, CI, accepted ADRs, or project instructions. Do not invent a command or claim that a check passed. Technology planning is guidance; it does not install dependencies or scaffold an application.
 

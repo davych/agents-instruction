@@ -116,7 +116,7 @@ test("each AI tool gets only its native instructions and selected role files", a
   }
 });
 
-test("all roles produce installation state, the profile, registry, and default bridge skill", async () => {
+test("AC-03 all roles record the canonical default delivery mode without changing core outputs", async () => {
   const target = await temporaryDirectory();
   const output = [];
 
@@ -138,6 +138,7 @@ test("all roles produce installation state, the profile, registry, and default b
   assert.match(output.join(""), /Artifact hosts: \.ai-sdlc\/artifact-hosts\.json/u);
   assert.match(output.join(""), /Artifact bridge: \.agents\/skills\/sdlc-artifact-bridge\/SKILL\.md/u);
   assert.match(output.join(""), /Selected roles: pm-ba, designer, architect, software-engineer, tester, devops/u);
+  assert.match(output.join(""), /Delivery mode: formal/iu);
 
   const instructions = await readFile(
     path.join(target, ".github/copilot-instructions.md"),
@@ -152,6 +153,7 @@ test("all roles produce installation state, the profile, registry, and default b
   assert.match(instructions, /`sdlc-artifact-bridge` skill/u);
 
   const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
+  assert.match(profile, /\| Delivery mode \| formal \|/iu);
   assert.match(profile, /\| Local role agents \| pm-ba, designer, architect, software-engineer, tester, devops \|/u);
   assert.match(profile, /\| Active local phases \| Discovery, Design, Architecture, Implementation, Verification, Release \|/u);
   assert.match(profile, /\| Technology profile \| `docs\/ai-sdlc\/technology-profile\.md` when first created by the Architect \|/u);
@@ -162,7 +164,7 @@ test("all roles produce installation state, the profile, registry, and default b
   assert.equal(existsSync(path.join(target, ".ai-sdlc/artifact-hosts.json")), true);
   assert.deepEqual(
     JSON.parse(await readFile(path.join(target, ".ai-sdlc/installation.json"), "utf8")),
-    { schemaVersion: 1, tool: "copilot", roles: roleIds },
+    { schemaVersion: 1, tool: "copilot", roles: roleIds, deliveryMode: "formal" },
   );
   assert.equal(existsSync(path.join(target, ".agents/skills/sdlc-artifact-bridge/SKILL.md")), true);
   assert.equal(existsSync(path.join(target, ".vscode/mcp.json")), false);
@@ -282,11 +284,11 @@ test("project profile records safe root-level evidence for later Architect plann
   assert.equal(profile.includes(target), false);
 });
 
-test("interactive init asks six independent role questions and no stack questionnaire", async () => {
+test("AC-02 interactive init asks for delivery mode after relevant role selection and retries invalid answers", async () => {
   const target = await temporaryDirectory();
   const questions = [];
   const output = [];
-  const prompt = answers(["1", "2", "1", "2", "1", "2"], questions);
+  const prompt = answers(["1", "2", "1", "2", "1", "2", "not-a-mode", "2"], questions);
 
   await run([
     "init",
@@ -299,20 +301,159 @@ test("interactive init asks six independent role questions and no stack question
     "claude",
   ], { prompt, output: (value) => output.push(value) });
 
-  assert.equal(questions.length, 6);
+  assert.equal(questions.length, 8);
   assert.deepEqual(
-    questions.map((question) => question.match(/^Initialize the (.+?) role/mu)?.[1]),
+    questions.slice(0, 6).map((question) => question.match(/^Initialize the (.+?) role/mu)?.[1]),
     ["PM / BA", "Designer", "Architect", "Software Engineer", "Tester", "DevOps"],
   );
   assert.equal(
-    questions.some((question) => /development|stack|validation/iu.test(question)),
+    questions.slice(0, 6).some((question) => /development|stack|validation/iu.test(question)),
     false,
+  );
+  assert.ok(questions.slice(6).every((question) => /delivery mode/iu.test(question)));
+  assert.ok(
+    questions[6].toLowerCase().indexOf("formal")
+      < questions[6].toLowerCase().indexOf("rapid"),
+    "formal must be the first delivery-mode choice",
   );
   assert.deepEqual(
     (await readdir(path.join(target, ".claude/agents"))).sort(),
     ["architect.md", "pm-ba.md", "tester.md"],
   );
   assert.match(output.join(""), /Selected roles: pm-ba, architect, tester/u);
+  assert.match(output.join(""), /Delivery mode: rapid/iu);
+  assert.equal(
+    JSON.parse(await readFile(path.join(target, ".ai-sdlc/installation.json"), "utf8"))
+      .deliveryMode,
+    "rapid",
+  );
+});
+
+test("AC-02 interactive init skips the delivery-mode question when no selected role uses it", async () => {
+  const cases = [
+    { answers: ["2", "2", "2", "1", "1", "1"], roles: ["software-engineer", "tester", "devops"] },
+    { answers: ["2", "2", "2", "2", "2", "2"], roles: [] },
+  ];
+
+  for (const item of cases) {
+    const target = await temporaryDirectory();
+    const questions = [];
+
+    await run([
+      "init",
+      target,
+      "--name",
+      "Role Questions",
+      "--summary",
+      "Chooses roles independently",
+      "--tool",
+      "claude",
+    ], { prompt: answers(item.answers, questions), output: () => {} });
+
+    assert.equal(questions.length, 6);
+    assert.equal(questions.some((question) => /delivery mode/iu.test(question)), false);
+    const installation = JSON.parse(
+      await readFile(path.join(target, ".ai-sdlc/installation.json"), "utf8"),
+    );
+    assert.deepEqual(installation.roles, item.roles);
+    assert.equal(installation.deliveryMode, "formal");
+  }
+});
+
+test("AC-01 init accepts only canonical delivery modes and validates them before writing", async () => {
+  for (const deliveryMode of ["formal", "rapid"]) {
+    const target = await temporaryDirectory();
+    const output = [];
+
+    assert.equal(await run([
+      "init",
+      target,
+      "--name",
+      "Mode Project",
+      "--summary",
+      "Exercises a delivery mode",
+      "--tool",
+      "claude",
+      "--roles",
+      "tester",
+      "--delivery-mode",
+      deliveryMode,
+    ], { output: (value) => output.push(value) }), 0);
+
+    const installation = JSON.parse(
+      await readFile(path.join(target, ".ai-sdlc/installation.json"), "utf8"),
+    );
+    const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
+    assert.equal(installation.deliveryMode, deliveryMode);
+    assert.match(profile, new RegExp(`\\| Delivery mode \\| ${deliveryMode} \\|`, "iu"));
+    assert.match(output.join(""), new RegExp(`Delivery mode: ${deliveryMode}`, "iu"));
+  }
+
+  for (const modeArgs of [
+    ["--delivery-mode", "fast"],
+    ["--delivery-mode", "1"],
+    ["--delivery-mode"],
+  ]) {
+    const target = await temporaryDirectory();
+    const sentinel = path.join(target, "keep.txt");
+    await writeFile(sentinel, "Keep me.\n", "utf8");
+
+    await assert.rejects(
+      run([
+        "init",
+        target,
+        "--name",
+        "Invalid Mode",
+        "--summary",
+        "Must fail before writing",
+        "--tool",
+        "claude",
+        "--roles",
+        "all",
+        ...modeArgs,
+      ], { output: () => {} }),
+      /--delivery-mode|delivery mode/iu,
+    );
+
+    assert.deepEqual(await readdir(target), ["keep.txt"]);
+    assert.equal(await readFile(sentinel, "utf8"), "Keep me.\n");
+  }
+});
+
+test("AC-03 rapid mode keeps phase order, role selection, and AI-tool isolation unchanged", async () => {
+  const target = await initializedProject("codex", {
+    roles: "all",
+    deliveryMode: "rapid",
+  });
+  const workflow = await readFile(path.join(target, ".ai-sdlc/workflow.md"), "utf8");
+  const phaseLines = workflow
+    .split("\n")
+    .filter((line) => /^\| (Discovery|Design|Architecture|Implementation|Verification|Release) \|/u.test(line));
+
+  assert.deepEqual(
+    phaseLines.map((line) => line.split("|")[1].trim()),
+    ["Discovery", "Design", "Architecture", "Implementation", "Verification", "Release"],
+  );
+  assert.deepEqual(
+    (await readdir(path.join(target, ".codex/agents"))).sort(),
+    roleIds.map((roleId) => `${roleId}.toml`).sort(),
+  );
+  assert.equal(existsSync(path.join(target, ".github")), false);
+  assert.equal(existsSync(path.join(target, ".claude")), false);
+
+  for (const roleId of ["pm-ba", "designer", "architect"]) {
+    const role = await readCodexInstructions(path.join(target, ".codex/agents", `${roleId}.toml`));
+    assert.match(role, /delivery mode/iu, roleId);
+    assert.ok(headings(role).some((heading) => /rapid/iu.test(heading)), roleId);
+  }
+  for (const roleId of ["software-engineer", "tester", "devops"]) {
+    const role = await readCodexInstructions(path.join(target, ".codex/agents", `${roleId}.toml`));
+    assert.equal(
+      headings(role).some((heading) => /(?:formal|rapid).*delivery|delivery.*(?:formal|rapid)/iu.test(heading)),
+      false,
+      roleId,
+    );
+  }
 });
 
 test("project text is inserted once and kept literal", async () => {
@@ -363,6 +504,38 @@ test("shared workflow keeps the six phases and the full template set", async () 
   assert.match(workflow, /recommended option first/u);
   assert.match(workflow, /Continue dependent work only after the answer/u);
   assert.match(workflow, /Do not defer an unresolved decision/u);
+});
+
+test("AC-08 shared rapid rules define actionable Risk and Blocker markers without weakening safeguards", async () => {
+  const target = await initializedProject("claude", { deliveryMode: "rapid" });
+  const workflow = await readFile(path.join(target, ".ai-sdlc/workflow.md"), "utf8");
+  const rapid = guidanceAround(workflow, "rapid", 6000);
+
+  assert.match(rapid, /Risk:/u);
+  assert.match(rapid, /Blocker:/u);
+  assert.match(rapid, /risk[\s\S]{0,300}impact/iu);
+  assert.match(rapid, /risk[\s\S]{0,500}(?:evidence|basis|unknown)/iu);
+  assert.match(rapid, /blocker[\s\S]{0,400}(?:blocked work|work (?:is )?blocked|what .*blocks?)/iu);
+  assert.match(rapid, /blocker[\s\S]{0,500}(?:decision|input)/iu);
+  assert.match(rapid, /pause only[\s\S]{0,120}(?:affected|blocked)/iu);
+  assert.match(workflow, /cannot be read[\s\S]{0,100}supported JSON object/iu);
+  assert.match(workflow, /Never fall back to the project profile/iu);
+
+  for (const safeguard of [
+    /safety/iu,
+    /privacy/iu,
+    /compliance/iu,
+    /data loss/iu,
+    /shared contract/iu,
+    /migration/iu,
+    /(?:hard|difficult|expensive)[ -]to[ -]reverse|irreversible/iu,
+  ]) {
+    assert.match(rapid, safeguard);
+  }
+  assert.match(
+    rapid,
+    /(?:do not|must not|never)[\s\S]{0,500}(?:skip|bypass)|(?:cannot|must not)[\s\S]{0,300}(?:because|for)[\s\S]{0,100}(?:rapid|speed)/iu,
+  );
 });
 
 test("artifact index lists only real, openable artifacts", async () => {
@@ -418,6 +591,114 @@ test("PM and BA templates retain PRD and user story detail", async () => {
   assert.match(story, /```gherkin/u);
   assert.match(story, /Alternate and failure paths/u);
   assert.match(story, /## Decision record/u);
+});
+
+test("AC-04 formal guidance preserves established role depth and treats a missing mode as formal", async () => {
+  const target = await initializedProject("claude", {
+    roles: "pm-ba,designer,architect",
+    deliveryMode: "formal",
+  });
+  const roles = {
+    "pm-ba": [/PRD/u, /stor(?:y|ies)/iu, /acceptance criter/iu],
+    designer: [/design baseline/iu, /design spec/iu, /Figma/u],
+    architect: [/Architecture Pack/u, /C4/u, /ADR/u, /NFR/u, /risk review/iu],
+  };
+
+  const workflow = await readFile(path.join(target, ".ai-sdlc/workflow.md"), "utf8");
+  assert.match(
+    workflow,
+    /installation record or field is missing[\s\S]{0,80}`formal`/iu,
+  );
+  assert.match(workflow, /`deliveryMode` field[\s\S]{0,100}authoritative/iu);
+  assert.match(
+    workflow,
+    /`formal` keeps the structured, reviewable approach in the role instructions/iu,
+  );
+
+  for (const [roleId, retainedConcepts] of Object.entries(roles)) {
+    const role = await readFile(path.join(target, ".claude/agents", `${roleId}.md`), "utf8");
+    for (const concept of retainedConcepts) assert.match(role, concept, roleId);
+  }
+});
+
+test("AC-05 rapid PM and BA guidance favors a minimal evidenced increment and observable acceptance", async () => {
+  const target = await initializedProject("claude", {
+    roles: "pm-ba",
+    deliveryMode: "rapid",
+  });
+  const role = await readFile(path.join(target, ".claude/agents/pm-ba.md"), "utf8");
+  const rapid = guidanceAround(role, "rapid");
+
+  assert.match(rapid, /smallest|minimum/iu);
+  assert.match(rapid, /deliverable|valuable|usable/iu);
+  assert.match(rapid, /increment|slice|change/iu);
+  assert.match(rapid, /business rule/iu);
+  assert.match(rapid, /necessary|required|needed/iu);
+  assert.match(rapid, /acceptance criter/iu);
+  assert.match(rapid, /observable|visible|checkable|can be checked/iu);
+  assert.match(rapid, /without evidence|unsupported|no evidence/iu);
+  assert.match(rapid, /ceremon|filler|ritual/iu);
+  assert.match(rapid, /do not|avoid/iu);
+});
+
+test("AC-06 rapid Designer guidance stays on the affected slice while retaining essential UX states", async () => {
+  const target = await initializedProject("claude", {
+    roles: "designer",
+    deliveryMode: "rapid",
+  });
+  const role = await readFile(path.join(target, ".claude/agents/designer.md"), "utf8");
+  const rapid = guidanceAround(role, "rapid", 4500);
+
+  assert.match(rapid, /affected/iu);
+  assert.match(rapid, /slice/iu);
+  assert.match(rapid, /(?:real|necessary|required|actually occur)[\s\S]{0,100}states?|states?[\s\S]{0,100}(?:real|necessary|required|actually occur)/iu);
+  assert.match(rapid, /reuse[\s\S]{0,120}existing[\s\S]{0,120}pattern/iu);
+  assert.match(rapid, /do not|avoid|not by default|unless (?:needed|required|requested)/iu);
+  assert.match(rapid, /design system/iu);
+  assert.match(rapid, /design baseline/iu);
+  assert.match(rapid, /Figma/u);
+  assert.match(rapid, /high[ -]fidelity/iu);
+  assert.match(rapid, /responsive/iu);
+  assert.match(rapid, /accessib/iu);
+  assert.match(rapid, /(?:key|critical|required|necessary)[\s\S]{0,80}(?:failure|error) states?|(?:failure|error) states?[\s\S]{0,80}(?:key|critical|required|necessary)/iu);
+});
+
+test("AC-07 rapid Architect guidance preserves boundaries and creates only triggered minimum evidence", async () => {
+  const target = await initializedProject("claude", {
+    roles: "architect",
+    deliveryMode: "rapid",
+  });
+  const role = await readFile(path.join(target, ".claude/agents/architect.md"), "utf8");
+  const profile = await readFile(path.join(target, ".ai-sdlc/project-profile.md"), "utf8");
+  const planning = await readFile(path.join(target, ".ai-sdlc/technology-planning.md"), "utf8");
+  const rapid = guidanceAround(role, "rapid", 5000);
+
+  assert.match(rapid, /(?:keep|preserve|stay within)[\s\S]{0,160}(?:existing|current)[\s\S]{0,160}(?:technology|technical|architecture)[\s\S]{0,100}boundar/iu);
+  assert.match(rapid, /future[\s\S]{0,160}(?:assumption|hypothetical|possible need)|(?:assumption|hypothetical)[\s\S]{0,160}future/iu);
+  for (const unnecessaryAddition of [
+    /service/iu,
+    /layer/iu,
+    /framework/iu,
+    /vendor/iu,
+    /abstraction/iu,
+  ]) {
+    assert.match(rapid, unnecessaryAddition);
+  }
+  assert.match(rapid, /do not|avoid|must not/iu);
+  for (const conditionalArtifact of [
+    /C4/u,
+    /ADR/u,
+    /options/iu,
+    /NFR/u,
+    /risk review/iu,
+  ]) {
+    assert.match(rapid, conditionalArtifact);
+  }
+  assert.match(rapid, /trigger|only when|when .*require|real need/iu);
+  assert.match(rapid, /minimum|smallest|minimal/iu);
+  assert.match(role, /any later task that needs a material technology choice/iu);
+  assert.match(profile, /delivery-mode entry rules/iu);
+  assert.match(planning, /missing profile alone is not a reason to create one/iu);
 });
 
 test("human decisions are asked immediately and artifacts record resolved choices", async () => {
@@ -1033,7 +1314,51 @@ test("rollback keeps a generated file that another process changed or replaced",
   }
 });
 
-test("CLI help is short and invalid options fail", async () => {
+test("AC-09 init does not report success after authoritative metadata changes", async () => {
+  const target = await temporaryDirectory();
+  const installationPath = path.join(target, ".ai-sdlc/installation.json");
+
+  await assert.rejects(
+    run([
+      "init",
+      target,
+      "--name",
+      "Authority Race",
+      "--summary",
+      "Keeps mode output truthful",
+      "--tool",
+      "claude",
+      "--roles",
+      "architect",
+      "--delivery-mode",
+      "rapid",
+    ], {
+      output: () => {},
+      beforeWrite: async ({ path: entryPath }) => {
+        if (entryPath !== ".ai-sdlc/project-profile.md") return;
+        const installation = JSON.parse(await readFile(installationPath, "utf8"));
+        installation.deliveryMode = "formal";
+        await writeFile(
+          installationPath,
+          `${JSON.stringify(installation, null, 2)}\n`,
+          "utf8",
+        );
+      },
+    }),
+    (error) => error instanceof AggregateError
+      && /changed before initialization completed/iu.test(error.message)
+      && /changed during rollback/iu.test(error.message),
+  );
+
+  assert.equal(
+    JSON.parse(await readFile(installationPath, "utf8")).deliveryMode,
+    "formal",
+  );
+  assert.equal(existsSync(path.join(target, "CLAUDE.md")), false);
+  assert.equal(existsSync(path.join(target, ".ai-sdlc/project-profile.md")), false);
+});
+
+test("AC-01 CLI help lists delivery mode and invalid options fail", async () => {
   const cliPath = path.join(repositoryRoot, "bin/cli.js");
   const helpResult = spawnSync(process.execPath, [cliPath, "--help"], {
     encoding: "utf8",
@@ -1042,6 +1367,9 @@ test("CLI help is short and invalid options fail", async () => {
   assert.equal(helpResult.status, 0, helpResult.stderr);
   assert.match(helpResult.stdout, /--tool <tool>/u);
   assert.match(helpResult.stdout, /--roles <list>/u);
+  assert.match(helpResult.stdout, /--delivery-mode <mode>/u);
+  assert.match(helpResult.stdout, /formal/u);
+  assert.match(helpResult.stdout, /rapid/u);
   assert.doesNotMatch(helpResult.stdout, /--development|--stack|--validation/u);
 
   await assert.rejects(run(["init", ".", "--tool", "unknown"]), /Unknown AI tool/u);
@@ -1082,7 +1410,7 @@ test("CLI help is short and invalid options fail", async () => {
   await assert.rejects(run(["init", ".", "--roles"]), /--roles needs a value/u);
 });
 
-test("README describes role selection, artifact routing, and Architect technology planning", async () => {
+test("AC-10 README explains both delivery modes, their default and their scope", async () => {
   const readme = await readFile(path.join(repositoryRoot, "README.md"), "utf8");
 
   assert.match(readme, /## Generated files/u);
@@ -1103,9 +1431,82 @@ test("README describes role selection, artifact routing, and Architect technolog
   assert.match(readme, /create-ai-native-sdlc update \./u);
   assert.match(readme, /Project state is preserved/u);
   assert.match(readme, /\.ai-sdlc\/installation\.json/u);
+  assert.match(readme, /installation\.json[\s\S]{0,100}authoritative/iu);
+  assert.match(readme, /profile snapshot does not (?:change|switch)/iu);
   assert.match(readme, /supported legacy installation/u);
   assert.match(readme, /does not use MCP|No MCP|not (?:an )?MCP/iu);
+  assert.match(readme, /--delivery-mode/u);
+  assert.match(readme, /formal/iu);
+  assert.match(readme, /rapid/iu);
+  assert.match(readme, /default[\s\S]{0,100}formal|formal[\s\S]{0,100}default/iu);
+  assert.match(readme, /PM \/ BA|PM\/BA/u);
+  assert.match(readme, /Designer/u);
+  assert.match(readme, /Architect/u);
+  assert.match(readme, /(?:only|affects)[\s\S]{0,200}(?:PM \/ BA|PM\/BA)[\s\S]{0,200}Designer[\s\S]{0,200}Architect|(?:PM \/ BA|PM\/BA)[\s\S]{0,200}Designer[\s\S]{0,200}Architect[\s\S]{0,200}(?:only|affects)/iu);
+  assert.match(readme, /safety/iu);
+  assert.match(readme, /privacy/iu);
+  assert.match(readme, /compliance/iu);
+  assert.match(readme, /data loss/iu);
+  assert.match(readme, /shared contract/iu);
+  assert.match(readme, /migration/iu);
+  assert.match(readme, /(?:hard|difficult|expensive)[ -]to[ -]reverse|irreversible/iu);
   assert.doesNotMatch(readme, /--development|--stack|--validation/u);
+});
+
+test("AC-11 delivery mode adds no dependencies or generated paths and keeps rollback create-only", async () => {
+  const packageJson = JSON.parse(await readFile(path.join(repositoryRoot, "package.json"), "utf8"));
+  assert.deepEqual(packageJson.files, ["bin", "templates", "README.md", "LICENSE"]);
+  assert.equal(Object.hasOwn(packageJson, "dependencies"), false);
+  assert.equal(Object.hasOwn(packageJson, "devDependencies"), false);
+
+  const expectedPaths = [
+    ".agents/skills/sdlc-artifact-bridge/SKILL.md",
+    ".ai-sdlc/artifact-hosts.json",
+    ".ai-sdlc/installation.json",
+    ".ai-sdlc/project-profile.md",
+    ".ai-sdlc/technology-planning.md",
+    ".ai-sdlc/workflow.md",
+    ...templateFiles.map((file) => `.ai-sdlc/templates/${file}`),
+    ...roleIds.map((roleId) => `.claude/agents/${roleId}.md`),
+    "CLAUDE.md",
+    "docs/ai-sdlc/index.md",
+  ].sort();
+
+  for (const deliveryMode of ["formal", "rapid"]) {
+    const target = await initializedProject("claude", { deliveryMode });
+    const relativePaths = (await listFiles(target))
+      .map((file) => path.relative(target, file).split(path.sep).join("/"))
+      .sort();
+    assert.deepEqual(relativePaths, expectedPaths, deliveryMode);
+  }
+
+  const rollbackTarget = await temporaryDirectory();
+  const sentinel = path.join(rollbackTarget, "keep.txt");
+  await writeFile(sentinel, "Existing project file.\n", "utf8");
+  await assert.rejects(
+    run([
+      "init",
+      rollbackTarget,
+      "--name",
+      "Rapid Rollback",
+      "--summary",
+      "Fails after writes start",
+      "--tool",
+      "claude",
+      "--roles",
+      "all",
+      "--delivery-mode",
+      "rapid",
+    ], {
+      output: () => {},
+      beforeWrite: ({ path: entryPath }) => {
+        if (entryPath === ".ai-sdlc/workflow.md") throw new Error("Planned rapid failure");
+      },
+    }),
+    /Planned rapid failure/u,
+  );
+  assert.deepEqual(await listFiles(rollbackTarget), [sentinel]);
+  assert.equal(await readFile(sentinel, "utf8"), "Existing project file.\n");
 });
 
 test("npm package includes the CLI, templates, bridge skill, and no generated MCP config", async () => {
@@ -1146,7 +1547,7 @@ test("generated files are plain English and do not contain old platform contract
 
 async function initializedProject(tool, configuration = {}) {
   const target = await temporaryDirectory();
-  await run([
+  const args = [
     "init",
     target,
     "--name",
@@ -1157,7 +1558,11 @@ async function initializedProject(tool, configuration = {}) {
     tool,
     "--roles",
     configuration.roles ?? "all",
-  ], { output: () => {} });
+  ];
+  if (configuration.deliveryMode) {
+    args.push("--delivery-mode", configuration.deliveryMode);
+  }
+  await run(args, { output: () => {} });
   return target;
 }
 
@@ -1174,6 +1579,12 @@ function headings(markdown) {
 
 function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function guidanceAround(markdown, mode, length = 3500) {
+  const match = new RegExp(`\\b${escapeRegex(mode)}\\b`, "iu").exec(markdown);
+  assert.ok(match, `Expected ${mode} delivery guidance`);
+  return markdown.slice(match.index, match.index + length);
 }
 
 function answers(values, questions) {

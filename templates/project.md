@@ -8,6 +8,8 @@ Read `.ai-sdlc/project-profile.md` for the local role agents, phase coverage, an
 
 Read `.ai-sdlc/workflow.md` for the process.
 
+Read `.ai-sdlc/installation.json` for the active delivery mode.
+
 Read `docs/ai-sdlc/index.md` to find the delivery documents that exist.
 
 When a required delivery document is not local, read `.ai-sdlc/artifact-hosts.json` and use the `sdlc-artifact-bridge` skill in `.agents/skills/sdlc-artifact-bridge/` to resolve its configured host. The bridge reads artifacts; it does not synchronize repositories.
