@@ -383,8 +383,14 @@ test("PM and BA templates retain PRD and user story detail", async () => {
   const prd = await readFile(path.join(target, ".ai-sdlc/templates/prd.md"), "utf8");
   const story = await readFile(path.join(target, ".ai-sdlc/templates/story.md"), "utf8");
 
+  assert.match(pm, /plain, concrete, reviewable requirements/u);
   assert.match(pm, /docs\/ai-sdlc\/stories/u);
-  assert.match(pm, /stable story and acceptance-criteria IDs/u);
+  assert.match(pm, /real situation in plain, everyday language/u);
+  assert.match(pm, /what happens now, why it matters, what should happen instead/u);
+  assert.match(pm, /avoid slogans, invented jargon, or abstract labels/u);
+  assert.match(pm, /one user task needs more detail than the PRD/u);
+  assert.match(pm, /Give every story and acceptance criterion an ID that does not change/u);
+  assert.match(pm, /what someone can see afterward/u);
   assert.deepEqual(
     headings(prd),
     [
@@ -594,6 +600,13 @@ test("Architecture Pack keeps C4, ADR, concerns, and required API patterns", asy
   assert.match(architect, /check was not run/u);
   assert.match(architect, /docs\/ai-sdlc\/adrs/u);
   assert.match(architect, /required project baseline/u);
+  assert.match(architect, /Keep the system structure and technical decisions consistent/u);
+  assert.match(architect, /Write every architecture document in plain language/u);
+  assert.match(architect, /what exists now, what needs to change/u);
+  assert.match(architect, /explain what they mean for this project instead of using the label as the explanation/u);
+  assert.match(architect, /who uses the system and which outside systems it talks to/u);
+  assert.match(architect, /targets that can be checked and how to check them/u);
+  assert.match(architect, /real alternatives to compare/u);
 
   assert.match(patterns, /RESTful contract/u);
   assert.match(patterns, /HTTP status codes are the authoritative transport outcome/u);
