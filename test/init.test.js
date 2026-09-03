@@ -116,7 +116,7 @@ test("each AI tool gets only its native instructions and selected role files", a
   }
 });
 
-test("all roles produce the profile, registry, and default bridge skill", async () => {
+test("all roles produce installation state, the profile, registry, and default bridge skill", async () => {
   const target = await temporaryDirectory();
   const output = [];
 
@@ -133,6 +133,7 @@ test("all roles produce the profile, registry, and default bridge skill", async 
   ], { output: (value) => output.push(value) }), 0);
 
   assert.equal(existsSync(path.join(target, ".github/copilot-instructions.md")), true);
+  assert.match(output.join(""), /Installation: \.ai-sdlc\/installation\.json/u);
   assert.match(output.join(""), /Profile: \.ai-sdlc\/project-profile\.md/u);
   assert.match(output.join(""), /Artifact hosts: \.ai-sdlc\/artifact-hosts\.json/u);
   assert.match(output.join(""), /Artifact bridge: \.agents\/skills\/sdlc-artifact-bridge\/SKILL\.md/u);
@@ -159,6 +160,10 @@ test("all roles produce the profile, registry, and default bridge skill", async 
   assert.doesNotMatch(profile, /\| (?:Development work|Development area|Stack preference|UI system|UI MCP|Validation preference) \|/u);
 
   assert.equal(existsSync(path.join(target, ".ai-sdlc/artifact-hosts.json")), true);
+  assert.deepEqual(
+    JSON.parse(await readFile(path.join(target, ".ai-sdlc/installation.json"), "utf8")),
+    { schemaVersion: 1, tool: "copilot", roles: roleIds },
+  );
   assert.equal(existsSync(path.join(target, ".agents/skills/sdlc-artifact-bridge/SKILL.md")), true);
   assert.equal(existsSync(path.join(target, ".vscode/mcp.json")), false);
   assert.equal(existsSync(path.join(target, ".mcp.json")), false);
@@ -1095,6 +1100,10 @@ test("README describes role selection, artifact routing, and Architect technolog
   assert.match(readme, /\$sdlc-artifact-bridge product-repo:\/docs\/ai-sdlc\/prd\.md/u);
   assert.match(readme, /SKILL\.md/u);
   assert.match(readme, /technology profile/u);
+  assert.match(readme, /create-ai-native-sdlc update \./u);
+  assert.match(readme, /Project state is preserved/u);
+  assert.match(readme, /\.ai-sdlc\/installation\.json/u);
+  assert.match(readme, /supported legacy installation/u);
   assert.match(readme, /does not use MCP|No MCP|not (?:an )?MCP/iu);
   assert.doesNotMatch(readme, /--development|--stack|--validation/u);
 });

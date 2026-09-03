@@ -18,9 +18,10 @@
 # Code rules
 
 - Use the Node.js standard library when it is enough.
-- Initialization is create-only. Never overwrite an existing file.
+- Initialization is create-only and never overwrites an existing file.
+- Update only documented CLI-managed workflow, template, bridge, and selected role files. It may create missing installation metadata and required configuration for a supported legacy installation, but it never replaces existing project configuration or delivery artifacts.
 - Check every destination before writing.
-- On failure, remove only unchanged files created by the current command.
+- On failure, restore safely replaced files and remove only unchanged files created by the current command.
 - Keep tool-specific rendering in `bin/cli.js`.
 - Update tests when output paths or generated content change.
 

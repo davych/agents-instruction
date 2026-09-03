@@ -28,6 +28,21 @@ npx --yes --package=github:davych/my-sdlc-workflow \
 
 The target defaults to the current directory. Non-interactive use supplies `--roles` with a comma-separated list. Use `--roles all` for all six agents or `--roles none` when this repository only needs the shared workflow, artifact routes, and bridge skill.
 
+## Update an existing installation
+
+Run the latest CLI against a project that was already initialized:
+
+```bash
+npx --yes --package=github:davych/my-sdlc-workflow \
+  create-ai-native-sdlc update .
+```
+
+Update is non-interactive. New installations record the initialized AI tool and roles in `.ai-sdlc/installation.json`. For an older installation without that file, update verifies the generated project instructions and derives the roles from the project profile or existing role files. If more than one legacy tool installation is recognized, select one with `--tool copilot`, `--tool claude`, or `--tool codex`.
+
+The command replaces the CLI-managed workflow, technology-planning guide, templates, artifact bridge Skill, and selected role agent files with the versions shipped by the current CLI. It also creates newly shipped files in those managed locations. When a supported legacy installation does not yet have the installation record, project profile, or artifact host registry, update creates the missing file from the detected installation; it never replaces an existing profile or registry. It does not add or remove roles, and it does not delete files that are no longer shipped.
+
+Project state is preserved. Update does not change the root project instructions or replace an existing `.ai-sdlc/project-profile.md` or `.ai-sdlc/artifact-hosts.json`. It also preserves `docs/ai-sdlc/index.md`, delivery documents under `docs/ai-sdlc/`, unknown role agents, and other project files. `.ai-sdlc/installation.json` is CLI-owned identification metadata. Custom changes inside a CLI-managed file are replaced, so keep project-specific rules and working documents in the preserved locations.
+
 ## Generated files
 
 Only the selected AI tool is configured.
@@ -38,7 +53,7 @@ Only the selected AI tool is configured.
 | Claude Code | `CLAUDE.md` | `.claude/agents/*.md` |
 | Codex | `AGENTS.md` | `.codex/agents/*.toml` |
 
-Initialization writes `.ai-sdlc/project-profile.md` as the human-readable description of local role coverage and detected project evidence. It also writes `.ai-sdlc/artifact-hosts.json` as the machine-readable registry for local and cross-repository artifact ownership.
+Initialization writes `.ai-sdlc/project-profile.md` as the human-readable description of local role coverage and detected project evidence. It also writes `.ai-sdlc/artifact-hosts.json` as the machine-readable registry for local and cross-repository artifact ownership, plus `.ai-sdlc/installation.json` so later updates can identify the selected AI tool and roles without guessing from common project filenames.
 
 Stack and validation choices are intentionally not part of initialization. When the Architect first works, it looks for an existing technology profile locally and through the artifact routes. If none exists, it inspects evidence, asks the user only for material unresolved choices, and creates `docs/ai-sdlc/technology-profile.md`. This works even when no development role is installed, and it does not install dependencies, scaffold an application, or authorize a migration.
 
@@ -51,6 +66,7 @@ Every tool also gets the shared workflow and artifact templates:
       SKILL.md
 .ai-sdlc/
   artifact-hosts.json
+  installation.json
   project-profile.md
   technology-planning.md
   workflow.md
@@ -152,10 +168,13 @@ The Architecture Pack is a project-level baseline that is maintained when archit
 
 Initialization is create-only. It checks every planned destination before writing and stops when any destination already exists. If a later write fails, it removes only unchanged files created by that command.
 
+Update checks every managed destination before writing and rejects symbolic links or other unsafe paths. If a later write fails, it restores files already replaced and removes unchanged files created by that update. A file changed or replaced by another process during rollback is kept and reported instead of being overwritten.
+
 ## CLI reference
 
 ```text
 create-ai-native-sdlc init [target] [options]
+create-ai-native-sdlc update [target] [--tool <tool>]
 
 --name <name>               Project name
 --summary <text>            Short project summary
@@ -165,6 +184,8 @@ create-ai-native-sdlc init [target] [options]
 ```
 
 Role IDs are `pm-ba`, `designer`, `architect`, `software-engineer`, `tester`, and `devops`.
+
+For `update`, `--tool` is needed only when more than one supported legacy tool installation is detected. The initialization-only `--name`, `--summary`, and `--roles` options are not accepted.
 
 ## Development
 

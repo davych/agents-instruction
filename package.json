@@ -1,7 +1,7 @@
 {
   "name": "create-ai-native-sdlc",
-  "version": "0.1.0",
-  "description": "A small CLI that installs tool-specific AI delivery instructions.",
+  "version": "0.2.0",
+  "description": "A small CLI that installs and updates tool-specific AI delivery instructions.",
   "type": "module",
   "bin": {
     "create-ai-native-sdlc": "bin/cli.js"
