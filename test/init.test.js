@@ -484,6 +484,44 @@ test("Designer stays technology-neutral when no technology profile exists", asyn
   assert.doesNotMatch(spec, /spec_version|deferred_validations|validator/iu);
 });
 
+test("Designer keeps delivery uncertainty out of the UI and uses realistic mock content", async () => {
+  const target = await initializedProject("copilot");
+  const designer = await readFile(
+    path.join(target, ".github/agents/designer.agent.md"),
+    "utf8",
+  );
+  const spec = await readFile(
+    path.join(target, ".ai-sdlc/templates/design-spec.md"),
+    "utf8",
+  );
+
+  assert.match(designer, /Keep PRD or story dependencies, assumptions, and pending confirmations separate from product UI content, states, and layout/u);
+  assert.match(designer, /best-supported reversible assumptions that do not require human authority/u);
+  assert.match(designer, /review-only `!` marker/u);
+  assert.match(designer, /separate annotation layer and outside the product layout/u);
+  assert.match(designer, /Removing that layer must leave the UI's dimensions, spacing, hierarchy, copy, interaction, states, accessibility, and implementation unchanged/u);
+  assert.match(designer, /plain, representative mock content that fits the confirmed business scenario/u);
+  assert.match(designer, /everyday language used by the target users/u);
+  assert.match(designer, /names, dates, amounts, statuses, labels, and messages believable and consistent/u);
+  assert.match(designer, /Avoid real personal or production data, lorem ipsum, vague placeholders, slogans, and invented jargon/u);
+  assert.match(designer, /identify them as draft or mock in the design spec, not inside the UI/u);
+  assert.match(designer, /never present them as approved requirements or final content/u);
+  assert.match(designer, /review annotation only when the current design does not depend on a human decision/u);
+  assert.match(designer, /If finalizing any affected UI requires a human decision, ask immediately/u);
+  assert.match(designer, /pause only that part, and continue unaffected design work/u);
+  assert.match(spec, /## UI content/u);
+  assert.match(spec, /## Review-only annotations/u);
+  assert.match(spec, /do not block the current design or require a human decision to complete it/u);
+  assert.match(spec, /review notes, not UI or implementation requirements/u);
+  assert.match(spec, /does not make the design `Blocked`/u);
+  assert.match(spec, /Ask about a required decision immediately and record its resolution in the decision record instead of this table/u);
+  assert.match(spec, /Screen and UI anchor/u);
+  assert.match(spec, /Plain-language note/u);
+  assert.match(spec, /## Reversible design assumptions/u);
+  assert.match(spec, /evidence-based, reversible, and do not require human authority/u);
+  assert.doesNotMatch(spec, /Assumption or blocker/u);
+});
+
 test("Architect initializes technology planning on first use without other roles", async () => {
   const target = await initializedProject("codex", { roles: "architect" });
   const architect = await readCodexInstructions(
