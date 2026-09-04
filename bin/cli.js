@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const templateRoot = path.join(packageRoot, "templates");
 const installationPath = ".ai-sdlc/installation.json";
-const installationSchemaVersion = 1;
+const installationSchemaVersion = 2;
 const defaultDeliveryMode = "formal";
 const deliveryModes = {
   formal: "Large-team formal",
@@ -55,6 +55,7 @@ const roleDefinitions = [
     purpose: "system architecture and technology planning",
     artifactPaths: [
       "/docs/ai-sdlc/technology-profile.md",
+      "/docs/ai-sdlc/technology/",
       "/docs/ai-sdlc/architecture.md",
       "/docs/ai-sdlc/architecture-discovery-context.md",
       "/docs/ai-sdlc/architecture-options.md",
@@ -72,9 +73,7 @@ const roleDefinitions = [
     phase: "Implementation",
     purpose: "software implementation",
     artifactPaths: [
-      "/docs/ai-sdlc/implementation-plan.md",
-      "/docs/ai-sdlc/implementation-tasks.md",
-      "/docs/ai-sdlc/implementation-notes.md",
+      "/docs/ai-sdlc/implementation/",
     ],
   },
   {
@@ -94,6 +93,24 @@ const roleDefinitions = [
 ];
 const roleIds = roleDefinitions.map(({ id }) => id);
 const roleById = new Map(roleDefinitions.map((role) => [role.id, role]));
+const softwareEngineerRoleId = "software-engineer";
+const developerAgentDefinitions = {
+  frontend: {
+    id: "frontend-developer",
+    fragment: "frontend.md",
+    description: "Own frontend implementation within accepted architecture and technology profiles.",
+  },
+  backend: {
+    id: "backend-developer",
+    fragment: "backend.md",
+    description: "Own backend implementation within accepted architecture and technology profiles.",
+  },
+  fullstack: {
+    id: "fullstack-developer",
+    fragment: "fullstack.md",
+    description: "Own end-to-end implementation across accepted frontend and backend boundaries.",
+  },
+};
 
 const aiTools = {
   copilot: {
@@ -153,6 +170,7 @@ async function runInit(target, options, context, output) {
       ?? (await ask(prompt, `Project name (default: ${defaultName}): `))
       ?? defaultName;
     const resolvedName = projectName || defaultName;
+    const repositoryId = options.repositoryId ?? defaultRepositoryId(defaultName);
     const projectSummary = options.summary
       ?? await askRequired(prompt, output, "Project summary: ");
     const toolKey = options.tool ?? await askForTool(prompt, output);
@@ -160,6 +178,7 @@ async function runInit(target, options, context, output) {
     const configuration = await resolveConfiguration(options, prompt, output, detected);
     const entries = await buildEntries(
       resolvedName,
+      repositoryId,
       projectSummary,
       toolKey,
       tool,
@@ -177,6 +196,7 @@ async function runInit(target, options, context, output) {
 
     await writeEntries(target, entries, context.beforeWrite);
     output(`Created ${entries.length} files for ${resolvedName}.\n`);
+    output(`Repository ID: ${repositoryId}\n`);
     output(`Tool: ${tool.label}\n`);
     output(`Instructions: ${tool.instructionsPath}\n`);
     output(`Installation: ${installationPath}\n`);
@@ -185,6 +205,7 @@ async function runInit(target, options, context, output) {
     output("Artifact bridge: .agents/skills/sdlc-artifact-bridge/SKILL.md\n");
     output(`Role agents: ${configuration.roleIds.length > 0 ? tool.agentsDirectory : "None"}\n`);
     output(`Selected roles: ${formatList(configuration.roleIds)}\n`);
+    output(`Developer agents: ${formatDeveloperAgents(configuration.roleProfiles)}\n`);
     output(
       `Delivery mode: ${configuration.deliveryMode} (${deliveryModes[configuration.deliveryMode]})\n`,
     );
@@ -201,29 +222,23 @@ async function runUpdate(target, options, context, output) {
     installationPath,
     targetIdentity,
   );
-  const legacyProfileSnapshot = installationSnapshot
-    ? null
-    : await captureUpdateSource(
-      target,
-      ".ai-sdlc/project-profile.md",
-      targetIdentity,
-    );
   const installation = await detectInstallation(target, options.tool, targetIdentity);
   const assertConfiguration = createUpdateConfigurationGuard(
     target,
     installation,
     installationSnapshot,
-    legacyProfileSnapshot,
     targetIdentity,
   );
   await assertConfiguration();
   const tool = aiTools[installation.toolKey];
   const entries = await buildUpdateEntries(
     target,
-    installation.toolKey,
     tool,
+    installation.repositoryId,
     installation.roleIds,
     installation.deliveryMode,
+    installation.roleProfiles,
+    installation.architectureSource,
     targetIdentity,
   );
   await context.beforePlan?.({ target, entries });
@@ -239,14 +254,16 @@ async function runUpdate(target, options, context, output) {
 
   output(`Refreshed SDLC-managed files for ${tool.label}.\n`);
   output(`Tool: ${tool.label}\n`);
+  output(`Repository ID: ${installation.repositoryId}\n`);
   output(`Updated: ${result.updated}\n`);
   output(`Added: ${result.created}\n`);
   output(`Unchanged: ${result.unchanged}\n`);
   output(`Selected roles: ${formatList(installation.roleIds)}\n`);
+  output(`Developer agents: ${formatDeveloperAgents(installation.roleProfiles)}\n`);
   output(
     `Delivery mode: ${installation.deliveryMode} (${deliveryModes[installation.deliveryMode]})\n`,
   );
-  output(`Delivery mode source: ${formatDeliveryModeSource(installation.modeSource)}\n`);
+  output(`Delivery mode source: ${installationPath}\n`);
   output("Preserved project settings and delivery artifacts.\n");
   return 0;
 }
@@ -289,6 +306,10 @@ function needsInteractiveInput(options) {
     || !options.tool
     || options.roles === null
     || (
+      options.roles?.includes(softwareEngineerRoleId)
+      && options.engineerProfile === null
+    )
+    || (
       options.deliveryMode === null
       && options.roles.some((roleId) => deliveryModeRoleIds.has(roleId))
     );
@@ -296,6 +317,22 @@ function needsInteractiveInput(options) {
 
 async function resolveConfiguration(options, prompt, output, detected) {
   const selectedRoleIds = options.roles ?? await askForRoles(prompt, output);
+  const hasSoftwareEngineer = selectedRoleIds.includes(softwareEngineerRoleId);
+  const hasArchitect = selectedRoleIds.includes("architect");
+
+  if (!hasSoftwareEngineer && options.engineerProfile) {
+    throw new Error("--engineer-scope requires the software-engineer role.");
+  }
+  if (options.architectureSource && !hasSoftwareEngineer) {
+    throw new Error("--architecture-source requires the software-engineer role.");
+  }
+  if (options.architectureSource && hasArchitect) {
+    throw new Error("--architecture-source cannot be used with a local Architect role.");
+  }
+
+  const engineerProfile = hasSoftwareEngineer
+    ? options.engineerProfile ?? await askForEngineerScope(prompt, output)
+    : null;
   const usesDeliveryMode = selectedRoleIds.some((roleId) => deliveryModeRoleIds.has(roleId));
   const deliveryMode = options.deliveryMode
     ?? (usesDeliveryMode ? await askForDeliveryMode(prompt, output) : defaultDeliveryMode);
@@ -303,8 +340,38 @@ async function resolveConfiguration(options, prompt, output, detected) {
     roleIds: [...selectedRoleIds],
     activePhases: selectedRoleIds.map((roleId) => roleById.get(roleId).phase),
     deliveryMode,
+    roleProfiles: engineerProfile
+      ? { [softwareEngineerRoleId]: engineerProfile }
+      : null,
+    architectureSource: options.architectureSource,
     detected,
   };
+}
+
+async function askForEngineerScope(prompt, output) {
+  if (!prompt) {
+    throw new Error("--engineer-scope is required when software-engineer is selected.");
+  }
+  const question = [
+    "Choose the Software Engineer responsibility:",
+    "  1. Frontend specialist",
+    "  2. Backend specialist",
+    "  3. Full-stack developer",
+    "  4. Separate frontend and backend specialists",
+    "Enter 1, 2, 3, or 4: ",
+  ].join("\n");
+
+  while (true) {
+    const answer = await ask(prompt, question);
+    const profile = {
+      "1": { areas: ["frontend"], agentMode: "specialist" },
+      "2": { areas: ["backend"], agentMode: "specialist" },
+      "3": { areas: ["frontend", "backend"], agentMode: "fullstack" },
+      "4": { areas: ["frontend", "backend"], agentMode: "separate" },
+    }[answer] ?? parseEngineerScopeInput(answer, true);
+    if (profile) return profile;
+    output("Choose 1, 2, 3, or 4.\n");
+  }
 }
 
 async function askForDeliveryMode(prompt, output) {
@@ -352,7 +419,14 @@ async function askForRoles(prompt, output) {
   return selected;
 }
 
-async function buildEntries(projectName, projectSummary, toolKey, tool, configuration) {
+async function buildEntries(
+  projectName,
+  repositoryId,
+  projectSummary,
+  toolKey,
+  tool,
+  configuration,
+) {
   const projectSource = await readFile(path.join(templateRoot, "project.md"), "utf8");
   const projectInstructions = replaceValues(projectSource, {
     PROJECT_NAME: projectName,
@@ -360,19 +434,14 @@ async function buildEntries(projectName, projectSummary, toolKey, tool, configur
     AGENTS_DIRECTORY: tool.agentsDirectory,
   });
   const profileSource = await readFile(path.join(templateRoot, "project-profile.md"), "utf8");
-  const projectProfile = replaceValues(profileSource, profileValues(configuration));
+  const projectProfile = replaceValues(
+    profileSource,
+    profileValues(configuration, repositoryId),
+  );
 
   const sharedRoot = path.join(templateRoot, "shared");
   const sharedEntries = await readTemplateDirectory(sharedRoot, sharedRoot);
-  const roleEntries = [];
-
-  for (const roleId of configuration.roleIds) {
-    const source = await readFile(path.join(templateRoot, "agents", `${roleId}.md`), "utf8");
-    roleEntries.push({
-      path: `${tool.agentsDirectory}/${tool.roleFileName(roleId)}`,
-      content: tool.renderRole(roleId, source),
-    });
-  }
+  const roleEntries = await buildRoleEntries(tool, configuration);
 
   const entries = [
     { path: tool.instructionsPath, content: projectInstructions },
@@ -381,8 +450,11 @@ async function buildEntries(projectName, projectSummary, toolKey, tool, configur
       path: installationPath,
       content: renderInstallation(
         toolKey,
+        repositoryId,
         configuration.roleIds,
         configuration.deliveryMode,
+        configuration.roleProfiles,
+        configuration.architectureSource,
       ),
     },
   ];
@@ -396,25 +468,22 @@ async function buildEntries(projectName, projectSummary, toolKey, tool, configur
 
 async function buildUpdateEntries(
   target,
-  toolKey,
   tool,
+  repositoryId,
   installedRoleIds,
   deliveryMode,
+  roleProfiles,
+  architectureSource,
   targetIdentity,
 ) {
   assertTargetIdentity(target, targetIdentity);
   const sharedRoot = path.join(templateRoot, "shared");
   const sharedEntries = (await readTemplateDirectory(sharedRoot, sharedRoot))
     .filter(({ path: entryPath }) => isManagedUpdatePath(entryPath));
-  const roleEntries = [];
-
-  for (const roleId of installedRoleIds) {
-    const source = await readFile(path.join(templateRoot, "agents", `${roleId}.md`), "utf8");
-    roleEntries.push({
-      path: `${tool.agentsDirectory}/${tool.roleFileName(roleId)}`,
-      content: tool.renderRole(roleId, source),
-    });
-  }
+  const roleEntries = await buildRoleEntries(tool, {
+    roleIds: installedRoleIds,
+    roleProfiles,
+  });
 
   const configurationEntries = [];
   const profileMissing = !lstatIfPresent(path.join(target, ".ai-sdlc/project-profile.md"));
@@ -423,21 +492,16 @@ async function buildUpdateEntries(
     roleIds: installedRoleIds,
     activePhases: installedRoleIds.map((roleId) => roleById.get(roleId).phase),
     deliveryMode,
+    roleProfiles,
+    architectureSource,
     detected: profileMissing ? await detectProject(target) : { evidence: [] },
   };
 
-  if (!lstatIfPresent(path.join(target, installationPath))) {
-    configurationEntries.push({
-      path: installationPath,
-      content: renderInstallation(toolKey, installedRoleIds, deliveryMode),
-      createOnly: true,
-    });
-  }
   if (profileMissing) {
     const profileSource = await readFile(path.join(templateRoot, "project-profile.md"), "utf8");
     configurationEntries.push({
       path: ".ai-sdlc/project-profile.md",
-      content: replaceValues(profileSource, profileValues(configuration)),
+      content: replaceValues(profileSource, profileValues(configuration, repositoryId)),
       createOnly: true,
     });
   }
@@ -451,6 +515,72 @@ async function buildUpdateEntries(
 
   assertTargetIdentity(target, targetIdentity);
   return [...configurationEntries, ...sharedEntries, ...roleEntries];
+}
+
+async function buildRoleEntries(tool, configuration) {
+  const entries = [];
+
+  for (const roleId of configuration.roleIds) {
+    const source = await readFile(path.join(templateRoot, "agents", `${roleId}.md`), "utf8");
+    if (roleId !== softwareEngineerRoleId) {
+      entries.push({
+        path: `${tool.agentsDirectory}/${tool.roleFileName(roleId)}`,
+        content: tool.renderRole(roleId, source),
+      });
+      continue;
+    }
+
+    const profile = configuration.roleProfiles?.[softwareEngineerRoleId];
+    for (const developer of developerAgentsForProfile(profile)) {
+      const fragment = await readFile(
+        path.join(
+          templateRoot,
+          "agent-scopes",
+          softwareEngineerRoleId,
+          developer.fragment,
+        ),
+        "utf8",
+      );
+      const composedSource = `${source.trim()}\n\n${fragment.trim()}\n`;
+      entries.push({
+        path: `${tool.agentsDirectory}/${tool.roleFileName(developer.id)}`,
+        content: tool.renderRole(developer.id, composedSource, developer.description),
+      });
+    }
+  }
+
+  return entries;
+}
+
+function developerAgentsForProfile(profile) {
+  validateEngineerProfile(profile, "installation configuration");
+  if (profile.agentMode === "fullstack") {
+    return [developerAgentDefinitions.fullstack];
+  }
+  return profile.areas.map((area) => developerAgentDefinitions[area]);
+}
+
+function assertNoConflictingDeveloperAgents(target, tool, roleProfiles) {
+  const profile = roleProfiles?.[softwareEngineerRoleId];
+  const selectedIds = new Set(
+    profile
+      ? developerAgentsForProfile(profile).map(({ id }) => id)
+      : [],
+  );
+
+  const reservedIds = [
+    softwareEngineerRoleId,
+    ...Object.values(developerAgentDefinitions).map(({ id }) => id),
+  ];
+  for (const id of reservedIds) {
+    if (selectedIds.has(id)) continue;
+    const relativePath = `${tool.agentsDirectory}/${tool.roleFileName(id)}`;
+    if (lstatIfPresent(path.join(target, relativePath))) {
+      throw new Error(
+        `Update stopped. A conflicting scoped developer agent exists: ${relativePath}`,
+      );
+    }
+  }
 }
 
 function isManagedUpdatePath(entryPath) {
@@ -484,7 +614,7 @@ async function readTemplateDirectory(root, directory) {
   return entries;
 }
 
-function profileValues(configuration) {
+function profileValues(configuration, repositoryId) {
   const evidenceRows = configuration.detected.evidence.length > 0
     ? configuration.detected.evidence.map((item) => [
       markdownCell(item.path),
@@ -495,13 +625,27 @@ function profileValues(configuration) {
 
   const roleCoverageRows = roleDefinitions.map((role) => {
     const local = configuration.roleIds.includes(role.id);
-    return `| ${role.phase} | ${role.id} | ${local ? "Initialized" : "Not initialized"} | ${local ? "local" : "unconfigured"} |`;
+    const routedArchitecture = role.id === "architect" && configuration.architectureSource;
+    const route = local ? "local" : routedArchitecture ? "delivery-project" : "unconfigured";
+    return `| ${role.phase} | ${role.id} | ${local ? "Initialized" : "Not initialized"} | ${route} |`;
   }).join("\n");
 
+  const engineerProfile = configuration.roleProfiles?.[softwareEngineerRoleId] ?? null;
+
   return {
+    REPOSITORY_ID: markdownCell(repositoryId),
     LOCAL_ROLE_AGENTS: formatList(configuration.roleIds),
     ACTIVE_LOCAL_PHASES: formatList(configuration.activePhases),
     DELIVERY_MODE: configuration.deliveryMode,
+    GENERATED_DEVELOPER_AGENTS: engineerProfile
+      ? formatList(developerAgentsForProfile(engineerProfile).map(({ id }) => id))
+      : "None",
+    ENGINEERING_AREAS: engineerProfile ? formatList(engineerProfile.areas) : "Not configured",
+    ENGINEER_AGENT_MODE: engineerProfile?.agentMode ?? "Not applicable",
+    ARCHITECTURE_SOURCE: markdownCell(formatArchitectureSource(
+      configuration.architectureSource,
+      configuration.roleIds.includes("architect"),
+    )),
     ROLE_COVERAGE_ROWS: roleCoverageRows,
     DETECTED_EVIDENCE_ROWS: evidenceRows,
   };
@@ -510,34 +654,67 @@ function profileValues(configuration) {
 function renderArtifactHosts(configuration) {
   const routes = Object.fromEntries(roleDefinitions.map((role) => {
     const local = configuration.roleIds.includes(role.id);
+    const architectureSource = role.id === "architect"
+      ? configuration.architectureSource
+      : null;
     return [role.phase.toLowerCase(), {
       phase: role.phase,
       role: role.id,
-      host: local ? "local" : null,
+      host: local ? "local" : architectureSource ? "delivery-project" : null,
       paths: role.artifactPaths,
     }];
   }));
+  const hosts = {
+    local: {
+      kind: "filesystem",
+      root: ".",
+      artifactIndex: "docs/ai-sdlc/index.md",
+    },
+  };
+  if (configuration.architectureSource) {
+    hosts["delivery-project"] = {
+      ...configuration.architectureSource,
+      artifactIndex: "docs/ai-sdlc/index.md",
+    };
+  }
   return JSON.stringify({
     version: 1,
     defaultHost: "local",
-    hosts: {
-      local: {
-        kind: "filesystem",
-        root: ".",
-        artifactIndex: "docs/ai-sdlc/index.md",
-      },
-    },
+    hosts,
     routes,
   }, null, 2);
 }
 
-function renderInstallation(tool, selectedRoleIds, deliveryMode) {
-  return JSON.stringify({
+function renderInstallation(
+  tool,
+  repositoryId,
+  selectedRoleIds,
+  deliveryMode,
+  roleProfiles,
+  architectureSource,
+) {
+  const record = {
     schemaVersion: installationSchemaVersion,
+    repositoryId,
     tool,
     roles: selectedRoleIds,
     deliveryMode,
-  }, null, 2);
+  };
+  if (roleProfiles) record.roleProfiles = roleProfiles;
+  if (architectureSource) record.architectureSource = architectureSource;
+  return JSON.stringify(record, null, 2);
+}
+
+function formatArchitectureSource(source, hasLocalArchitect = false) {
+  if (!source) return hasLocalArchitect ? "Local" : "Unconfigured";
+  return source.kind === "url" ? source.baseUrl : source.root;
+}
+
+function formatDeveloperAgents(roleProfiles) {
+  const profile = roleProfiles?.[softwareEngineerRoleId];
+  return profile
+    ? formatList(developerAgentsForProfile(profile).map(({ id }) => id))
+    : "None";
 }
 
 function formatList(values) {
@@ -741,59 +918,23 @@ function assertUpdateTarget(target, expectedIdentity) {
 async function detectInstallation(target, requestedTool, targetIdentity) {
   assertTargetIdentity(target, targetIdentity);
   const record = await readInstallation(target, targetIdentity);
-  if (record) {
-    if (requestedTool && requestedTool !== record.tool) {
-      throw new Error(
-        `Update stopped. This SDLC installation uses ${record.tool}, not ${requestedTool}.`,
-      );
-    }
-    return {
-      toolKey: record.tool,
-      roleIds: record.roles,
-      deliveryMode: record.deliveryMode,
-      modeSource: "installation",
-    };
-  }
-
-  if (!hasLegacyInstallationLayout(target)) {
+  if (!record) {
     throw new Error(
-      "Update stopped. No supported SDLC installation was found. Run init first.",
+      `Update stopped. ${installationPath} is required; schema-v1 and legacy installations are not migrated. Run init in a clean target.`,
     );
   }
-
-  const installed = [];
-  for (const [toolKey, tool] of Object.entries(aiTools)) {
-    if (await hasGeneratedProjectInstructions(target, tool, targetIdentity)) {
-      installed.push([toolKey, tool]);
-    }
+  if (requestedTool && requestedTool !== record.tool) {
+    throw new Error(
+      `Update stopped. This SDLC installation uses ${record.tool}, not ${requestedTool}.`,
+    );
   }
-  const selected = requestedTool
-    ? installed.find(([toolKey]) => toolKey === requestedTool)
-    : installed.length === 1 ? installed[0] : null;
-
-  if (!selected) {
-    if (installed.length > 1 && !requestedTool) {
-      throw new Error(
-        `Update stopped. Multiple legacy SDLC tools were detected (${installed
-          .map(([toolKey]) => toolKey)
-          .join(", ")}). Choose one with --tool.`,
-      );
-    }
-    const detail = requestedTool
-      ? `${aiTools[requestedTool].label} is not recognized as this SDLC installation.`
-      : "No generated AI tool instructions were recognized.";
-    throw new Error(`Update stopped. ${detail}`);
-  }
-
-  const [installedRoleIds, legacyMode] = await Promise.all([
-    detectInstalledRoleIds(target, selected[1], targetIdentity),
-    readLegacyProfileDeliveryMode(target, targetIdentity),
-  ]);
   return {
-    toolKey: selected[0],
-    roleIds: installedRoleIds,
-    deliveryMode: legacyMode.deliveryMode,
-    modeSource: legacyMode.source,
+    toolKey: record.tool,
+    repositoryId: record.repositoryId,
+    roleIds: record.roles,
+    deliveryMode: record.deliveryMode,
+    roleProfiles: record.roleProfiles,
+    architectureSource: record.architectureSource,
   };
 }
 
@@ -811,12 +952,17 @@ async function readInstallation(target, targetIdentity) {
       targetIdentity,
     );
     record = JSON.parse(source);
-    const duplicateKey = findDuplicateTopLevelJsonKey(source);
+    const duplicateKey = findDuplicateJsonKey(source);
     if (duplicateKey !== null) {
-      throw new Error(`duplicate top-level key: ${duplicateKey}`);
+      throw new Error(`duplicate object key: ${duplicateKey}`);
     }
   } catch (error) {
     throw new Error(`Update stopped. ${installationPath} is invalid: ${error.message}`);
+  }
+  if (record?.schemaVersion === 1) {
+    throw new Error(
+      `Update stopped. ${installationPath} uses unsupported schema version 1; automatic migration is intentionally unavailable.`,
+    );
   }
   if (
     record === null
@@ -828,32 +974,61 @@ async function readInstallation(target, targetIdentity) {
   ) {
     throw new Error(`Update stopped. ${installationPath} has an unsupported format.`);
   }
+  const supportedFields = new Set([
+    "schemaVersion",
+    "repositoryId",
+    "tool",
+    "roles",
+    "deliveryMode",
+    "roleProfiles",
+    "architectureSource",
+  ]);
+  if (Object.keys(record).some((key) => !supportedFields.has(key))) {
+    throw new Error(`Update stopped. ${installationPath} contains an unsupported field.`);
+  }
+  const repositoryId = validateRepositoryId(
+    record.repositoryId,
+    `${installationPath} repositoryId`,
+  );
   const hasUnknownRole = record.roles.some(
     (roleId) => typeof roleId !== "string" || !roleById.has(roleId),
   );
-  if (hasUnknownRole || new Set(record.roles).size !== record.roles.length) {
+  const canonicalRoles = roleIds.filter((roleId) => record.roles.includes(roleId));
+  const hasNonCanonicalOrder = canonicalRoles.some(
+    (roleId, index) => record.roles[index] !== roleId,
+  );
+  if (
+    hasUnknownRole
+    || new Set(record.roles).size !== record.roles.length
+    || hasNonCanonicalOrder
+  ) {
     throw new Error(`Update stopped. ${installationPath} contains invalid roles.`);
   }
-  const deliveryMode = Object.hasOwn(record, "deliveryMode")
-    ? record.deliveryMode
-    : defaultDeliveryMode;
+  const deliveryMode = record.deliveryMode;
   if (
     typeof deliveryMode !== "string"
     || !Object.hasOwn(deliveryModes, deliveryMode)
   ) {
     throw new Error(`Update stopped. ${installationPath} contains an invalid delivery mode.`);
   }
+  const hasSoftwareEngineer = record.roles.includes(softwareEngineerRoleId);
+  const roleProfiles = validateInstallationRoleProfiles(record.roleProfiles, hasSoftwareEngineer);
+  const architectureSource = validateInstallationArchitectureSource(
+    record.architectureSource,
+    record.roles,
+  );
   return {
     tool: record.tool,
-    roles: roleIds.filter((roleId) => record.roles.includes(roleId)),
+    repositoryId,
+    roles: canonicalRoles,
     deliveryMode,
+    roleProfiles,
+    architectureSource,
   };
 }
 
-function findDuplicateTopLevelJsonKey(source) {
-  const keys = new Set();
-  let objectDepth = 0;
-  let arrayDepth = 0;
+function findDuplicateJsonKey(source) {
+  const objectKeys = [];
 
   for (let index = 0; index < source.length; index += 1) {
     const character = source[index];
@@ -864,21 +1039,18 @@ function findDuplicateTopLevelJsonKey(source) {
         index += source[index] === "\\" ? 2 : 1;
       }
       const end = index + 1;
-      if (objectDepth === 1 && arrayDepth === 0) {
-        let next = end;
-        while (/\s/u.test(source[next] ?? "")) next += 1;
-        if (source[next] === ":") {
-          const key = JSON.parse(source.slice(start, end));
-          if (keys.has(key)) return key;
-          keys.add(key);
-        }
+      let next = end;
+      while (/\s/u.test(source[next] ?? "")) next += 1;
+      if (source[next] === ":" && objectKeys.length > 0) {
+        const keys = objectKeys[objectKeys.length - 1];
+        const key = JSON.parse(source.slice(start, end));
+        if (keys.has(key)) return key;
+        keys.add(key);
       }
       continue;
     }
-    if (character === "{") objectDepth += 1;
-    else if (character === "}") objectDepth -= 1;
-    else if (character === "[") arrayDepth += 1;
-    else if (character === "]") arrayDepth -= 1;
+    if (character === "{") objectKeys.push(new Set());
+    else if (character === "}") objectKeys.pop();
   }
   return null;
 }
@@ -934,226 +1106,57 @@ function createUpdateConfigurationGuard(
   target,
   expected,
   initialInstallationSnapshot,
-  legacyProfileSnapshot,
   targetIdentity,
 ) {
-  let installationSnapshot = initialInstallationSnapshot;
-  let installationObserved = installationSnapshot !== null;
-  const legacyBootstrap = expected.modeSource !== "installation";
+  const installationSnapshot = initialInstallationSnapshot;
 
-  return async ({ complete = false } = {}) => {
+  return async () => {
     assertTargetIdentity(target, targetIdentity);
-    if (installationSnapshot) {
-      await assertUpdateSourceUnchanged(
-        target,
-        installationPath,
-        installationSnapshot,
-        targetIdentity,
-      );
-    } else {
-      const current = await captureUpdateSource(
-        target,
-        installationPath,
-        targetIdentity,
-      );
-      if (current) {
-        if (legacyBootstrap && !installationObserved) {
-          await assertUpdateSourceUnchanged(
-            target,
-            ".ai-sdlc/project-profile.md",
-            legacyProfileSnapshot,
-            targetIdentity,
-          );
-        }
-        installationSnapshot = current;
-        installationObserved = true;
-      }
-    }
-    if (legacyBootstrap && !installationObserved) {
-      await assertUpdateSourceUnchanged(
-        target,
-        ".ai-sdlc/project-profile.md",
-        legacyProfileSnapshot,
-        targetIdentity,
-      );
-    }
+    await assertUpdateSourceUnchanged(
+      target,
+      installationPath,
+      installationSnapshot,
+      targetIdentity,
+    );
 
     const installation = await readInstallation(target, targetIdentity);
-    if (installation) {
-      installationObserved = true;
-      if (
-        installation.tool !== expected.toolKey
-        || installation.deliveryMode !== expected.deliveryMode
-        || installation.roles.length !== expected.roleIds.length
-        || installation.roles.some((roleId, index) => roleId !== expected.roleIds[index])
-      ) {
-        throw new Error("Update stopped. The installation configuration changed during update.");
-      }
-    } else if (installationObserved || complete) {
+    if (!installation) {
       throw new Error(`Update stopped. A configuration source changed: ${installationPath}`);
     }
-    if (installationSnapshot) {
-      await assertUpdateSourceUnchanged(
-        target,
-        installationPath,
-        installationSnapshot,
-        targetIdentity,
-      );
+    if (
+      installation.tool !== expected.toolKey
+      || installation.repositoryId !== expected.repositoryId
+      || installation.deliveryMode !== expected.deliveryMode
+      || installation.roles.length !== expected.roleIds.length
+      || installation.roles.some((roleId, index) => roleId !== expected.roleIds[index])
+      || JSON.stringify(installation.roleProfiles) !== JSON.stringify(expected.roleProfiles)
+      || JSON.stringify(installation.architectureSource) !== JSON.stringify(expected.architectureSource)
+    ) {
+      throw new Error("Update stopped. The installation configuration changed during update.");
     }
+    assertNoConflictingDeveloperAgents(
+      target,
+      aiTools[expected.toolKey],
+      expected.roleProfiles,
+    );
   };
 }
 
-function hasLegacyInstallationLayout(target) {
-  const workflow = lstatIfPresent(path.join(target, ".ai-sdlc/workflow.md"));
-  const oldWorkflow = lstatIfPresent(path.join(target, ".ai-sdlc/workflows/default.md"));
-  const templates = lstatIfPresent(path.join(target, ".ai-sdlc/templates"));
-  return Boolean(
-    (workflow?.isFile() && !workflow.isSymbolicLink())
-    || (oldWorkflow?.isFile() && !oldWorkflow.isSymbolicLink())
-    || (templates?.isDirectory() && !templates.isSymbolicLink()),
-  );
-}
-
-async function hasGeneratedProjectInstructions(target, tool, targetIdentity) {
-  const stats = lstatIfPresent(path.join(target, tool.instructionsPath));
-  if (!stats?.isFile() || stats.isSymbolicLink()) return false;
-  const source = await readSafeProjectFile(
-    target,
-    tool.instructionsPath,
-    stats,
-    targetIdentity,
-  );
-  return /^# AI-native delivery workflow\s*$/mu.test(source)
-    && /^\*\*Project:\*\*\s+.+$/mu.test(source)
-    && /^\*\*Goal:\*\*\s+.+$/mu.test(source)
-    && /(?:\.ai-sdlc\/workflow\.md|docs\/ai-sdlc\/index\.md)/u.test(source);
-}
-
-async function detectInstalledRoleIds(target, tool, targetIdentity) {
-  const profilePath = ".ai-sdlc/project-profile.md";
-  const profileStats = lstatIfPresent(path.join(target, profilePath));
-  const profile = profileStats
-    ? await readSafeProjectFile(target, profilePath, profileStats, targetIdentity)
-    : null;
-  const currentConfigurationMatch = profile?.match(
-    /^\|\s*Local role agents\s*\|\s*(.*?)\s*\|\s*$/imu,
-  );
-  const legacyConfigurationMatch = profile?.match(
-    /^\|\s*Dedicated agents\s*\|\s*(.*?)\s*\|\s*$/imu,
-  );
-  const configurationMatch = currentConfigurationMatch ?? legacyConfigurationMatch;
-
-  if (configurationMatch) {
-    const configured = configurationMatch[1].trim();
-    if (!configured) {
-      throw new Error("Update stopped. The project profile contains invalid local roles.");
-    }
-    if (configured.toLowerCase() === "none") return [];
-    const selected = configured.split(",").map((value) => value.trim());
-    if (selected.some((roleId) => !roleById.has(roleId))) {
-      throw new Error("Update stopped. The project profile contains invalid local roles.");
-    }
-    if (new Set(selected).size !== selected.length) {
-      throw new Error("Update stopped. The project profile contains duplicate local roles.");
-    }
-    return roleIds.filter((roleId) => selected.includes(roleId));
-  }
-
-  const detected = [];
-  for (const roleId of roleIds) {
-    const rolePath = path.join(
-      target,
-      tool.agentsDirectory,
-      tool.roleFileName(roleId),
-    );
-    const stats = lstatIfPresent(rolePath);
-    if (!stats) continue;
-    if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
-      throw new Error(`Update stopped. A legacy role path is unsafe: ${roleId}`);
-    }
-    detected.push(roleId);
-  }
-  return detected;
-}
-
-async function readLegacyProfileDeliveryMode(target, targetIdentity) {
-  const profilePath = ".ai-sdlc/project-profile.md";
-  const profileStats = lstatIfPresent(path.join(target, profilePath));
-  if (!profileStats) {
-    return { deliveryMode: defaultDeliveryMode, source: "legacy-default" };
-  }
-
-  const profile = await readSafeProjectFile(
-    target,
-    profilePath,
-    profileStats,
-    targetIdentity,
-  );
-  const profileTemplate = await readFile(
-    path.join(templateRoot, "project-profile.md"),
-    "utf8",
-  );
-  const firstConfigurationRow = "| Local role agents | {{LOCAL_ROLE_AGENTS}} |";
-  const prefixEnd = profileTemplate.indexOf(firstConfigurationRow);
-  if (prefixEnd === -1) {
-    throw new Error("The project profile template has an unsupported format.");
-  }
-  const normalizedProfile = profile.replace(/\r\n/gu, "\n");
-  const canonicalPrefix = profileTemplate.slice(0, prefixEnd).replace(/\r\n/gu, "\n");
-  if (!normalizedProfile.startsWith(canonicalPrefix)) {
-    return { deliveryMode: defaultDeliveryMode, source: "legacy-default" };
-  }
-
-  const lines = normalizedProfile.slice(canonicalPrefix.length).split("\n");
-  if (
-    !/^\| Local role agents \| [^|\n]+ \|$/u.test(lines[0] ?? "")
-    || !/^\| Active local phases \| [^|\n]+ \|$/u.test(lines[1] ?? "")
-  ) {
-    return { deliveryMode: defaultDeliveryMode, source: "legacy-default" };
-  }
-
-  const tableRows = [];
-  for (const line of lines) {
-    if (!line.startsWith("|")) break;
-    tableRows.push(line);
-  }
-  const candidates = tableRows.filter(
-    (line) => line.startsWith("| Delivery mode |"),
-  );
-  if (candidates.length > 1) {
-    throw new Error("Update stopped. The legacy project profile contains duplicate delivery modes.");
-  }
-  if (candidates.length === 0) {
-    return { deliveryMode: defaultDeliveryMode, source: "legacy-default" };
-  }
-  if (candidates[0] !== tableRows[2]) {
-    return { deliveryMode: defaultDeliveryMode, source: "legacy-default" };
-  }
-
-  const match = candidates[0].match(
-    /^\| Delivery mode \| (formal|rapid) \|$/u,
-  );
-  if (!match) {
-    throw new Error("Update stopped. The legacy project profile contains an invalid delivery mode.");
-  }
-  return { deliveryMode: match[1], source: "legacy-profile" };
-}
-
-function renderMarkdownAgent(roleId, source) {
+function renderMarkdownAgent(roleId, source, description = readRoleDescription(source)) {
   return [
     "---",
     `name: ${JSON.stringify(roleId)}`,
-    `description: ${JSON.stringify(readRoleDescription(source))}`,
+    `description: ${JSON.stringify(description)}`,
     "---",
     "",
     source.trim(),
   ].join("\n");
 }
 
-function renderCodexAgent(roleId, source) {
+function renderCodexAgent(roleId, source, description = readRoleDescription(source)) {
   return [
     `name = ${JSON.stringify(roleId)}`,
-    `description = ${JSON.stringify(readRoleDescription(source))}`,
+    `description = ${JSON.stringify(description)}`,
     `developer_instructions = ${JSON.stringify(source.trim())}`,
   ].join("\n");
 }
@@ -1573,6 +1576,8 @@ async function updateEntries(
       await assertConfiguration();
     }
     await assertConfiguration({ complete: true });
+    await assertManagedEntriesMatch(target, entries, targetIdentity);
+    await assertConfiguration({ complete: true });
   } catch (error) {
     const rollbackErrors = await rollbackUpdates(
       target,
@@ -1602,6 +1607,34 @@ async function updateEntries(
     updated: plan.changes.filter(({ previous }) => previous !== null).length,
     unchanged: plan.unchanged,
   };
+}
+
+async function assertManagedEntriesMatch(target, entries, targetIdentity) {
+  for (const entry of entries) {
+    assertTargetIdentity(target, targetIdentity);
+    const destination = path.join(target, entry.path);
+    const stats = lstatIfPresent(destination);
+    if (
+      !stats?.isFile()
+      || stats.isSymbolicLink()
+      || stats.nlink !== 1
+    ) {
+      throw new Error(
+        `A managed file changed before update completed: ${entry.path}`,
+      );
+    }
+    const content = await readSafeProjectFile(
+      target,
+      entry.path,
+      stats,
+      targetIdentity,
+    );
+    if (content !== ensureNewline(entry.content)) {
+      throw new Error(
+        `A managed file changed before update completed: ${entry.path}`,
+      );
+    }
+  }
 }
 
 async function planUpdateEntries(target, entries, targetIdentity) {
@@ -1674,7 +1707,7 @@ async function planUpdateEntries(target, entries, targetIdentity) {
     }
     if (createOnlyConflicts.length > 0) {
       sections.push(
-        `These legacy configuration paths appeared during the update:\n${createOnlyConflicts
+        `These missing configuration paths appeared during the update:\n${createOnlyConflicts
           .sort()
           .map((item) => `- ${item}`)
           .join("\n")}`,
@@ -2061,13 +2094,174 @@ function normalizeDeliveryMode(value) {
   return Object.hasOwn(deliveryModes, normalized) ? normalized : null;
 }
 
-function formatDeliveryModeSource(source) {
-  const labels = {
-    installation: installationPath,
-    "legacy-profile": "canonical legacy project profile",
-    "legacy-default": "legacy default",
-  };
-  return labels[source] ?? source;
+function validateRepositoryId(value, source) {
+  if (
+    typeof value !== "string"
+    || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value)
+  ) {
+    throw new Error(
+      `${source} must be a stable lowercase kebab-case identifier.`,
+    );
+  }
+  return value;
+}
+
+function defaultRepositoryId(targetName) {
+  const decomposed = String(targetName)
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[\u0300-\u036f]/gu, "");
+  if (/[^\x00-\x7f]/u.test(decomposed)) {
+    throw new Error(
+      "The target directory name cannot produce an ASCII repository ID; use --repository-id.",
+    );
+  }
+  const value = decomposed
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+  return validateRepositoryId(value, "target directory name");
+}
+
+function parseEngineerScopeInput(value, interactive = false) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === "fullstack") {
+    return { areas: ["frontend", "backend"], agentMode: "fullstack" };
+  }
+
+  const areas = raw.split(",").map((area) => area.trim());
+  if (areas.some((area) => area !== "frontend" && area !== "backend")) return null;
+  if (new Set(areas).size !== areas.length) {
+    if (interactive) return null;
+    throw new Error(`Duplicate engineer scope area: ${raw}`);
+  }
+  if (areas.length === 1) {
+    return { areas, agentMode: "specialist" };
+  }
+  if (areas.length === 2) {
+    return {
+      areas: ["frontend", "backend"],
+      agentMode: "separate",
+    };
+  }
+  return null;
+}
+
+function validateEngineerProfile(profile, source) {
+  const validObject = profile !== null
+    && typeof profile === "object"
+    && !Array.isArray(profile);
+  if (!validObject || !Array.isArray(profile.areas)) {
+    throw new Error(`Invalid Software Engineer profile in ${source}.`);
+  }
+  const canonicalAreas = profile.areas.length === 1
+    && ["frontend", "backend"].includes(profile.areas[0])
+    ? profile.areas
+    : profile.areas.length === 2
+      && profile.areas[0] === "frontend"
+      && profile.areas[1] === "backend"
+      ? profile.areas
+      : null;
+  const validMode = (
+    profile.agentMode === "specialist"
+    && canonicalAreas?.length === 1
+  ) || (
+    ["fullstack", "separate"].includes(profile.agentMode)
+    && canonicalAreas?.length === 2
+  );
+  if (!validMode || Object.keys(profile).some((key) => !["areas", "agentMode"].includes(key))) {
+    throw new Error(`Invalid Software Engineer profile in ${source}.`);
+  }
+  return profile;
+}
+
+function normalizeArchitectureSource(value) {
+  const source = String(value ?? "").trim();
+  if (!source || /[\u0000-\u001f\u007f]/u.test(source)) {
+    throw new Error("--architecture-source needs a safe filesystem path or HTTPS URL.");
+  }
+  const windowsDrivePath = /^[a-z]:[\\/]/iu.test(source);
+  const hasScheme = /^[a-z][a-z\d+.-]*:/iu.test(source) && !windowsDrivePath;
+  if (source.startsWith("//") || (hasScheme && !/^https:\/\//iu.test(source))) {
+    throw new Error("--architecture-source accepts filesystem paths or HTTPS URLs only.");
+  }
+  if (!hasScheme) return { kind: "filesystem", root: source };
+
+  let url;
+  try {
+    url = new URL(source);
+  } catch {
+    throw new Error("--architecture-source contains an invalid HTTPS URL.");
+  }
+  if (url.protocol !== "https:") {
+    throw new Error("--architecture-source accepts filesystem paths or HTTPS URLs only.");
+  }
+  if (url.username || url.password) {
+    throw new Error("--architecture-source must not contain URL credentials.");
+  }
+  if (url.search || url.hash) {
+    throw new Error("--architecture-source URL must not contain a query or fragment.");
+  }
+  if (!url.pathname.endsWith("/")) url.pathname += "/";
+  return { kind: "url", baseUrl: url.href };
+}
+
+function validateInstallationRoleProfiles(value, hasSoftwareEngineer) {
+  if (!hasSoftwareEngineer) {
+    if (value !== undefined) {
+      throw new Error(`Update stopped. ${installationPath} has role profiles without Software Engineer.`);
+    }
+    return null;
+  }
+  if (
+    value === null
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || Object.keys(value).length !== 1
+    || !Object.hasOwn(value, softwareEngineerRoleId)
+  ) {
+    throw new Error(`Update stopped. ${installationPath} is missing its Software Engineer profile.`);
+  }
+  try {
+    validateEngineerProfile(value[softwareEngineerRoleId], installationPath);
+  } catch {
+    throw new Error(`Update stopped. ${installationPath} contains an invalid Software Engineer profile.`);
+  }
+  return { [softwareEngineerRoleId]: value[softwareEngineerRoleId] };
+}
+
+function validateInstallationArchitectureSource(value, selectedRoleIds) {
+  if (value === undefined) return null;
+  if (
+    !selectedRoleIds.includes(softwareEngineerRoleId)
+    || selectedRoleIds.includes("architect")
+    || value === null
+    || typeof value !== "object"
+    || Array.isArray(value)
+  ) {
+    throw new Error(`Update stopped. ${installationPath} contains an invalid architecture source.`);
+  }
+  const expectedKeys = value.kind === "url" ? ["baseUrl", "kind"] : ["kind", "root"];
+  if (Object.keys(value).sort().join(",") !== expectedKeys.join(",")) {
+    throw new Error(`Update stopped. ${installationPath} contains an invalid architecture source.`);
+  }
+  const raw = value.kind === "url" ? value.baseUrl : value.root;
+  let normalized;
+  try {
+    normalized = normalizeArchitectureSource(raw);
+  } catch {
+    throw new Error(`Update stopped. ${installationPath} contains an invalid architecture source.`);
+  }
+  const isCanonical = normalized.kind === value.kind
+    && (
+      normalized.kind === "url"
+        ? normalized.baseUrl === value.baseUrl
+        : normalized.root === value.root
+    );
+  if (!isCanonical) {
+    throw new Error(`Update stopped. ${installationPath} contains a non-canonical architecture source.`);
+  }
+  return normalized;
 }
 
 function parseRoles(value) {
@@ -2121,10 +2315,13 @@ function parseArgs(args) {
     help: false,
     target: ".",
     name: null,
+    repositoryId: null,
     summary: null,
     tool: null,
     roles: null,
     deliveryMode: null,
+    engineerProfile: null,
+    architectureSource: null,
   };
   let targetSet = false;
 
@@ -2133,6 +2330,14 @@ function parseArgs(args) {
     if (value === "--name") {
       if (command !== "init") throw new Error("--name is only available with init.");
       options.name = optionValue(values, ++index, "--name");
+    } else if (value === "--repository-id") {
+      if (command !== "init") {
+        throw new Error("--repository-id is only available with init.");
+      }
+      options.repositoryId = validateRepositoryId(
+        optionValue(values, ++index, value),
+        "--repository-id",
+      );
     } else if (value === "--summary") {
       if (command !== "init") throw new Error("--summary is only available with init.");
       options.summary = optionValue(values, ++index, "--summary");
@@ -2152,6 +2357,22 @@ function parseArgs(args) {
       if (!options.deliveryMode) {
         throw new Error(`Unknown delivery mode: ${rawDeliveryMode}`);
       }
+    } else if (value === "--engineer-scope") {
+      if (command !== "init") {
+        throw new Error("--engineer-scope is only available with init.");
+      }
+      const rawScope = optionValue(values, ++index, value);
+      options.engineerProfile = parseEngineerScopeInput(rawScope);
+      if (!options.engineerProfile) {
+        throw new Error(`Unknown engineer scope: ${rawScope}`);
+      }
+    } else if (value === "--architecture-source") {
+      if (command !== "init") {
+        throw new Error("--architecture-source is only available with init.");
+      }
+      options.architectureSource = normalizeArchitectureSource(
+        optionValue(values, ++index, value),
+      );
     } else if (value === "--development") {
       if (command !== "init") throw new Error("--development is not available with update.");
       throw new Error("--development was removed. Select independent local agents with --roles.");
@@ -2192,13 +2413,16 @@ Commands:
 
 Init options:
   --name <name>               Project name
+  --repository-id <id>        Stable catalog match ID (default: target-derived)
   --summary <text>            Short project summary
   --tool <tool>               copilot, claude, or codex
   --roles <list>              Comma-separated role IDs, all, or none
   --delivery-mode <mode>      formal or rapid (default: formal)
+  --engineer-scope <scope>    frontend, backend, fullstack, or frontend,backend
+  --architecture-source <src> Delivery project filesystem path or HTTPS URL
 
 Update options:
-  --tool <tool>               Resolve multiple detected legacy AI tools
+  --tool <tool>               Confirm the installed AI tool
 
 General:
   -h, --help                  Show help

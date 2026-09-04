@@ -13,36 +13,156 @@ npx --yes --package=github:davych/my-sdlc-workflow \
   create-ai-native-sdlc init .
 ```
 
-The CLI asks for the project name, a short summary, the AI tool, and whether to initialize each of the six dedicated role agents. Every role is optional and independent. You can initialize only Architect, only Designer and Tester, all roles, or no dedicated roles. When PM / BA, Designer, or Architect is selected, it also asks whether those roles should use the large-team formal process or the small-team rapid-iteration process.
+The CLI asks for the project name, summary, AI tool, and any dedicated role agents. Every canonical role is optional and independent. When PM / BA, Designer, or Architect is selected, it also asks for `formal` or `rapid` delivery mode.
 
-You can also pass every value directly:
+When Software Engineer is selected, initialization asks which developer identity this code repository needs: frontend, backend, or full-stack. This is responsibility scope, not technology selection. Initialization never asks for a language, framework, database, cloud, or other stack choice.
+
+## Repository patterns
+
+An Architect-only delivery project needs no developer scope at initialization:
 
 ```bash
 npx --yes --package=github:davych/my-sdlc-workflow \
-  create-ai-native-sdlc init ./my-project \
-  --name "My Project" \
-  --summary "A small tool for my team" \
+  create-ai-native-sdlc init ./delivery \
+  --name "Product delivery" \
+  --summary "Cross-repository product and architecture artifacts" \
   --tool codex \
-  --roles pm-ba,designer,architect \
-  --delivery-mode rapid
+  --roles architect \
+  --delivery-mode formal
 ```
 
-The target defaults to the current directory. Non-interactive use supplies `--roles` with a comma-separated list. Use `--roles all` for all six agents or `--roles none` when this repository only needs the shared workflow, artifact routes, and bridge skill. `--delivery-mode formal` keeps the existing structured process for larger teams. `--delivery-mode rapid` tells PM / BA, Designer, and Architect to favor the smallest useful output for the current iteration without hiding real risks or blockers. The option defaults to `formal` when omitted and does not change Software Engineer, Tester, or DevOps instructions.
+The Architect determines frontend/backend technology scopes later, when application architecture work first needs them.
+
+For separate code repositories, initialize one specialist and optionally connect its Architecture route to the delivery project:
+
+```bash
+# Frontend repository
+npx --yes --package=github:davych/my-sdlc-workflow \
+  create-ai-native-sdlc init ./web-app \
+  --name "Web app" \
+  --repository-id web-app \
+  --summary "Customer web application" \
+  --tool codex \
+  --roles software-engineer \
+  --engineer-scope frontend \
+  --architecture-source ../delivery
+
+# Backend repository
+npx --yes --package=github:davych/my-sdlc-workflow \
+  create-ai-native-sdlc init ./api-service \
+  --name "API service" \
+  --repository-id api-service \
+  --summary "Customer API" \
+  --tool codex \
+  --roles software-engineer \
+  --engineer-scope backend \
+  --architecture-source ../delivery
+```
+
+A monorepo can use one full-stack developer agent:
+
+```bash
+npx --yes --package=github:davych/my-sdlc-workflow \
+  create-ai-native-sdlc init ./application \
+  --name "Application" \
+  --repository-id application \
+  --summary "Frontend and backend monorepo" \
+  --tool codex \
+  --roles software-engineer \
+  --engineer-scope fullstack \
+  --architecture-source ../delivery
+```
+
+Or it can generate separate frontend and backend agents while retaining one canonical Software Engineer role and one Implementation phase:
+
+```bash
+npx --yes --package=github:davych/my-sdlc-workflow \
+  create-ai-native-sdlc init ./application \
+  --name "Application" \
+  --repository-id application \
+  --summary "Frontend and backend monorepo" \
+  --tool codex \
+  --roles software-engineer \
+  --engineer-scope frontend,backend \
+  --architecture-source ../delivery
+```
+
+`--architecture-source` accepts a filesystem path or an HTTPS base URL. It is available only for a project with Software Engineer and without a local Architect. It configures a read-only `delivery-project` host; it does not clone, copy, synchronize, or write across repositories.
+
+Use `--roles all` for all six canonical roles; because it includes Software Engineer, also provide `--engineer-scope`. Use `--roles none` when a repository needs only the shared workflow, routes, and bridge. `--delivery-mode rapid` reduces ceremony for PM / BA, Designer, and Architect while preserving scope, evidence, safety, contracts, migration, and human-decision boundaries.
+
+## Developer profiles
+
+The canonical phase owner stays `software-engineer`. Schema-v2 installation metadata records the repository-specific generated identity:
+
+```json
+{
+  "schemaVersion": 2,
+  "repositoryId": "application",
+  "tool": "codex",
+  "roles": ["software-engineer"],
+  "roleProfiles": {
+    "software-engineer": {
+      "areas": ["frontend", "backend"],
+      "agentMode": "separate"
+    }
+  },
+  "deliveryMode": "formal"
+}
+```
+
+Single frontend or backend scope uses `agentMode: "specialist"`. `fullstack` records both areas with `agentMode: "fullstack"`. A project without Software Engineer omits `roleProfiles`.
+
+The selected tool receives `frontend-developer`, `backend-developer`, or `fullstack-developer`; separate mode receives both specialists. Each agent combines the shared Software Engineer workflow and Clean Code discipline with a small responsibility-specific profile. In separate mode, a request or one user answer names the frontend/backend lead whenever shared files are needed. The lead records one owner and the edit order for shared workspace files, contracts, libraries, CI, root configuration, and common tests in its scoped plan; the other specialist reads that plan, and both never edit the same shared file. Frontend, backend, and full-stack implementation artifacts use separate locations:
+
+```text
+docs/ai-sdlc/implementation/frontend/{plan,tasks,notes}.md
+docs/ai-sdlc/implementation/backend/{plan,tasks,notes}.md
+docs/ai-sdlc/implementation/fullstack/{plan,tasks,notes}.md
+```
+
+These files are created by the developer only when useful, not by initialization.
+
+## Architect first use and technology profiles
+
+Technology decisions belong to the Architect's work, not CLI initialization. On the first application Architecture task, the Architect:
+
+1. Looks for the local or routed technology catalog and child profiles.
+2. For an existing or hybrid code repository that is not configured, asks for a unique host ID and its read-only filesystem root or HTTPS base URL, then adds only that host to the delivery repository registry without adding a phase route.
+3. Reads the code repository's `.ai-sdlc/installation.json` and `.ai-sdlc/project-profile.md`, including its stable `repositoryId`, before inspecting further evidence.
+4. If the catalog is absent or incomplete, asks whether the system includes frontend, backend, or both, then identifies the real deployable scopes.
+5. Distinguishes existing, greenfield, and hybrid scopes, records proposals, and asks a person to accept material choices.
+
+Existing technology is recorded as `Observed`, not silently accepted. When preserving that baseline is recommended, the target is recorded as `Proposed`, accepted once by a person, and then marked `Accepted`. Greenfield planning presents two or three viable candidates for each material decision. A hybrid profile applies the existing or greenfield treatment per concern and records compatibility or migration boundaries. Rapid mode may keep the documents short, but it does not skip them when application implementation needs technology decisions. Documentation-only, feasibility, data-only, or integration-only work does not force a frontend/backend choice.
+
+The stable catalog and zero or more scoped profiles live in the delivery project:
+
+```text
+docs/ai-sdlc/technology-profile.md
+docs/ai-sdlc/technology/frontend/<scope-id>.md
+docs/ai-sdlc/technology/backend/<scope-id>.md
+```
+
+Documents use `Proposed`, `Confirmed`, or `Superseded`. Profile entries use `Observed`, `Required`, `Proposed`, `Accepted`, `Excluded`, or `Unknown`. Only `Required` and `Accepted` entries instruct implementation. Shared API or event contracts, identity and trust boundaries, compatibility, coordinated migration, and ADR links stay in the catalog or shared Architecture Pack instead of being duplicated in every child profile.
+
+Each catalog row keeps `Repository ID` separate from `Source host/path`. Different code sources in one delivery project must have different Repository IDs; multiple checkouts of the same repository reuse one. A greenfield source that does not exist yet uses `Planned / Not created`, then records a host/path after creation. Developers read their exact `repositoryId` from local `.ai-sdlc/installation.json`, match it with their engineering area, and then select the deployable or Scope ID set affected by the current request and code paths. If that set remains ambiguous, they ask instead of combining profiles. The source host/path records where the Architect read evidence and is not used as identity.
+
+Each `<scope-id>` is a stable lowercase kebab-case identifier such as `customer-web` or `billing-api`. It is one filename segment, never a repository path or URL.
+
+The Architect operates in the delivery project. It may inspect configured code repositories through the read-only artifact bridge, but it does not modify their code, dependencies, schemas, or deployment configuration.
 
 ## Update an existing installation
 
-Run the latest CLI against a project that was already initialized:
+Run the latest CLI against a schema-v2 installation:
 
 ```bash
 npx --yes --package=github:davych/my-sdlc-workflow \
   create-ai-native-sdlc update .
 ```
 
-Update is non-interactive. New installations record the initialized AI tool, roles, and authoritative delivery mode in `.ai-sdlc/installation.json`. For an older installation without that file, update verifies the generated project instructions and derives roles from the project profile or existing role files. It imports `formal` or `rapid` only when the profile still has a recognized generated `Configuration` preamble and its canonical `Delivery mode` row; otherwise the legacy installation safely defaults to `formal`. The created installation record is authoritative after the update. If more than one legacy tool installation is recognized, select one with `--tool copilot`, `--tool claude`, or `--tool codex`.
+Update is non-interactive. It reads `.ai-sdlc/installation.json` and restores the same tool-native scoped developer agent set, shared workflow, technology-planning guide, templates, and read-only bridge. It preserves the project profile, artifact registry, artifact index, delivery documents, code, and unrelated files. Custom changes inside a CLI-managed file are replaced.
 
-The command replaces the CLI-managed workflow, technology-planning guide, templates, artifact bridge Skill, and selected role agent files with the versions shipped by the current CLI. It also creates newly shipped files in those managed locations. When a supported legacy installation does not yet have the installation record, project profile, or artifact host registry, update creates the missing file from the detected installation; it never replaces an existing profile or registry. It does not add or remove roles, and it does not delete files that are no longer shipped.
-
-Project state is preserved. Update does not change the root project instructions or replace an existing `.ai-sdlc/project-profile.md` or `.ai-sdlc/artifact-hosts.json`. It also preserves `docs/ai-sdlc/index.md`, delivery documents under `docs/ai-sdlc/`, unknown role agents, and other project files. `.ai-sdlc/installation.json` is CLI-owned identification and mode metadata; changing the profile snapshot does not change the active mode. Custom changes inside a CLI-managed file are replaced, so keep project-specific rules and working documents in the preserved locations.
+Schema-v1 installation metadata is rejected clearly before writes. This exploratory release does not infer scope, migrate metadata, or add a compatibility system; initialize a clean schema-v2 target instead.
 
 ## Generated files
 
@@ -54,11 +174,7 @@ Only the selected AI tool is configured.
 | Claude Code | `CLAUDE.md` | `.claude/agents/*.md` |
 | Codex | `AGENTS.md` | `.codex/agents/*.toml` |
 
-Initialization writes `.ai-sdlc/project-profile.md` as a human-readable snapshot of the delivery mode, local role coverage, and detected project evidence. It also writes `.ai-sdlc/artifact-hosts.json` as the machine-readable registry for local and cross-repository artifact ownership, plus `.ai-sdlc/installation.json` as the authoritative record of the selected AI tool, roles, and mode. Editing the profile snapshot does not switch the active mode.
-
-Stack and validation choices are intentionally not part of initialization. When the Architect first works, it looks for an existing technology profile locally and through the artifact routes. In formal mode, it creates a missing profile from verified evidence and material user choices. In rapid mode, it does so only when the current increment needs a material technology choice. This works even when no development role is installed, and it does not install dependencies, scaffold an application, or authorize a migration.
-
-Every tool also gets the shared workflow and artifact templates:
+Every installation includes:
 
 ```text
 .agents/
@@ -77,6 +193,8 @@ Every tool also gets the shared workflow and artifact templates:
     design-baseline.md
     design-spec.md
     technology-profile.md
+    technology-profile-frontend.md
+    technology-profile-backend.md
     architecture.md
     architecture-discovery-context.md
     architecture-options.md
@@ -96,38 +214,18 @@ docs/
     index.md
 ```
 
-Templates are used only when they add value. Working documents are created under `docs/ai-sdlc/`. The local artifact index lists only documents owned by this repository that actually exist, with a link and a short description.
+`.ai-sdlc/project-profile.md` is a readable initialization snapshot. `.ai-sdlc/installation.json` is the authoritative repository ID, tool, canonical-role, developer-profile, and delivery-mode record. `.ai-sdlc/artifact-hosts.json` is the route registry.
 
-The `sdlc-artifact-bridge` is a repository skill, not an MCP server. It reads `.ai-sdlc/artifact-hosts.json` to resolve `/docs/...` references to this repository, another local repository, or a canonical HTTPS URL. It performs read-only context resolution: it does not clone, fetch, synchronize, copy, or write across repositories.
+The `sdlc-artifact-bridge` is a repository skill, not an MCP server. It resolves `/docs/...` references to the local repository, another filesystem repository, or a canonical HTTPS URL. It only reads; it never clones, fetches, synchronizes, copies, or writes across repositories.
 
-Invoke it with a routed path, or name a host explicitly:
+Invoke it with a routed path or an explicit host:
 
 ```text
-$sdlc-artifact-bridge /docs/ai-sdlc/prd.md
-$sdlc-artifact-bridge product-repo:/docs/ai-sdlc/prd.md
+$sdlc-artifact-bridge /docs/ai-sdlc/technology-profile.md
+$sdlc-artifact-bridge delivery-project:/docs/ai-sdlc/technology/frontend/web-app.md
 ```
 
-Each phase has its own route in the registry. A selected local role starts with its route set to the local host; an unselected role starts with a null host and appears as `Unconfigured` in the project profile. To connect a separate product, design, or architecture repository later, add its filesystem or HTTPS host and point only the relevant route at it. The other roles remain independent.
-
-For example, add this object as `hosts.product-repo` for a sibling repository:
-
-```json
-{
-  "kind": "filesystem",
-  "root": "../product-repo",
-  "artifactIndex": "docs/ai-sdlc/index.md"
-}
-```
-
-Then set the existing `routes.discovery.host` value to `"product-repo"` and preserve its generated `phase`, `role`, and `paths`. For an HTTPS document host, add this object as `hosts.product-docs`:
-
-```json
-{
-  "kind": "url",
-  "baseUrl": "https://example.com/product-docs/",
-  "artifactIndex": "docs/ai-sdlc/index.md"
-}
-```
+For scoped technology, resolve the catalog first, select rows matching the developer area and repository or host/path, then resolve the exact child paths listed by those rows. Do not infer a scope from a filename.
 
 ## Delivery workflow
 
@@ -135,10 +233,10 @@ The workflow keeps this phase order and ownership:
 
 | Phase | Owner | Typical work |
 |---|---|---|
-| Discovery | PM / BA | PRD, user stories, business rules, and acceptance criteria |
-| Design | Designer | Project baseline, user flow, real states, responsive and accessible behavior, and configured UI-system choices |
-| Architecture | Architect | Architecture Pack, C4 context and containers, ADRs, patterns, NFRs, and material risks |
-| Implementation | Software Engineer | Plan and tasks when useful, production changes, tests, checks, and implementation notes |
+| Discovery | PM / BA | PRD, stories, business rules, and acceptance criteria |
+| Design | Designer | Baseline, flows, states, responsive and accessible behavior |
+| Architecture | Architect | Technology catalog and child profiles, Architecture Pack, C4, ADRs, patterns, NFRs, and risks |
+| Implementation | Software Engineer | Scoped plan/tasks when useful, production changes, tests, checks, and notes |
 | Verification | Tester | Requirement and risk-based test results |
 | Release | DevOps | Release, health-check, monitoring, and rollback steps |
 
@@ -148,48 +246,36 @@ Start a change with:
 Follow .ai-sdlc/workflow.md for this change: <describe the change>.
 ```
 
-The phase names, order, and owners remain stable, but the initialized role set may be sparse. Roles first read artifacts in the local index, then use the bridge for configured external sources. A later role does not require every earlier role to be local, and the workflow never initializes a missing role or creates a filler upstream document automatically.
+The initialized role set may be sparse. A missing local role is not a missing phase, does not initialize itself, and does not force a filler artifact. Roles read local artifacts first and use the bridge for configured sources.
 
-The delivery mode changes the depth of PM / BA, Designer, and Architect work, not the phase order or ownership. Formal mode retains the existing structured, reviewable handoffs. Rapid mode avoids speculative scope, states, abstractions, and documents, but still requires observable acceptance criteria and explicit handling of material risk, blocked work, safety, privacy, compliance, data loss, shared contracts, external contracts, migrations, rollback, and hard-to-reverse decisions. The exact shared rules are in `.ai-sdlc/workflow.md`, with role-specific rapid thresholds in the three role agents.
-
-When the request and available evidence are sufficient, a selected role continues independently. When a required input is missing, it asks for the specific route, artifact, or decision that blocks the work and records the source once supplied.
-
-When work needs a human decision, the agent asks immediately with two or three clear options and a recommended choice. It continues after the answer and records the selected result instead of leaving an unresolved question at the end of a document.
-
-## Architecture Pack
-
-The Architecture Pack is a project-level baseline that is maintained when architecture changes. Small changes can reuse it without producing filler documents.
-
-- `architecture.md` summarizes the current direction and links the pack.
-- C4 Context records people, the focal system, and external systems.
-- C4 Containers records deployable frontends, services, data stores, and their relationships.
-- Architecture Patterns contains the required project-wide rules and reusable implementation patterns.
-- ADRs record durable choices, cross-repository decisions, migrations, and exceptions.
-- Options, NFRs, discovery context, and risk review are used when the decision needs them.
+When work needs a human decision, the agent asks immediately with two or three clear options and a recommended choice. It continues after the answer and records the selected result instead of hiding an unresolved question at the end of a document.
 
 ## Write safety
 
-Initialization is create-only. It checks every planned destination before writing and stops when any destination already exists. If a later write fails, it removes only unchanged files created by that command.
+Initialization is create-only. It checks every destination before writing and stops when any destination already exists. If a later write fails, it removes only unchanged files created by that command.
 
-Update checks every managed destination before writing and rejects symbolic links or other unsafe paths. If a later write fails, it restores files already replaced and removes unchanged files created by that update. A file changed or replaced by another process during rollback is kept and reported instead of being overwritten.
+Update checks every managed destination and rejects unsafe paths. If a later write fails, it restores files already replaced and removes unchanged files created by that update. A file changed concurrently is kept and reported.
 
 ## CLI reference
 
 ```text
 create-ai-native-sdlc init [target] [options]
-create-ai-native-sdlc update [target] [--tool <tool>]
+create-ai-native-sdlc update [target]
 
---name <name>               Project name
---summary <text>            Short project summary
---tool <tool>               copilot, claude, or codex
---roles <list>              Comma-separated role IDs, all, or none
---delivery-mode <mode>      formal or rapid (default: formal)
--h, --help                  Show help
+--name <name>                    Project name
+--repository-id <id>             Stable catalog match ID (default: target-derived)
+--summary <text>                 Short project summary
+--tool <tool>                    copilot, claude, or codex
+--roles <list>                   Comma-separated role IDs, all, or none
+--delivery-mode <mode>           formal or rapid (default: formal)
+--engineer-scope <scope>         frontend, backend, fullstack, or frontend,backend
+--architecture-source <source>   Filesystem path or HTTPS base URL
+-h, --help                       Show help
 ```
 
 Role IDs are `pm-ba`, `designer`, `architect`, `software-engineer`, `tester`, and `devops`.
 
-For `update`, `--tool` is needed only when more than one supported legacy tool installation is detected. The initialization-only `--name`, `--summary`, `--roles`, and `--delivery-mode` options are not accepted.
+`--repository-id` is a stable ASCII lowercase kebab-case identity used to match this repository to technology catalog rows; by default it is derived from the target directory name. Set it explicitly when the Architect has already reserved an ID, when different directory names normalize to the same value (such as `api_service` and `api.service`), when distinct repositories share a directory name, or when several checkouts represent the same repository. It must be unique for each distinct code source within one delivery project. A target name that cannot produce an ASCII ID requires this option. `--engineer-scope` is required when Software Engineer is selected and invalid otherwise. `frontend,backend` directly means two separate specialist agents; `fullstack` means one agent. `--architecture-source` requires Software Engineer and cannot be combined with a local Architect. Initialization-only options are not accepted by `update`.
 
 ## Development
 

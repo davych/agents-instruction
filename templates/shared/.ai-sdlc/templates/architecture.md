@@ -11,6 +11,8 @@
 
 <Summarize the current architecture and the selected direction. Link decisions instead of copying them.>
 
+**Technology catalog:** <`./technology-profile.md` or canonical bridged link>
+
 ## Constraints
 
 - <Accepted ADR, required pattern, compatibility constraint, or measurable target>
@@ -25,6 +27,8 @@
 | Security | <Yes / No / Unknown> | <Identity, authorization, trust, sensitive data> | <C4, ADR, pattern, or source> |
 | Observability | <Yes / No / Unknown> | <Logs, metrics, traces, correlation, failure signals> | <Pattern, NFR, or source> |
 | Frontend | <Yes / No / Unknown> | <Framework, rendering, routing, state, server data, design system> | <C4, ADR, pattern, or source> |
+| Runtime | <Yes / No / Unknown> | <Deployment, hosting, environment, scaling, resilience> | <C4, profile, NFR, or source> |
+| Validation | <Yes / No / Unknown> | <Contract, migration, security, performance, and behavioral evidence> | <Profile, NFR, test strategy, or source> |
 
 ## Pack index
 
@@ -40,6 +44,16 @@ List only pack files that exist.
 | Architecture patterns | <relative link or None> | Required baseline and reusable implementation rules | <Current / Stale / Not needed> |
 | NFRs | <relative link or None> | Measurable quality targets | <Current / Stale / Not needed> |
 | Risk review | <relative link or None> | Material failure scenarios and responses | <Current / Stale / Not needed> |
+
+## Shared cross-scope decisions
+
+Link instead of duplicating details held by the technology catalog, Architecture Patterns, or an ADR.
+
+| Concern | Authoritative source | Current rule or unresolved gap |
+|---|---|---|
+| API or event contracts | <Catalog, OpenAPI, event schema, or ADR> |  |
+| Identity and trust boundaries | <Catalog, C4, or ADR> |  |
+| Compatibility and coordinated change | <Catalog or ADR> |  |
 
 ## Active ADRs
 

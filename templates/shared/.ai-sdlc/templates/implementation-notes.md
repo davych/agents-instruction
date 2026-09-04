@@ -1,5 +1,11 @@
 # Implementation Notes
 
+**Developer scope:** <frontend / backend / fullstack>
+
+**Destination:** `docs/ai-sdlc/implementation/<developer-scope>/notes.md`
+
+Replace `<developer-scope>` with the generated agent's scope; do not create root-level implementation notes.
+
 ## Status
 
 **State:** <Ready for test or Blocked>
@@ -8,9 +14,9 @@
 
 **Blockers:** <None or clear blocker and owner>
 
-**Plan:** <Relative link or None>
+**Plan:** `./plan.md` or None
 
-**Tasks:** <Relative link or None>
+**Tasks:** `./tasks.md` or None
 
 ## Scope
 
@@ -25,6 +31,7 @@
 
 ## Decisions used
 
+- **Technology catalog and child profiles:** <Links and relevant Required/Accepted entries>
 - <Design decision, ADR, pattern, or local implementation choice>
 
 ## Checks

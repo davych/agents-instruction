@@ -1,9 +1,11 @@
 # Implementation Tasks: <Change title>
 
-**Plan:** <Relative link or Inline plan>
+**Developer scope:** <frontend / backend / fullstack>
+**Destination:** `docs/ai-sdlc/implementation/<developer-scope>/tasks.md`
+**Plan:** `./plan.md` or <Inline plan>
 **Updated:** <YYYY-MM-DD>
 
-Use this file only when a task ledger improves sequencing, parallel work, or acceptance coverage.
+Use this file only when a task ledger improves sequencing, parallel work, or acceptance coverage. Replace `<developer-scope>` with the generated agent's scope; do not create a root-level implementation task file.
 
 | Task | Status | Repository and path | Expected result | Requirement | Dependency | Evidence or blocker |
 |---|---|---|---|---|---|---|

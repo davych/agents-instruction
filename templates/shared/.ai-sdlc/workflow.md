@@ -10,8 +10,8 @@ Use `docs/ai-sdlc/index.md` as the entry point for artifacts owned by this repos
 |---|---|---|
 | Discovery | PM / BA | `docs/ai-sdlc/prd.md` and files under `docs/ai-sdlc/stories/` |
 | Design | Designer | `docs/ai-sdlc/design-baseline.md` and `docs/ai-sdlc/design-spec.md` |
-| Architecture | Architect | `docs/ai-sdlc/technology-profile.md`, `docs/ai-sdlc/architecture.md`, and relevant Architecture Pack files |
-| Implementation | Software Engineer | Working code, tests, and optional plan, tasks, and notes |
+| Architecture | Architect | Technology catalog, scoped frontend/backend profiles, `docs/ai-sdlc/architecture.md`, and relevant Architecture Pack files |
+| Implementation | Software Engineer | Working code, tests, and optional files under `docs/ai-sdlc/implementation/<developer-scope>/` |
 | Verification | Tester | `docs/ai-sdlc/test-report.md` |
 | Release | DevOps | `docs/ai-sdlc/release-runbook.md` |
 
@@ -41,6 +41,8 @@ For each input needed by the current phase:
 4. Record the source repository, path or URL, and revision when that information is available.
 5. If a route host is null or inaccessible, ask the user for the host, path, or access only when the missing input is required for the requested work.
 
+For technology input, resolve `/docs/ai-sdlc/technology-profile.md` first. Read the local `repositoryId` from `.ai-sdlc/installation.json` and form candidates from catalog rows whose `Repository ID` exactly matches it and whose `Kind` matches the developer area. Select the affected deployable or Scope ID set from the request and code paths, then resolve only those child profiles; ask when the affected set remains ambiguous. `Source host/path` records evidence provenance and is not used for identity matching. Do not infer a scope from a filename, combine conflicting profiles, choose an unrelated profile because it looks similar, or copy a profile into the code repository. Only `Required` and `Accepted` entries are implementation rules.
+
 ## Rules
 
 1. Start with the user's goal and the current project.
@@ -51,10 +53,10 @@ For each input needed by the current phase:
 6. Keep each phase as small as the change allows. If a phase needs no new work, say why in the current task instead of creating a filler document.
 7. When a document is useful, start from its file in `.ai-sdlc/templates/`.
 8. Record facts from real files, artifact hosts, and commands. Do not invent evidence or silently replace a missing upstream artifact.
-9. Treat an existing technology profile, project instructions, current code, and accepted ADRs as authoritative evidence. A proposed profile is not an accepted decision.
+9. Treat project instructions, current code, accepted ADRs, and `Required` or `Accepted` technology entries as authoritative within their stated scope. `Observed`, `Proposed`, `Excluded`, and `Unknown` technology entries provide evidence or decision state but do not authorize implementation choices.
 10. When information is missing or conflicting, inspect all configured sources that are available before asking the user.
 11. When a human decision is required, pause at that point and use the AI tool's structured question UI when available; otherwise ask in the current conversation. Offer two or three mutually exclusive options, put the recommended option first, and explain each option's impact or trade-off in one sentence.
 12. Continue dependent work only after the answer. Record the selected decision and its source in the relevant document. Do not defer an unresolved decision to an end-of-document question or checklist.
 13. People remain responsible for product scope, material architecture choices, risk acceptance, and release decisions.
 14. When you create, update, move, or delete a delivery document other than `docs/ai-sdlc/index.md`, update its row in the local index. Use a link relative to the index, such as `./prd.md`. Keep external artifacts in the host registry and cite their canonical source in the consuming document. Add one plain-English description, remove stale rows, and list only artifacts that exist.
-15. The artifact bridge is read-only context resolution. Do not synchronize, copy, or modify another repository unless the user separately requests that work.
+15. The artifact bridge is read-only context resolution. Do not clone, fetch, synchronize, copy, or modify another repository through it. Cross-repository writes require separate user-authorized work outside the bridge.

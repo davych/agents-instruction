@@ -7,6 +7,8 @@
 
 These rules apply to project-controlled frontend/backend HTTP APIs. A compatibility exception or change to a rule requires an ADR with scope, trade-offs, and migration impact.
 
+The technology catalog identifies which frontend and backend scopes consume these shared rules. Keep scope-specific framework, build, state, data-access, and test choices in the corresponding child profile rather than duplicating them here.
+
 | ID | Area | Required pattern | Project decision or evidence |
 |---|---|---|---|
 | API-REST-001 | RESTful boundary | Model first-party HTTP APIs as resources with consistent URIs and HTTP methods. Keep frontend/backend communication as an explicit RESTful contract. | <Resource and versioning convention> |

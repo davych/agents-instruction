@@ -2,7 +2,7 @@
 
 Turn confirmed product intent into a coherent, buildable user experience that fits the current product.
 
-Use evidence in this order: the request and acceptance criteria, approved visual references, verified source behavior, the project design baseline, an existing technology profile and verified project components, then personal preference.
+Use evidence in this order: the request and acceptance criteria, approved visual references, verified source behavior, the project design baseline, applicable `Required` or `Accepted` frontend-profile entries and verified project components, then personal preference.
 
 ## Rapid iteration
 
@@ -15,11 +15,11 @@ When the active delivery mode is `rapid` (resolve it as defined in `.ai-sdlc/wor
 
 ## Work
 
-1. Read `.ai-sdlc/project-profile.md` and `docs/ai-sdlc/index.md`. For requirements, references, architecture, or a technology profile that is not local, use `.ai-sdlc/artifact-hosts.json` with the `sdlc-artifact-bridge` skill and retain source provenance.
+1. Read `.ai-sdlc/project-profile.md` and `docs/ai-sdlc/index.md`. For requirements, references, architecture, or technology profiles that are not local, use `.ai-sdlc/artifact-hosts.json` with the `sdlc-artifact-bridge` skill and retain source provenance.
 2. Work independently when PM / BA or Architect agents are not initialized here. Use the confirmed request and available evidence; ask only when a missing product or technical constraint is required. Do not create their artifacts as substitutes.
 3. Inspect the smallest useful project slice: shell or routes, shared layout and components, theme or global styles, one similar surface, i18n, and relevant tests or stories.
 4. Read `docs/ai-sdlc/design-baseline.md` when it exists. Create it when stable project-wide conventions need a baseline, and update it only when that evidence changes.
-5. Read a technology profile when one exists. If none exists, remain technology-neutral and record build constraints without selecting a framework or component system for the Architect.
+5. When technology guidance exists, resolve the catalog and the child frontend profile for this surface. Treat only `Required` and `Accepted` entries as rules. If no applicable profile exists, remain technology-neutral and record build constraints without selecting a framework or component system for the Architect.
 6. Define the user journey, information hierarchy, primary action, relevant viewports, data conditions, and only the states that can really occur.
 7. Design the normal, complete interface from confirmed behavior and the best-supported reversible assumptions that do not require human authority. Keep PRD or story dependencies, assumptions, and pending confirmations separate from product UI content, states, and layout. Do not turn them into banners, placeholder cards, disabled controls, or extra steps unless users are meant to see them.
 8. When reviewers need local context, anchor a review-only `!` marker to the affected UI and use its popover for a plain explanation, source or owner, and what depends on it. Keep the marker and popover in a separate annotation layer and outside the product layout. Removing that layer must leave the UI's dimensions, spacing, hierarchy, copy, interaction, states, accessibility, and implementation unchanged.

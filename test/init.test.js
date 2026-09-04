@@ -29,7 +29,15 @@ const roleIds = [
   "tester",
   "devops",
 ];
-const allRolesArgs = ["--roles", "all"];
+const generatedFullstackAgentIds = [
+  "pm-ba",
+  "designer",
+  "architect",
+  "fullstack-developer",
+  "tester",
+  "devops",
+];
+const allRolesArgs = ["--roles", "all", "--engineer-scope", "fullstack"];
 const templateFiles = [
   "architecture-adr.md",
   "architecture-c4-containers.mmd",
@@ -48,6 +56,8 @@ const templateFiles = [
   "prd.md",
   "release-runbook.md",
   "story.md",
+  "technology-profile-backend.md",
+  "technology-profile-frontend.md",
   "technology-profile.md",
   "test-report.md",
 ];
@@ -88,21 +98,32 @@ test("each AI tool gets only its native instructions and selected role files", a
     assert.equal(existsSync(path.join(target, item.instructions)), true);
     assert.deepEqual(
       (await readdir(path.join(target, item.directory))).sort(),
-      roleIds.map(item.fileName).sort(),
+      generatedFullstackAgentIds.map(item.fileName).sort(),
     );
     for (const absent of item.absent) {
       assert.equal(existsSync(path.join(target, absent)), false, `${item.tool}: ${absent}`);
     }
 
-    for (const roleId of roleIds) {
+    for (const roleId of generatedFullstackAgentIds) {
       const generated = await readFile(
         path.join(target, item.directory, item.fileName(roleId)),
         "utf8",
       );
-      const source = (await readFile(
-        path.join(repositoryRoot, "templates/agents", `${roleId}.md`),
-        "utf8",
-      )).trim();
+      const source = roleId === "fullstack-developer"
+        ? [
+          await readFile(
+            path.join(repositoryRoot, "templates/agents/software-engineer.md"),
+            "utf8",
+          ),
+          await readFile(
+            path.join(repositoryRoot, "templates/agent-scopes/software-engineer/fullstack.md"),
+            "utf8",
+          ),
+        ].map((value) => value.trim()).join("\n\n")
+        : (await readFile(
+          path.join(repositoryRoot, "templates/agents", `${roleId}.md`),
+          "utf8",
+        )).trim();
       if (item.tool === "codex") {
         assert.match(generated, new RegExp(`^name = "${roleId}"\\ndescription = `, "u"));
         assert.equal(await readCodexInstructions(
@@ -116,7 +137,7 @@ test("each AI tool gets only its native instructions and selected role files", a
   }
 });
 
-test("AC-03 all roles record the canonical default delivery mode without changing core outputs", async () => {
+test("AC-04 all roles record schema-v2 full-stack scope without changing core outputs", async () => {
   const target = await temporaryDirectory();
   const output = [];
 
@@ -156,7 +177,11 @@ test("AC-03 all roles record the canonical default delivery mode without changin
   assert.match(profile, /\| Delivery mode \| formal \|/iu);
   assert.match(profile, /\| Local role agents \| pm-ba, designer, architect, software-engineer, tester, devops \|/u);
   assert.match(profile, /\| Active local phases \| Discovery, Design, Architecture, Implementation, Verification, Release \|/u);
-  assert.match(profile, /\| Technology profile \| `docs\/ai-sdlc\/technology-profile\.md` when first created by the Architect \|/u);
+  assert.match(profile, /\| Generated developer agents \| fullstack-developer \|/u);
+  assert.match(profile, new RegExp(`\\| Repository ID \\| ${path.basename(target).toLowerCase()} \\|`, "u"));
+  assert.match(profile, /\| Engineering areas \| frontend, backend \|/u);
+  assert.match(profile, /\| Engineer agent mode \| fullstack \|/u);
+  assert.match(profile, /\| Technology catalog \| `\/docs\/ai-sdlc\/technology-profile\.md` through the configured Architecture route when available \|/u);
   assert.match(profile, /\| Artifact host registry \| `\.ai-sdlc\/artifact-hosts\.json` \|/u);
   assert.match(profile, /\| Artifact bridge skill \| `\.agents\/skills\/sdlc-artifact-bridge\/SKILL\.md` \|/u);
   assert.doesNotMatch(profile, /\| (?:Development work|Development area|Stack preference|UI system|UI MCP|Validation preference) \|/u);
@@ -164,7 +189,19 @@ test("AC-03 all roles record the canonical default delivery mode without changin
   assert.equal(existsSync(path.join(target, ".ai-sdlc/artifact-hosts.json")), true);
   assert.deepEqual(
     JSON.parse(await readFile(path.join(target, ".ai-sdlc/installation.json"), "utf8")),
-    { schemaVersion: 1, tool: "copilot", roles: roleIds, deliveryMode: "formal" },
+    {
+      schemaVersion: 2,
+      repositoryId: path.basename(target).toLowerCase(),
+      tool: "copilot",
+      roles: roleIds,
+      deliveryMode: "formal",
+      roleProfiles: {
+        "software-engineer": {
+          areas: ["frontend", "backend"],
+          agentMode: "fullstack",
+        },
+      },
+    },
   );
   assert.equal(existsSync(path.join(target, ".agents/skills/sdlc-artifact-bridge/SKILL.md")), true);
   assert.equal(existsSync(path.join(target, ".vscode/mcp.json")), false);
@@ -284,7 +321,7 @@ test("project profile records safe root-level evidence for later Architect plann
   assert.equal(profile.includes(target), false);
 });
 
-test("AC-02 interactive init asks for delivery mode after relevant role selection and retries invalid answers", async () => {
+test("interactive init asks for delivery mode after relevant role selection and retries invalid answers", async () => {
   const target = await temporaryDirectory();
   const questions = [];
   const output = [];
@@ -329,10 +366,18 @@ test("AC-02 interactive init asks for delivery mode after relevant role selectio
   );
 });
 
-test("AC-02 interactive init skips the delivery-mode question when no selected role uses it", async () => {
+test("AC-02 interactive init asks engineer scope exactly once and otherwise skips unused delivery mode", async () => {
   const cases = [
-    { answers: ["2", "2", "2", "1", "1", "1"], roles: ["software-engineer", "tester", "devops"] },
-    { answers: ["2", "2", "2", "2", "2", "2"], roles: [] },
+    {
+      answers: ["2", "2", "2", "1", "1", "1", "3"],
+      roles: ["software-engineer", "tester", "devops"],
+      scopeQuestions: 1,
+    },
+    {
+      answers: ["2", "2", "2", "2", "2", "2"],
+      roles: [],
+      scopeQuestions: 0,
+    },
   ];
 
   for (const item of cases) {
@@ -350,17 +395,35 @@ test("AC-02 interactive init skips the delivery-mode question when no selected r
       "claude",
     ], { prompt: answers(item.answers, questions), output: () => {} });
 
-    assert.equal(questions.length, 6);
+    assert.equal(questions.length, 6 + item.scopeQuestions);
     assert.equal(questions.some((question) => /delivery mode/iu.test(question)), false);
+    assert.equal(
+      questions.filter((question) => /Software Engineer responsibility/iu.test(question)).length,
+      item.scopeQuestions,
+    );
     const installation = JSON.parse(
       await readFile(path.join(target, ".ai-sdlc/installation.json"), "utf8"),
     );
     assert.deepEqual(installation.roles, item.roles);
     assert.equal(installation.deliveryMode, "formal");
+    if (item.scopeQuestions === 1) {
+      assert.deepEqual(installation.roleProfiles, {
+        "software-engineer": {
+          areas: ["frontend", "backend"],
+          agentMode: "fullstack",
+        },
+      });
+      assert.deepEqual(
+        (await readdir(path.join(target, ".claude/agents"))).sort(),
+        ["devops.md", "fullstack-developer.md", "tester.md"],
+      );
+    } else {
+      assert.equal(Object.hasOwn(installation, "roleProfiles"), false);
+    }
   }
 });
 
-test("AC-01 init accepts only canonical delivery modes and validates them before writing", async () => {
+test("init accepts only canonical delivery modes and validates them before writing", async () => {
   for (const deliveryMode of ["formal", "rapid"]) {
     const target = await temporaryDirectory();
     const output = [];
@@ -410,6 +473,8 @@ test("AC-01 init accepts only canonical delivery modes and validates them before
         "claude",
         "--roles",
         "all",
+        "--engineer-scope",
+        "fullstack",
         ...modeArgs,
       ], { output: () => {} }),
       /--delivery-mode|delivery mode/iu,
@@ -420,7 +485,7 @@ test("AC-01 init accepts only canonical delivery modes and validates them before
   }
 });
 
-test("AC-03 rapid mode keeps phase order, role selection, and AI-tool isolation unchanged", async () => {
+test("rapid mode keeps phase order, role selection, and AI-tool isolation unchanged", async () => {
   const target = await initializedProject("codex", {
     roles: "all",
     deliveryMode: "rapid",
@@ -436,7 +501,7 @@ test("AC-03 rapid mode keeps phase order, role selection, and AI-tool isolation 
   );
   assert.deepEqual(
     (await readdir(path.join(target, ".codex/agents"))).sort(),
-    roleIds.map((roleId) => `${roleId}.toml`).sort(),
+    generatedFullstackAgentIds.map((roleId) => `${roleId}.toml`).sort(),
   );
   assert.equal(existsSync(path.join(target, ".github")), false);
   assert.equal(existsSync(path.join(target, ".claude")), false);
@@ -446,7 +511,7 @@ test("AC-03 rapid mode keeps phase order, role selection, and AI-tool isolation 
     assert.match(role, /delivery mode/iu, roleId);
     assert.ok(headings(role).some((heading) => /rapid/iu.test(heading)), roleId);
   }
-  for (const roleId of ["software-engineer", "tester", "devops"]) {
+  for (const roleId of ["fullstack-developer", "tester", "devops"]) {
     const role = await readCodexInstructions(path.join(target, ".codex/agents", `${roleId}.toml`));
     assert.equal(
       headings(role).some((heading) => /(?:formal|rapid).*delivery|delivery.*(?:formal|rapid)/iu.test(heading)),
@@ -495,7 +560,7 @@ test("shared workflow keeps the six phases and the full template set", async () 
   assert.match(workflow, /Read `\.ai-sdlc\/project-profile\.md` before starting/u);
   assert.match(workflow, /use `\.ai-sdlc\/artifact-hosts\.json` with the `sdlc-artifact-bridge` skill/u);
   assert.match(workflow, /Architecture Pack files/u);
-  assert.match(workflow, /optional plan, tasks, and notes/u);
+  assert.match(workflow, /optional files under `docs\/ai-sdlc\/implementation\/<developer-scope>\/`/u);
   assert.match(workflow, /Do not initialize, simulate, or create filler work for a missing role/u);
   assert.match(workflow, /Do not block a selected later role merely because an earlier role is not local/u);
   assert.match(workflow, /route host is null or inaccessible/u);
@@ -506,7 +571,7 @@ test("shared workflow keeps the six phases and the full template set", async () 
   assert.match(workflow, /Do not defer an unresolved decision/u);
 });
 
-test("AC-08 shared rapid rules define actionable Risk and Blocker markers without weakening safeguards", async () => {
+test("shared rapid rules define actionable Risk and Blocker markers without weakening safeguards", async () => {
   const target = await initializedProject("claude", { deliveryMode: "rapid" });
   const workflow = await readFile(path.join(target, ".ai-sdlc/workflow.md"), "utf8");
   const rapid = guidanceAround(workflow, "rapid", 6000);
@@ -593,7 +658,7 @@ test("PM and BA templates retain PRD and user story detail", async () => {
   assert.match(story, /## Decision record/u);
 });
 
-test("AC-04 formal guidance preserves established role depth and treats a missing mode as formal", async () => {
+test("formal guidance preserves established role depth and treats a missing mode as formal", async () => {
   const target = await initializedProject("claude", {
     roles: "pm-ba,designer,architect",
     deliveryMode: "formal",
@@ -621,7 +686,7 @@ test("AC-04 formal guidance preserves established role depth and treats a missin
   }
 });
 
-test("AC-05 rapid PM and BA guidance favors a minimal evidenced increment and observable acceptance", async () => {
+test("rapid PM and BA guidance favors a minimal evidenced increment and observable acceptance", async () => {
   const target = await initializedProject("claude", {
     roles: "pm-ba",
     deliveryMode: "rapid",
@@ -641,7 +706,7 @@ test("AC-05 rapid PM and BA guidance favors a minimal evidenced increment and ob
   assert.match(rapid, /do not|avoid/iu);
 });
 
-test("AC-06 rapid Designer guidance stays on the affected slice while retaining essential UX states", async () => {
+test("rapid Designer guidance stays on the affected slice while retaining essential UX states", async () => {
   const target = await initializedProject("claude", {
     roles: "designer",
     deliveryMode: "rapid",
@@ -663,7 +728,7 @@ test("AC-06 rapid Designer guidance stays on the affected slice while retaining 
   assert.match(rapid, /(?:key|critical|required|necessary)[\s\S]{0,80}(?:failure|error) states?|(?:failure|error) states?[\s\S]{0,80}(?:key|critical|required|necessary)/iu);
 });
 
-test("AC-07 rapid Architect guidance preserves boundaries and creates only triggered minimum evidence", async () => {
+test("rapid Architect guidance preserves boundaries and creates only triggered minimum evidence", async () => {
   const target = await initializedProject("claude", {
     roles: "architect",
     deliveryMode: "rapid",
@@ -696,9 +761,9 @@ test("AC-07 rapid Architect guidance preserves boundaries and creates only trigg
   }
   assert.match(rapid, /trigger|only when|when .*require|real need/iu);
   assert.match(rapid, /minimum|smallest|minimal/iu);
-  assert.match(role, /any later task that needs a material technology choice/iu);
-  assert.match(profile, /delivery-mode entry rules/iu);
-  assert.match(planning, /missing profile alone is not a reason to create one/iu);
+  assert.match(role, /Application architecture work still needs a usable technology catalog/iu);
+  assert.match(profile, /Initialization may choose an engineering area/u);
+  assert.match(planning, /does not skip the catalog or affected child profiles/iu);
 });
 
 test("human decisions are asked immediately and artifacts record resolved choices", async () => {
@@ -712,7 +777,7 @@ test("human decisions are asked immediately and artifacts record resolved choice
   assert.match(readme, /agent asks immediately with two or three clear options/u);
 
   const deferredDecision = /open decisions?|open questions?|decision still needed|open target decisions|needs decision|decision needed/iu;
-  for (const file of templateFiles.filter((name) => name !== "technology-profile.md")) {
+  for (const file of templateFiles.filter((name) => !name.startsWith("technology-profile"))) {
     const content = await readFile(path.join(target, ".ai-sdlc/templates", file), "utf8");
     assert.doesNotMatch(content, deferredDecision, file);
   }
@@ -755,7 +820,7 @@ test("Designer stays technology-neutral when no technology profile exists", asyn
   assert.match(designer, /Read `\.ai-sdlc\/project-profile\.md`/u);
   assert.match(designer, /use `\.ai-sdlc\/artifact-hosts\.json` with the `sdlc-artifact-bridge` skill/u);
   assert.match(designer, /Work independently when PM \/ BA or Architect agents are not initialized/u);
-  assert.match(designer, /If none exists, remain technology-neutral/u);
+  assert.match(designer, /If no applicable profile exists, remain technology-neutral/u);
   assert.match(designer, /user journey, information hierarchy, primary action/u);
   assert.match(designer, /For visual work, render the affected viewport/u);
   assert.match(designer, /approved reference or adjacent product surfaces/u);
@@ -767,7 +832,7 @@ test("Designer stays technology-neutral when no technology profile exists", asyn
   assert.match(designer, /pixel-perfect fidelity/u);
   assert.doesNotMatch(designer, /shadcn\/ui|Ant Design|Material UI/u);
   assert.doesNotMatch(designer, /\bVDS\b|vds-query|component-query|validate-spec/iu);
-  assert.match(profile, /Initialization does not choose a stack or validation depth/u);
+  assert.match(profile, /does not choose a stack or validation depth/u);
   assert.match(baseline, /Human-curated notes/u);
   assert.match(spec, /Experience and information hierarchy/u);
   assert.match(spec, /Responsive behavior/u);
@@ -814,7 +879,7 @@ test("Designer keeps delivery uncertainty out of the UI and uses realistic mock 
   assert.doesNotMatch(spec, /Assumption or blocker/u);
 });
 
-test("Architect initializes technology planning on first use without other roles", async () => {
+test("AC-01 Architect-only initialization prepares scoped technology planning for first use", async () => {
   const target = await initializedProject("codex", { roles: "architect" });
   const architect = await readCodexInstructions(
     path.join(target, ".codex/agents/architect.toml"),
@@ -824,35 +889,55 @@ test("Architect initializes technology planning on first use without other roles
     path.join(target, ".ai-sdlc/templates/technology-profile.md"),
     "utf8",
   );
+  const frontendTemplate = await readFile(
+    path.join(target, ".ai-sdlc/templates/technology-profile-frontend.md"),
+    "utf8",
+  );
+  const backendTemplate = await readFile(
+    path.join(target, ".ai-sdlc/templates/technology-profile-backend.md"),
+    "utf8",
+  );
+  const installation = JSON.parse(
+    await readFile(path.join(target, ".ai-sdlc/installation.json"), "utf8"),
+  );
 
   assert.deepEqual(await readdir(path.join(target, ".codex/agents")), ["architect.toml"]);
-  assert.match(architect, /first Architecture task/u);
-  assert.match(architect, /look for `docs\/ai-sdlc\/technology-profile\.md` locally and through the configured Architecture route/u);
-  assert.match(architect, /`Proposed` or `Confirmed` status/u);
-  assert.match(architect, /A `Superseded` profile is not usable/u);
-  assert.match(architect, /inspect evidence, ask whether to preserve verified current technology/u);
-  assert.match(architect, /then ask only applicable material choices/u);
-  assert.match(architect, /create the profile from its template/u);
+  assert.equal(installation.schemaVersion, 2);
+  assert.equal(Object.hasOwn(installation, "roleProfiles"), false);
+  assert.equal(Object.hasOwn(installation, "architectureSource"), false);
+  assert.equal(
+    existsSync(path.join(target, "docs/ai-sdlc/technology-profile.md")),
+    false,
+    "initialization ships templates but the Architect creates the working catalog on first use",
+  );
+  assert.match(architect, /When application architecture is first requested/u);
+  assert.match(architect, /technology catalog at `docs\/ai-sdlc\/technology-profile\.md`/u);
+  assert.match(architect, /frontend work, backend work, or both/u);
+  assert.match(architect, /existing, greenfield, or hybrid/iu);
+  assert.match(architect, /constraints and stack preferences/u);
+  assert.match(architect, /only `Required` and `Accepted` instruct implementation/u);
   assert.match(architect, /Work independently when PM \/ BA, Designer, Software Engineer, Tester, or DevOps agents are not initialized/u);
   assert.match(architect, /Do not install dependencies, scaffold an application/u);
+  assert.match(architect, /writes Architecture artifacts only in the delivery project/u);
 
-  assert.match(planning, /Search the local artifact index, the Architecture route/u);
-  assert.match(planning, /Ask the user only about material choices that cannot be resolved from evidence/u);
-  assert.match(planning, /one decision at a time with two or three viable options/u);
-  assert.match(planning, /Add the profile to `docs\/ai-sdlc\/index\.md`/u);
-  assert.match(planning, /without Software Engineer, Tester, or DevOps agents being present/u);
-  for (const area of [
-    "Frontend and interaction",
-    "Services and APIs",
-    "Data and storage",
-    "Integrations and messaging",
-    "Runtime and deployment",
-    "Security and privacy",
-    "Observability and operations",
-    "Validation and quality",
-  ]) {
-    assert.match(profileTemplate, new RegExp(escapeRegex(area), "u"), area);
-  }
+  assert.match(planning, /Search the local index and configured read-only hosts/u);
+  assert.match(planning, /frontend, backend, or both/u);
+  assert.match(planning, /Existing`, `Greenfield`, or `Hybrid`/u);
+  assert.match(planning, /two or three viable candidates/u);
+  assert.match(planning, /Update `docs\/ai-sdlc\/index\.md`/u);
+  assert.match(planning, /without any developer agent being initialized/u);
+  assert.match(profileTemplate, /## Scope catalog/u);
+  assert.match(profileTemplate, /Shared contracts and boundaries/u);
+  assert.match(profileTemplate, /Identity and authentication/u);
+  assert.match(profileTemplate, /Compatibility and versioning/u);
+  assert.match(frontendTemplate, /UI framework and rendering mode/u);
+  assert.match(frontendTemplate, /Page layout and responsive strategy/u);
+  assert.match(frontendTemplate, /Server state, caching, and invalidation/u);
+  assert.match(frontendTemplate, /Performance and Web Vitals/u);
+  assert.match(backendTemplate, /Service, module, domain, and deployable boundaries/u);
+  assert.match(backendTemplate, /Database migrations and expand-contract approach/u);
+  assert.match(backendTemplate, /Authentication/u);
+  assert.match(backendTemplate, /Authorization roles, policies, resources, and tenant boundary/u);
 });
 
 test("Architecture Pack keeps C4, ADR, concerns, and required API patterns", async () => {
@@ -867,6 +952,8 @@ test("Architecture Pack keeps C4, ADR, concerns, and required API patterns", asy
     "utf8",
   );
   const adr = await readFile(path.join(templateRoot, "architecture-adr.md"), "utf8");
+  const nfrs = await readFile(path.join(templateRoot, "architecture-nfrs.md"), "utf8");
+  const options = await readFile(path.join(templateRoot, "architecture-options.md"), "utf8");
   const context = await readFile(
     path.join(templateRoot, "architecture-c4-context.mmd"),
     "utf8",
@@ -880,19 +967,20 @@ test("Architecture Pack keeps C4, ADR, concerns, and required API patterns", asy
     assert.match(architect, new RegExp(`\\b${concern}\\b`, "u"));
     assert.match(overview, new RegExp(`^\\| ${concern} \\|`, "mu"));
   }
-  assert.match(architect, /C4 system context view/u);
-  assert.match(architect, /C4 container view/u);
-  assert.match(architect, /project provides a Mermaid renderer or checker/u);
-  assert.match(architect, /check was not run/u);
+  assert.match(architect, /Use C4 context for people and external systems/u);
+  assert.match(architect, /C4 containers for deployable applications/u);
+  assert.match(architect, /Run the project's Mermaid check when one exists/u);
+  assert.match(architect, /record that it was not run/u);
   assert.match(architect, /docs\/ai-sdlc\/adrs/u);
-  assert.match(architect, /required project baseline/u);
+  assert.match(architect, /as the project baseline/u);
   assert.match(architect, /Keep the system structure and technical decisions consistent/u);
   assert.match(architect, /Write every architecture document in plain language/u);
-  assert.match(architect, /what exists now, what needs to change/u);
-  assert.match(architect, /explain what they mean for this project instead of using the label as the explanation/u);
-  assert.match(architect, /who uses the system and which outside systems it talks to/u);
-  assert.match(architect, /targets that can be checked and how to check them/u);
-  assert.match(architect, /real alternatives to compare/u);
+  assert.match(architect, /what exists, what needs to change/u);
+  assert.match(architect, /Use concrete names supported by evidence/u);
+  assert.match(overview, /People, focal system, and external systems/u);
+  assert.match(nfrs, /quality targets that matter and can be checked/u);
+  assert.match(options, /Constraints met/u);
+  assert.match(options, /Reversibility/u);
 
   assert.match(patterns, /RESTful contract/u);
   assert.match(patterns, /HTTP status codes are the authoritative transport outcome/u);
@@ -929,10 +1017,10 @@ test("Architecture Pack keeps C4, ADR, concerns, and required API patterns", asy
   }
 });
 
-test("Software Engineer can use plan, tasks, and implementation notes without extra evidence packs", async () => {
+test("AC-10 full-stack developer uses scoped artifacts and shared engineering discipline", async () => {
   const target = await initializedProject("copilot");
   const engineer = await readFile(
-    path.join(target, ".github/agents/software-engineer.agent.md"),
+    path.join(target, ".github/agents/fullstack-developer.agent.md"),
     "utf8",
   );
   const plan = await readFile(
@@ -948,12 +1036,14 @@ test("Software Engineer can use plan, tasks, and implementation notes without ex
     "utf8",
   );
 
-  assert.match(engineer, /implementation-plan\.md/u);
-  assert.match(engineer, /implementation-tasks\.md/u);
+  assert.match(engineer, /implementation\/fullstack\/plan\.md/u);
+  assert.match(engineer, /implementation\/fullstack\/[\s\S]{0,60}tasks\.md/u);
   assert.match(engineer, /smallest complete vertical slice/u);
-  assert.match(engineer, /Use the technology profile and accepted ADRs when they exist/u);
-  assert.match(engineer, /Choose check depth from confirmed quality requirements/u);
-  assert.match(engineer, /commands confirmed by project files or instructions/u);
+  assert.match(engineer, /only `Required` and `Accepted` technology entries as implementation rules/u);
+  assert.match(engineer, /clear domain names, cohesive functions and modules/u);
+  assert.match(engineer, /least privilege/u);
+  assert.match(engineer, /Test observable behavior/u);
+  assert.match(engineer, /checks from confirmed project commands/iu);
   assert.match(engineer, /Do not scaffold an application/u);
   assert.match(plan, /Repository change map/u);
   assert.match(plan, /Acceptance and verification plan/u);
@@ -984,7 +1074,7 @@ test("Software Engineer can use plan, tasks, and implementation notes without ex
 
 test("every role knows how to resolve artifacts without auto-initializing dependencies", async () => {
   const target = await initializedProject("claude");
-  for (const roleId of roleIds) {
+  for (const roleId of generatedFullstackAgentIds) {
     const content = await readFile(path.join(target, ".claude/agents", `${roleId}.md`), "utf8");
     assert.match(content, /\.ai-sdlc\/artifact-hosts\.json/u, roleId);
     assert.match(content, /sdlc-artifact-bridge/u, roleId);
@@ -1314,7 +1404,7 @@ test("rollback keeps a generated file that another process changed or replaced",
   }
 });
 
-test("AC-09 init does not report success after authoritative metadata changes", async () => {
+test("init does not report success after authoritative metadata changes", async () => {
   const target = await temporaryDirectory();
   const installationPath = path.join(target, ".ai-sdlc/installation.json");
 
@@ -1358,16 +1448,20 @@ test("AC-09 init does not report success after authoritative metadata changes", 
   assert.equal(existsSync(path.join(target, ".ai-sdlc/project-profile.md")), false);
 });
 
-test("AC-01 CLI help lists delivery mode and invalid options fail", async () => {
+test("AC-02 CLI help lists engineer scope without exposing technology-stack choices", async () => {
   const cliPath = path.join(repositoryRoot, "bin/cli.js");
   const helpResult = spawnSync(process.execPath, [cliPath, "--help"], {
     encoding: "utf8",
   });
 
   assert.equal(helpResult.status, 0, helpResult.stderr);
+  assert.match(helpResult.stdout, /--repository-id <id>/u);
   assert.match(helpResult.stdout, /--tool <tool>/u);
   assert.match(helpResult.stdout, /--roles <list>/u);
   assert.match(helpResult.stdout, /--delivery-mode <mode>/u);
+  assert.match(helpResult.stdout, /--engineer-scope <scope>/u);
+  assert.doesNotMatch(helpResult.stdout, /--engineer-mode/u);
+  assert.match(helpResult.stdout, /--architecture-source <src>/u);
   assert.match(helpResult.stdout, /formal/u);
   assert.match(helpResult.stdout, /rapid/u);
   assert.doesNotMatch(helpResult.stdout, /--development|--stack|--validation/u);
@@ -1408,32 +1502,37 @@ test("AC-01 CLI help lists delivery mode and invalid options fail", async () => 
   await assert.rejects(run(["init", ".", "--client", "codex"]), /Unknown option/u);
   await assert.rejects(run(["init", ".", "--name", "   "]), /--name needs a value/u);
   await assert.rejects(run(["init", ".", "--roles"]), /--roles needs a value/u);
+  await assert.rejects(
+    run([...completeBase, "--roles", "software-engineer"], { output: () => {} }),
+    /--engineer-scope is required/u,
+  );
 });
 
-test("AC-10 README explains both delivery modes, their default and their scope", async () => {
+test("README explains delivery modes, scoped developers, and Architect first use", async () => {
   const readme = await readFile(path.join(repositoryRoot, "README.md"), "utf8");
 
   assert.match(readme, /## Generated files/u);
   assert.match(readme, /## Delivery workflow/u);
-  assert.match(readme, /## Architecture Pack/u);
-  assert.match(readme, /docs\/ai-sdlc\/index\.md/u);
+  assert.match(readme, /## Architect first use and technology profiles/u);
+  assert.match(readme, /docs\/ai-sdlc\/technology-profile\.md/u);
   assert.match(readme, /\.ai-sdlc\/project-profile\.md/u);
   assert.match(readme, /--roles/u);
-  assert.match(readme, /pm-ba,designer,architect/u);
+  assert.match(readme, /--roles software-engineer/u);
   assert.match(readme, /all|`all`/u);
   assert.match(readme, /none|`none`/u);
   assert.match(readme, /\.ai-sdlc\/artifact-hosts\.json/u);
   assert.match(readme, /sdlc-artifact-bridge\//u);
-  assert.match(readme, /\$sdlc-artifact-bridge \/docs\/ai-sdlc\/prd\.md/u);
-  assert.match(readme, /\$sdlc-artifact-bridge product-repo:\/docs\/ai-sdlc\/prd\.md/u);
+  assert.match(readme, /\$sdlc-artifact-bridge \/docs\/ai-sdlc\/technology-profile\.md/u);
+  assert.match(readme, /\$sdlc-artifact-bridge delivery-project:\/docs\/ai-sdlc\/technology\/frontend\/web-app\.md/u);
   assert.match(readme, /SKILL\.md/u);
   assert.match(readme, /technology profile/u);
   assert.match(readme, /create-ai-native-sdlc update \./u);
-  assert.match(readme, /Project state is preserved/u);
+  assert.match(readme, /It preserves the project profile, artifact registry, artifact index, delivery documents, code, and unrelated files/u);
   assert.match(readme, /\.ai-sdlc\/installation\.json/u);
   assert.match(readme, /installation\.json[\s\S]{0,100}authoritative/iu);
-  assert.match(readme, /profile snapshot does not (?:change|switch)/iu);
-  assert.match(readme, /supported legacy installation/u);
+  assert.match(readme, /project-profile\.md` is a readable initialization snapshot/u);
+  assert.match(readme, /schema-v2 installation/iu);
+  assert.match(readme, /does not infer scope, migrate metadata, or add a compatibility system/iu);
   assert.match(readme, /does not use MCP|No MCP|not (?:an )?MCP/iu);
   assert.match(readme, /--delivery-mode/u);
   assert.match(readme, /formal/iu);
@@ -1444,16 +1543,16 @@ test("AC-10 README explains both delivery modes, their default and their scope",
   assert.match(readme, /Architect/u);
   assert.match(readme, /(?:only|affects)[\s\S]{0,200}(?:PM \/ BA|PM\/BA)[\s\S]{0,200}Designer[\s\S]{0,200}Architect|(?:PM \/ BA|PM\/BA)[\s\S]{0,200}Designer[\s\S]{0,200}Architect[\s\S]{0,200}(?:only|affects)/iu);
   assert.match(readme, /safety/iu);
-  assert.match(readme, /privacy/iu);
-  assert.match(readme, /compliance/iu);
-  assert.match(readme, /data loss/iu);
-  assert.match(readme, /shared contract/iu);
+  assert.match(readme, /Shared API or event contracts/iu);
   assert.match(readme, /migration/iu);
-  assert.match(readme, /(?:hard|difficult|expensive)[ -]to[ -]reverse|irreversible/iu);
+  assert.match(readme, /--engineer-scope/u);
+  assert.match(readme, /frontend-developer/u);
+  assert.match(readme, /backend-developer/u);
+  assert.match(readme, /fullstack-developer/u);
   assert.doesNotMatch(readme, /--development|--stack|--validation/u);
 });
 
-test("AC-11 delivery mode adds no dependencies or generated paths and keeps rollback create-only", async () => {
+test("delivery mode adds no dependencies or generated paths and keeps rollback create-only", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repositoryRoot, "package.json"), "utf8"));
   assert.deepEqual(packageJson.files, ["bin", "templates", "README.md", "LICENSE"]);
   assert.equal(Object.hasOwn(packageJson, "dependencies"), false);
@@ -1467,7 +1566,7 @@ test("AC-11 delivery mode adds no dependencies or generated paths and keeps roll
     ".ai-sdlc/technology-planning.md",
     ".ai-sdlc/workflow.md",
     ...templateFiles.map((file) => `.ai-sdlc/templates/${file}`),
-    ...roleIds.map((roleId) => `.claude/agents/${roleId}.md`),
+    ...generatedFullstackAgentIds.map((roleId) => `.claude/agents/${roleId}.md`),
     "CLAUDE.md",
     "docs/ai-sdlc/index.md",
   ].sort();
@@ -1495,6 +1594,8 @@ test("AC-11 delivery mode adds no dependencies or generated paths and keeps roll
       "claude",
       "--roles",
       "all",
+      "--engineer-scope",
+      "fullstack",
       "--delivery-mode",
       "rapid",
     ], {
@@ -1559,6 +1660,10 @@ async function initializedProject(tool, configuration = {}) {
     "--roles",
     configuration.roles ?? "all",
   ];
+  const selectedRoles = configuration.roles ?? "all";
+  if (selectedRoles === "all" || selectedRoles.split(",").includes("software-engineer")) {
+    args.push("--engineer-scope", configuration.engineerScope ?? "fullstack");
+  }
   if (configuration.deliveryMode) {
     args.push("--delivery-mode", configuration.deliveryMode);
   }

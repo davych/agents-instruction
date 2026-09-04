@@ -1,10 +1,13 @@
 # Implementation Plan: <Change title>
 
 **Status:** <Draft / Ready / In progress / Complete / Blocked>
+**Developer scope:** <frontend / backend / fullstack>
+**Destination:** `docs/ai-sdlc/implementation/<developer-scope>/plan.md`
 **Sources:** <PRD, story, design, ADR, architecture, or Inline request>
+**Technology profiles:** <Catalog and applicable child profile links>
 **Updated:** <YYYY-MM-DD>
 
-Use this file when the change is multi-step, risky, or spans important areas or repositories.
+Use this file when the change is multi-step, risky, or spans important areas or repositories. Replace `<developer-scope>` with the generated agent's scope; do not create a root-level implementation plan.
 
 ## Goal and scope
 
@@ -33,6 +36,12 @@ Use this file when the change is multi-step, risky, or spans important areas or 
 | Requirement or risk | Planned implementation | Planned check |
 |---|---|---|
 | <ID or item> | <Area> | <Test or review> |
+
+## Contract and boundary coordination
+
+- **Shared contract or identity impact:** <Catalog, ADR, or None>
+- **Other developer scope affected:** <frontend, backend, both, or None>
+- **Required coordination:** <Decision or sequencing, or None>
 
 ## Risks and decision record
 
